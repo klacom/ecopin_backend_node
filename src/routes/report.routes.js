@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createReport, getMyReports, getPublicReports, getReportById } from '../controllers/report.controller.js';
+import { createReport, getMyReports, getPublicReports, getReportById, uploadEvidence, getReportEvidence, upload } from '../controllers/report.controller.js';
 import { authenticate } from '../middleware/auth.middleware.js';
 
 const router = Router();
@@ -11,5 +11,7 @@ router.post('/', createReport);
 router.get('/my', getMyReports);
 router.get('/public', getPublicReports);
 router.get('/:id', getReportById);
+router.post('/:reportId/evidence', upload.single('image'), uploadEvidence);
+router.get('/:reportId/evidence', getReportEvidence);
 
 export default router;

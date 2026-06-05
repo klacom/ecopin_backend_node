@@ -1,4 +1,182 @@
 import { createClient } from "@supabase/supabase-js";
+import multer from 'multer';
+import exifParser from 'exif-parser';
+
+// Configure multer for memory storage
+const storage = multer.memoryStorage();
+export const upload = multer({ 
+    storage: storage,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype.startsWith('image/')) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only image files are allowed'), false);
+        }
+    }
+});
+
+export const uploadEvidence = async (req, res, next) => {
+    const { reportId } = req.params;
+    const { latitude, longitude } = req.body;
+    
+    console.log('Uploading evidence for report:', reportId);
+    console.log('File received:', req.file ? req.file.originalname : 'No file');
+    
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY);
+
+    try {
+        // List buckets to verify the correct bucket name
+        const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+        if (bucketsError) {
+            console.error('Error listing buckets:', bucketsError);
+        } else {
+            console.log('Available buckets:', buckets.map(b => b.name));
+        }
+        // Extract EXIF metadata from image
+        let imageMetadata = {
+            latitude: null,
+            longitude: null,
+            timestamp: null
+        };
+
+        try {
+            const parser = exifParser.create(req.file.buffer);
+            const result = parser.parse();
+            
+            if (result.tags.GPSLatitude && result.tags.GPSLongitude) {
+                // Convert EXIF GPS coordinates to decimal degrees
+                const toDecimal = (degrees, minutes, seconds, direction) => {
+                    let decimal = degrees + (minutes / 60) + (seconds / 3600);
+                    if (direction === 'S' || direction === 'W') {
+                        decimal = -decimal;
+                    }
+                    return decimal;
+                };
+
+                imageMetadata.latitude = toDecimal(
+                    result.tags.GPSLatitude[0],
+                    result.tags.GPSLatitude[1],
+                    result.tags.GPSLatitude[2],
+                    result.tags.GPSLatitudeRef
+                );
+                imageMetadata.longitude = toDecimal(
+                    result.tags.GPSLongitude[0],
+                    result.tags.GPSLongitude[1],
+                    result.tags.GPSLongitude[2],
+                    result.tags.GPSLongitudeRef
+                );
+            }
+
+            if (result.tags.DateTimeOriginal) {
+                imageMetadata.timestamp = result.tags.DateTimeOriginal;
+            }
+        } catch (exifError) {
+            console.log('No EXIF data found:', exifError.message);
+        }
+
+        // Generate unique filename
+        const timestamp = Date.now();
+        const filename = `${timestamp}_${req.file.originalname}`;
+        const filePath = `${reportId}/${filename}`;
+
+        console.log('Uploading to path:', filePath);
+        console.log('Bucket name: Report Evidence');
+
+        // Upload to Supabase storage
+        const { data: uploadData, error: uploadError } = await supabase
+            .storage
+            .from('Report Evidence')
+            .upload(filePath, req.file.buffer, {
+                contentType: req.file.mimetype,
+                upsert: false
+            });
+
+        if (uploadError) {
+            console.error('Upload error details:', JSON.stringify(uploadError, null, 2));
+            console.error('Upload error message:', uploadError.message);
+            console.error('Upload error status:', uploadError.statusCode);
+            return res.status(400).json({
+                message: 'Failed to upload image',
+                error: uploadError.message,
+                details: uploadError
+            });
+        }
+
+        console.log('Upload successful:', uploadData);
+
+        // Get public URL
+        const { data: urlData } = supabase
+            .storage
+            .from('report evidence')
+            .getPublicUrl(filePath);
+
+        console.log('Public URL:', urlData.publicUrl);
+
+        res.status(201).json({
+            message: 'Evidence uploaded successfully',
+            evidence: {
+                url: urlData.publicUrl,
+                path: filePath,
+                metadata: imageMetadata
+            }
+        });
+    } catch (error) {
+        console.error('Error in uploadEvidence:', error);
+        next(error);
+    }
+};
+
+export const getReportEvidence = async (req, res, next) => {
+    const { reportId } = req.params;
+    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY);
+
+    try {
+        console.log('Fetching evidence for report:', reportId);
+        const { data, error } = await supabase
+            .storage
+            .from('Report Evidence')
+            .list(reportId, {
+                limit: 100,
+                offset: 0,
+                sortBy: { column: 'created_at', order: 'asc' }
+            });
+
+        if (error) {
+            console.error('Error listing evidence:', error);
+            return res.status(400).json({
+                message: 'Failed to fetch evidence',
+                error: error.message
+            });
+        }
+
+        console.log('Evidence files found:', data);
+
+        // Get public URLs for all files
+        const evidence = data.map(file => {
+            const { data: urlData } = supabase
+                .storage
+                .from('Report Evidence')
+                .getPublicUrl(`${reportId}/${file.name}`);
+            return {
+                name: file.name,
+                url: urlData.publicUrl,
+                size: file.metadata?.size,
+                createdAt: file.created_at
+            };
+        });
+
+        console.log('Returning evidence:', evidence);
+        res.status(200).json(evidence);
+    } catch (error) {
+        console.error('Error in getReportEvidence:', error);
+        next(error);
+    }
+};
 
 export const createReport = async (req, res, next) => {
     const { title, description, issue_type, latitude, longitude } = req.body;

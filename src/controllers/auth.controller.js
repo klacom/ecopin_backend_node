@@ -75,7 +75,8 @@ export const login = async (req, res, next) => {
             user: {
                 ...data.user,
                 role: profile?.role || 'citizen'
-            }
+            },
+            token: data.session.access_token
         });
     } catch (error) {
         next(error);

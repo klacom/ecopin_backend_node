@@ -31,7 +31,7 @@ export const authenticate = async (req, res, next) => {
 
         const { data: profile, error: profileError } = await supabaseAdmin
             .from('profiles')
-            .select('role')
+            .select('role, full_name')
             .eq('id', user.id)
             .single();
 
@@ -40,6 +40,7 @@ export const authenticate = async (req, res, next) => {
             user.role = 'citizen';
         } else {
             user.role = profile.role;
+            user.full_name = profile.full_name;
         }
 
         // Attach user and role to request object
