@@ -15,3 +15,22 @@ export const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 export const RATE_LIMIT_WINDOW_MS = process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000;
 export const RATE_LIMIT_MAX_REQUESTS = process.env.RATE_LIMIT_MAX_REQUESTS || 100;
 export const MIN_PASSWORD_LENGTH = 8;
+
+export const VALIDATION_STATUS = {
+    AUTOMATICALLY_VALID: 'automatically_valid',
+    MANUAL_REVIEW: 'manual_review',
+    REJECTED: 'rejected',
+    PENDING: 'pending'
+};
+
+export const IMAGE_VALIDATION_WEIGHTS = {
+    ISSUE_RELEVANCE: 0.4,
+    OBJECT_EVIDENCE: 0.3,
+    SCENE_CONTEXT: 0.2,
+    IMAGE_QUALITY: 0.1
+};
+
+export const IMAGE_VALIDATION_THRESHOLDS = {
+    VALID: 80,
+    REVIEW: 60
+};

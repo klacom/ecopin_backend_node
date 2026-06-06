@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { supabase, supabaseAdmin } from "../supabase_config/supabase.config.js";
 
 export const authenticate = async (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -10,11 +10,6 @@ export const authenticate = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
 
     try {
-        const supabase = createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL,
-            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-        );
-
         // 1. Verify the JWT and get the user
         const { data: { user }, error: authError } = await supabase.auth.getUser(token);
 
@@ -24,11 +19,6 @@ export const authenticate = async (req, res, next) => {
 
         // 2. Fetch the role from the 'profiles' table using the Service Role Key 
         // to ensure we can always read the role column even if RLS is restrictive.
-        const supabaseAdmin = createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL,
-            process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY
-        );
-
         const { data: profile, error: profileError } = await supabaseAdmin
             .from('profiles')
             .select('role, full_name')

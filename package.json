@@ -20,17 +20,23 @@
   "type": "module",
   "dependencies": {
     "@supabase/supabase-js": "^2.106.2",
+    "@tensorflow-models/coco-ssd": "^2.2.3",
+    "@tensorflow-models/mobilenet": "^2.1.1",
+    "@tensorflow/tfjs": "^4.22.0",
     "bcrypt": "^6.0.0",
+    "canvas": "^3.2.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "exif-parser": "^0.1.12",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "express-validator": "^7.3.2",
+    "google-protobuf": "^4.0.2",
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.1",
-    "multer": "^2.1.1"
+    "multer": "^2.1.1",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "jest": "^30.4.2",

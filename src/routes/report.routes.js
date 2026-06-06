@@ -7,7 +7,7 @@ const router = Router();
 // All report routes require authentication
 router.use(authenticate);
 
-router.post('/', createReport);
+router.post('/', upload.single('image'), createReport);
 router.get('/my', getMyReports);
 router.get('/public', getPublicReports);
 router.get('/:id', getReportById);

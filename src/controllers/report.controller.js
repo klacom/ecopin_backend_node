@@ -1,10 +1,12 @@
-import { createClient } from "@supabase/supabase-js";
+import { supabaseAdmin as supabase } from "../supabase_config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
+import { validateImage } from '../services/imageValidation.service.js';
+import { VALIDATION_STATUS } from '../config/index.js';
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
-export const upload = multer({ 
+export const upload = multer({
     storage: storage,
     limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
     fileFilter: (req, file, cb) => {
@@ -19,15 +21,13 @@ export const upload = multer({
 export const uploadEvidence = async (req, res, next) => {
     const { reportId } = req.params;
     const { latitude, longitude } = req.body;
-    
+
     console.log('Uploading evidence for report:', reportId);
     console.log('File received:', req.file ? req.file.originalname : 'No file');
-    
+
     if (!req.file) {
         return res.status(400).json({ message: 'No file uploaded' });
     }
-
-    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY);
 
     try {
         // List buckets to verify the correct bucket name
@@ -47,7 +47,7 @@ export const uploadEvidence = async (req, res, next) => {
         try {
             const parser = exifParser.create(req.file.buffer);
             const result = parser.parse();
-            
+
             if (result.tags.GPSLatitude && result.tags.GPSLongitude) {
                 // Convert EXIF GPS coordinates to decimal degrees
                 const toDecimal = (degrees, minutes, seconds, direction) => {
@@ -133,7 +133,6 @@ export const uploadEvidence = async (req, res, next) => {
 
 export const getReportEvidence = async (req, res, next) => {
     const { reportId } = req.params;
-    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY);
 
     try {
         console.log('Fetching evidence for report:', reportId);
@@ -181,12 +180,28 @@ export const getReportEvidence = async (req, res, next) => {
 export const createReport = async (req, res, next) => {
     const { title, description, issue_type, latitude, longitude } = req.body;
     const user_id = req.user.id;
-
-    // Use service role key to ensure we can bypass any RLS if needed, 
-    // but typically the authenticate middleware ensures we have a valid user.
-    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY);
+    const image = req.file;
 
     try {
+        let validationStatus = VALIDATION_STATUS.PENDING;
+        let aiScore = 0;
+
+        // If an image is provided, validate it using TensorFlow
+        if (image) {
+            // console.log("IMAGE BUFFER: ", image.buffer)
+            const validation = await validateImage(image.buffer);
+            aiScore = validation.score;
+            validationStatus = validation.status;
+
+            if (validationStatus === VALIDATION_STATUS.REJECTED) {
+                return res.status(400).json({
+                    message: 'Image validation failed. The image does not seem relevant to environmental issues.',
+                    ai_score: aiScore,
+                    details: validation.details
+                });
+            }
+        }
+
         // PostGIS point format: 'POINT(longitude latitude)'
         const point = `POINT(${longitude} ${latitude})`;
 
@@ -199,7 +214,7 @@ export const createReport = async (req, res, next) => {
                 issue_type,
                 location: point,
                 status: 'unresolved',
-                validation_status: 'pending'
+                validation_status: validationStatus
             })
             .select()
             .single();
@@ -213,7 +228,8 @@ export const createReport = async (req, res, next) => {
 
         res.status(201).json({
             message: 'Report created successfully',
-            report: data
+            report: data,
+            ai_score: aiScore
         });
     } catch (error) {
         next(error);
@@ -222,7 +238,6 @@ export const createReport = async (req, res, next) => {
 
 export const getMyReports = async (req, res, next) => {
     const user_id = req.user.id;
-    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY);
 
     try {
         const { data, error } = await supabase
@@ -245,8 +260,6 @@ export const getMyReports = async (req, res, next) => {
 };
 
 export const getPublicReports = async (req, res, next) => {
-    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY);
-
     try {
         const { data, error } = await supabase
             .from('reports_view')
@@ -267,7 +280,6 @@ export const getPublicReports = async (req, res, next) => {
 
 export const getReportById = async (req, res, next) => {
     const { id } = req.params;
-    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY);
 
     try {
         const { data, error } = await supabase
