@@ -300,3 +300,31 @@ export const getReportById = async (req, res, next) => {
         next(error);
     }
 };
+
+export const updateReportStatus = async (req, res, next) => {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    try {
+        const { data, error } = await supabase
+            .from('reports')
+            .update({ status })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to update report status',
+                error: error.message
+            });
+        }
+
+        res.status(200).json({
+            message: 'Report status updated successfully',
+            report: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
