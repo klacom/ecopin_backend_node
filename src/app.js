@@ -9,6 +9,7 @@ import { FRONTEND_URL } from './config/index.js';
 // Import routes
 import authRoutes from './routes/auth.routes.js';
 import reportRoutes from './routes/report.routes.js';
+import clusterRoutes from './routes/cluster.routes.js';
 // import adminRoutes from './routes/admin.routes';
 
 // Import middleware
@@ -38,6 +39,7 @@ app.get('/health', (req, res) => {
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/clusters', clusterRoutes);
 // app.use('/api/admin', adminRoutes);
 
 // 404 handler

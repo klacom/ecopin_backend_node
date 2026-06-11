@@ -3,6 +3,7 @@ import multer from 'multer';
 import exifParser from 'exif-parser';
 import { validateImage } from '../services/imageValidation.service.js';
 import { VALIDATION_STATUS } from '../config/index.js';
+import { clusterReports } from '../services/clustering.service.js';
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -230,6 +231,11 @@ export const createReport = async (req, res, next) => {
             message: 'Report created successfully',
             report: data,
             ai_score: aiScore
+        });
+
+        // Trigger clustering in the background (don't wait for it)
+        clusterReports().catch(err => {
+            console.error('Error in background clustering:', err);
         });
     } catch (error) {
         next(error);
