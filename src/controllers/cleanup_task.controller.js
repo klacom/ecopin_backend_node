@@ -42,6 +42,17 @@ export const createCleanupTask = async (req, res, next) => {
             });
         }
 
+        // Update all reports in the cluster to 'in_progress'
+        const { error: reportsError } = await supabase
+            .from('reports')
+            .update({ status: 'in_progress' })
+            .eq('cluster_id', cluster_id);
+
+        if (reportsError) {
+            console.error('Failed to update reports to in_progress:', reportsError);
+            // Don't fail the request, just log the error
+        }
+
         res.status(201).json({
             message: 'Cleanup task created successfully',
             task: data

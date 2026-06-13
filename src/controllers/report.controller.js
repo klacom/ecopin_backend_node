@@ -334,3 +334,52 @@ export const updateReportStatus = async (req, res, next) => {
         next(error);
     }
 };
+
+export const getReportsByClusterId = async (req, res, next) => {
+    const { clusterId } = req.params;
+
+    try {
+        const { data, error } = await supabase
+            .from('reports_view')
+            .select('*')
+            .eq('cluster_id', clusterId)
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to fetch reports by cluster',
+                error: error.message
+            });
+        }
+
+        res.status(200).json(data);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const batchCompleteReportsByCluster = async (req, res, next) => {
+    const { clusterId } = req.params;
+
+    try {
+        const { data, error } = await supabase
+            .from('reports')
+            .update({ status: 'resolved' })
+            .eq('cluster_id', clusterId)
+            .select();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to batch complete reports',
+                error: error.message
+            });
+        }
+
+        res.status(200).json({
+            message: 'Reports batch completed successfully',
+            updatedReports: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
