@@ -9,6 +9,7 @@ import sharp from 'sharp';
  * @param {Object} options - Optional resize and processing options.
  * @returns {Promise<tf.Tensor3D>} - A 3D Tensor of the image.
  */
+
 export const bufferToTensor = async (imageBuffer, options = {}) => {
     let pipeline = sharp(imageBuffer).removeAlpha();
 

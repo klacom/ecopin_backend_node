@@ -1,4 +1,4 @@
-// Configuration file for the EcoPin backend API server. Loads environment variables from a .env file using dotenv and exports configuration values for use throughout the application. Includes settings for the server environment, port, frontend URL, Supabase credentials, JWT settings, and rate limiting parameters.
+// Config
 
 import dotenv from 'dotenv';
 
@@ -34,3 +34,32 @@ export const IMAGE_VALIDATION_THRESHOLDS = {
     VALID: 80,
     REVIEW: 60
 };
+
+export const CLEANUP_TASK_PHOTOS_STORAGE_PATH = 'Cleanup Task Photos';
+export const VALID_STATUSES = ['unresolved', 'in_progress', 'resolved'];
+
+
+// Environmental Issue Categories and related keywords for MobileNet
+export const ISSUE_CATEGORIES = {
+    waste: ['garbage', 'trash', 'litter', 'plastic', 'debris', 'dump', 'waste', 'bottle', 'can'],
+    flooding: ['flood', 'water', 'submerged', 'river', 'inundation', 'lake'],
+    pollution: ['smoke', 'smog', 'oil', 'slick', 'dirty', 'pollution', 'factory', 'industrial'],
+};
+
+// Valid Scene Keywords for MobileNet
+export const VALID_SCENES = ['street', 'road', 'river', 'park', 'beach', 'canal', 'residential', 'outdoor', 'ground', 'pavement'];
+
+// Invalid Scene Keywords for MobileNet
+export const INVALID_SCENES = ['bedroom', 'living room', 'kitchen', 'office', 'screenshot', 'document', 'meme', 'drawing', 'cartoon'];
+
+// Object Detection Keywords for COCO-SSD
+export const OBJECT_KEYWORDS = {
+    waste: ['bottle', 'cup', 'handbag', 'suitcase', 'backpack'], // COCO-SSD limited set, mapping trash-like items
+    flooding: ['boat', 'car', 'truck', 'bus'], // Items often submerged or in water
+    pollution: ['train', 'truck', 'car'] // Associated with emissions/oil
+};
+
+// File size limits for different uploads
+export const BEFORE_AFTER_PHOTO_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+export const EVIDENCE_PHOTO_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+export const PROFILE_FILE_SIZE = 3 * 1024 * 1024; // 3MB

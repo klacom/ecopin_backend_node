@@ -1,4 +1,9 @@
-// Validation middleware for the EcoPin backend API server. Uses express-validator to define validation rules for incoming requests related to user registration and login. Ensures that required fields are present and meet specified criteria (e.g., valid email format, password strength) before allowing the request to proceed to the corresponding controller functions.
+// Uses express-validator to define validation rules for incoming requests related to user registration and login. 
+// Ensures that required fields are present and meet specified criteria (e.g., valid email format, password strength) before allowing the request to proceed to the corresponding controller functions.
+
+// TODO: Add validation for other routes (e.g., cleanup task creation, image uploads) as needed.
+// TODO: Add custom validators for specific fields (e.g., checking if an email is already registered during registration).
+// TODO: Add more restrictive validation rules for certain fields (e.g., username, task descriptions) to prevent malicious input and ensure data integrity.
 
 import { body, validationResult } from 'express-validator';
 import { MIN_PASSWORD_LENGTH } from '../config/index.js';

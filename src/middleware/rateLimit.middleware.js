@@ -1,4 +1,5 @@
-// Rate limiting middleware for the EcoPin backend API server. Uses express-rate-limit to define rate limiting rules for incoming requests to prevent abuse and protect against brute-force attacks. Provides a general rate limiter for all routes and a stricter limiter specifically for authentication-related endpoints.
+// Uses express-rate-limit to define rate limiting rules for incoming requests to prevent abuse and protect against brute-force attacks. 
+// Provides a general rate limiter for all routes and a stricter limiter specifically for authentication-related endpoints.
 
 import rateLimit from 'express-rate-limit';
 import { RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_REQUESTS } from '../config/index.js';

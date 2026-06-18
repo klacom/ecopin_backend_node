@@ -1,15 +1,16 @@
-import { supabaseAdmin as supabase } from "../supabase_config/supabase.config.js";
+import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
 import { validateImage } from '../services/imageValidation.service.js';
 import { VALIDATION_STATUS } from '../config/index.js';
 import { clusterReports } from '../services/clustering.service.js';
+import { EVIDENCE_PHOTO_FILE_SIZE } from "../config/index.js";
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
 export const upload = multer({
     storage: storage,
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+    limits: { fileSize: EVIDENCE_PHOTO_FILE_SIZE }, 
     fileFilter: (req, file, cb) => {
         if (file.mimetype.startsWith('image/')) {
             cb(null, true);
@@ -18,6 +19,7 @@ export const upload = multer({
         }
     }
 });
+
 
 export const uploadEvidence = async (req, res, next) => {
     const { reportId } = req.params;

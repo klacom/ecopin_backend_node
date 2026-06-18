@@ -1,4 +1,4 @@
-import { supabaseAdmin } from '../supabase_config/supabase.config.js';
+import { supabaseAdmin } from '../config/supabase.config.js';
 
 export const clusterReports = async () => {
   try {
@@ -105,7 +105,7 @@ export const getClusters = async () => {
   }
 };
 
-//Get cluster by ID with member reports
+// Get cluster by ID with member reports
 export const getClusterById = async (clusterId) => {
   try {
     const { data: cluster, error: clusterError } = await supabaseAdmin
@@ -131,7 +131,6 @@ export const getClusterById = async (clusterId) => {
   }
 };
 
-//Update cluster status
 export const updateClusterStatus = async (clusterId, status) => {
   try {
     const { data, error } = await supabaseAdmin

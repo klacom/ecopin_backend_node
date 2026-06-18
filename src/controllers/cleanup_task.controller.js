@@ -1,11 +1,13 @@
-import { supabaseAdmin as supabase } from "../supabase_config/supabase.config.js";
+import { supabaseAdmin as supabase } from "../config/supabase.config.js";
+import { CLEANUP_TASK_PHOTOS_STORAGE_PATH } from "../config/index.js";
 import multer from 'multer';
+import { BEFORE_AFTER_PHOTO_FILE_SIZE } from "../config/index.js";
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
 export const upload = multer({
     storage: storage,
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+    limits: { fileSize: BEFORE_AFTER_PHOTO_FILE_SIZE }, // 10MB limit
     fileFilter: (req, file, cb) => {
         if (file.mimetype.startsWith('image/')) {
             cb(null, true);
@@ -15,9 +17,6 @@ export const upload = multer({
     }
 });
 
-/**
- * Create a new cleanup task
- */
 export const createCleanupTask = async (req, res, next) => {
     const { cluster_id, title, description } = req.body;
     const user_id = req.user.id;
@@ -62,9 +61,6 @@ export const createCleanupTask = async (req, res, next) => {
     }
 };
 
-/**
- * Get all cleanup tasks
- */
 export const getAllCleanupTasks = async (req, res, next) => {
     try {
         const { data, error } = await supabase
@@ -85,9 +81,6 @@ export const getAllCleanupTasks = async (req, res, next) => {
     }
 };
 
-/**
- * Get cleanup task by ID
- */
 export const getCleanupTaskById = async (req, res, next) => {
     const { id } = req.params;
 
@@ -111,9 +104,7 @@ export const getCleanupTaskById = async (req, res, next) => {
     }
 };
 
-/**
- * Upload before/after photo for cleanup task
- */
+// Upload before/after photo for cleanup task
 export const uploadCleanupPhoto = async (req, res, next) => {
     const { taskId } = req.params;
     const { photo_type } = req.body; // 'before' or 'after'
@@ -130,7 +121,7 @@ export const uploadCleanupPhoto = async (req, res, next) => {
         // Upload to Supabase storage
         const { data: uploadData, error: uploadError } = await supabase
             .storage
-            .from('Cleanup Task Photos')
+            .from(CLEANUP_TASK_PHOTOS_STORAGE_PATH)
             .upload(filePath, req.file.buffer, {
                 contentType: req.file.mimetype,
                 upsert: false
@@ -146,7 +137,7 @@ export const uploadCleanupPhoto = async (req, res, next) => {
         // Get public URL
         const { data: urlData } = supabase
             .storage
-            .from('Cleanup Task Photos')
+            .from(CLEANUP_TASK_PHOTOS_STORAGE_PATH)
             .getPublicUrl(filePath);
 
         // Update the task with the photo URL
@@ -177,9 +168,6 @@ export const uploadCleanupPhoto = async (req, res, next) => {
     }
 };
 
-/**
- * Mark cleanup task as complete
- */
 export const markTaskComplete = async (req, res, next) => {
     const { id } = req.params;
 
@@ -227,9 +215,6 @@ export const markTaskComplete = async (req, res, next) => {
     }
 };
 
-/**
- * Get cleanup tasks by cluster ID
- */
 export const getTasksByClusterId = async (req, res, next) => {
     const { clusterId } = req.params;
 

@@ -1,4 +1,4 @@
-// Main entry point for the EcoPin backend API server. Initializes the Express app and starts the server.
+// Main entry point for the EcoPin backend API server.
 
 import app from './app.js';
 import { PORT as _PORT, NODE_ENV, NEXT_PUBLIC_SUPABASE_URL } from './config/index.js';
@@ -6,7 +6,7 @@ import { PORT as _PORT, NODE_ENV, NEXT_PUBLIC_SUPABASE_URL } from './config/inde
 const PORT = _PORT || 3000;
 
 const server = app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on ${PORT}`);
     console.log(`Environment: ${NODE_ENV}`);
     console.log(`Supabase URL: ${NEXT_PUBLIC_SUPABASE_URL}`);
 });

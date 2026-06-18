@@ -2,6 +2,7 @@ import express from 'express';
 import { getProfile, updateProfile, uploadAvatar } from '../controllers/profile.controller.js';
 import { authenticate } from '../middleware/auth.middleware.js';
 import multer from 'multer';
+import { PROFILE_FILE_SIZE } from '../config/index.js';
 
 const router = express.Router();
 
@@ -10,7 +11,7 @@ const storage = multer.memoryStorage();
 const upload = multer({
     storage: storage,
     limits: {
-        fileSize: 5 * 1024 * 1024, // 5MB
+        fileSize: PROFILE_FILE_SIZE,
     },
     fileFilter: (req, file, cb) => {
         if (file.mimetype.startsWith('image/')) {

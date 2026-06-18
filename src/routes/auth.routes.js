@@ -1,5 +1,3 @@
-// Authentication routes for the EcoPin backend API server. Defines endpoints for user registration, login, logout, token refresh, and password reset functionality. Each route is associated with a corresponding controller function that implements the business logic for handling authentication-related requests.
-
 import { Router } from 'express';
 import { register, login, logout, refreshToken, forgotPassword, resetPassword, getMe } from '../controllers/auth.controller.js';
 import { validateRegistration, validateLogin } from '../middleware/validation.middleware.js';

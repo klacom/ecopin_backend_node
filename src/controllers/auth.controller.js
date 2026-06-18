@@ -1,7 +1,9 @@
-// Authentication controller for the EcoPin backend API server. Handles user registration, login, logout, token refresh, and password reset.
+// Authentication controller for the EcoPin backend API server. 
+// Handles user registration, login, logout, token refresh, and password reset.
 
-import { supabase, supabaseAdmin } from "../supabase_config/supabase.config.js";
+import { supabase, supabaseAdmin } from "../config/supabase.config.js";
 
+// TODO: Add Validation here
 export const register = async (req, res, next) => {
     const { email, password } = req.body;
 
@@ -76,9 +78,9 @@ export const login = async (req, res, next) => {
     }
 };
 
+// req.user is already populated by the authenticate middleware
 export const getMe = async (req, res, next) => {
     try {
-        // req.user is already populated by the authenticate middleware
         res.status(200).json({
             user: req.user
         });
@@ -87,11 +89,11 @@ export const getMe = async (req, res, next) => {
     }
 };
 
+// Global signout is handled by the client
+// But keep these just in case
+ 
 export const logout = async (req, res, next) => {
     try {
-        // Supabase signout requires the user's access token, which we have from req.user if needed,
-        // but global signout is usually handled by the client. 
-        // On the backend, we just return success and let the client clear the session.
         res.status(200).json({ message: 'Logout Successful' });
     } catch (error) {
         next(error);

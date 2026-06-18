@@ -1,9 +1,7 @@
-import { supabaseAdmin as supabase } from '../supabase_config/supabase.config.js';
+import { supabaseAdmin as supabase } from '../config/supabase.config.js';
 import { clusterReports, getClusters, getClusterById, updateClusterStatus } from '../services/clustering.service.js';
 
-/**
- * Manually trigger clustering
- */
+// Manually trigger clustering
 export const triggerClustering = async (req, res, next) => {
   try {
     const result = await clusterReports();
@@ -13,9 +11,6 @@ export const triggerClustering = async (req, res, next) => {
   }
 };
 
-/**
- * Get all clusters
- */
 export const getAllClusters = async (req, res, next) => {
   try {
     const clusters = await getClusters();
@@ -25,9 +20,7 @@ export const getAllClusters = async (req, res, next) => {
   }
 };
 
-/**
- * Get cluster by ID with member reports
- */
+// Get cluster by ID with member reports
 export const getCluster = async (req, res, next) => {
   const { id } = req.params;
 
@@ -39,20 +32,20 @@ export const getCluster = async (req, res, next) => {
   }
 };
 
-/**
- * Update cluster status
- */
+// Update cluster status
 export const updateCluster = async (req, res, next) => {
   const { id } = req.params;
   const { status } = req.body;
 
   // Validate status
-  const validStatuses = ['unresolved', 'in_progress', 'resolved'];
+  
   if (!validStatuses.includes(status)) {
     return res.status(400).json({
       message: 'Invalid status. Must be one of: unresolved, in_progress, resolved'
     });
   }
+
+//   Update cluster status service
 
   try {
     const cluster = await updateClusterStatus(id, status);
@@ -63,4 +56,5 @@ export const updateCluster = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+
 };
