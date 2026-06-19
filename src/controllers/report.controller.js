@@ -2,20 +2,18 @@ import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
 import { validateImage } from '../services/imageValidation.service.js';
-import { VALIDATION_STATUS } from '../config/index.js';
-import { clusterReports } from '../services/clustering.service.js';
-import { EVIDENCE_PHOTO_FILE_SIZE } from "../config/index.js";
+import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE } from '../config/index.js';
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
 export const upload = multer({
     storage: storage,
-    limits: { fileSize: EVIDENCE_PHOTO_FILE_SIZE }, 
+    limits: { fileSize: EVIDENCE_PHOTO_FILE_SIZE },
     fileFilter: (req, file, cb) => {
-        if (file.mimetype.startsWith('image/')) {
+        if (VALID_IMAGE_MIME_TYPES.includes(file.mimetype)) {
             cb(null, true);
         } else {
-            cb(new Error('Only image files are allowed'), false);
+            cb(new Error('Invalid file type. Only JPEG, JPG, PNG, and WEBP are allowed.'), false);
         }
     }
 });
@@ -30,6 +28,14 @@ export const uploadEvidence = async (req, res, next) => {
 
     if (!req.file) {
         return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    // Validate file extension
+    const fileExt = req.file.originalname.split('.').pop()?.toLowerCase();
+    if (!fileExt || !VALID_IMAGE_EXTENSIONS.includes(fileExt)) {
+        return res.status(400).json({
+            message: 'Invalid file extension. Only JPEG, JPG, PNG, and WEBP are allowed.'
+        });
     }
 
     try {
@@ -186,6 +192,16 @@ export const createReport = async (req, res, next) => {
     const image = req.file;
 
     try {
+        // Validate image if present
+        if (image) {
+            const fileExt = image.originalname.split('.').pop()?.toLowerCase();
+            if (!fileExt || !VALID_IMAGE_EXTENSIONS.includes(fileExt)) {
+                return res.status(400).json({
+                    message: 'Invalid file extension. Only JPEG, JPG, PNG, and WEBP are allowed.'
+                });
+            }
+        }
+
         let validationStatus = VALIDATION_STATUS.PENDING;
         let aiScore = 0;
 

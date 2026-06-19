@@ -1,4 +1,5 @@
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
+import { VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, PROFILE_FILE_SIZE } from "../config/index.js";
 
 export const getProfile = async (req, res, next) => {
     try {
@@ -66,9 +67,29 @@ export const uploadAvatar = async (req, res, next) => {
             });
         }
 
+        // Validate file size
+        if (req.file.size > PROFILE_FILE_SIZE) {
+            return res.status(400).json({
+                message: `File size too large. Maximum allowed is ${PROFILE_FILE_SIZE / (1024 * 1024)}MB`
+            });
+        }
+
+        // Validate file mimetype
+        if (!VALID_IMAGE_MIME_TYPES.includes(req.file.mimetype)) {
+            return res.status(400).json({
+                message: 'Invalid file type. Only JPEG, JPG, PNG, and WEBP are allowed.'
+            });
+        }
+
+        // Validate file extension
+        const fileExt = req.file.originalname.split('.').pop()?.toLowerCase();
+        if (!fileExt || !VALID_IMAGE_EXTENSIONS.includes(fileExt)) {
+            return res.status(400).json({
+                message: 'Invalid file extension. Only JPEG, JPG, PNG, and WEBP are allowed.'
+            });
+        }
+
         const userId = req.user.id;
-        const file = req.file;
-        const fileExt = file.originalname.split('.').pop();
         const fileName = `${userId}/avatar.${fileExt}`;
 
         // Delete old avatar if exists

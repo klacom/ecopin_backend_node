@@ -63,3 +63,5 @@ export const OBJECT_KEYWORDS = {
 export const BEFORE_AFTER_PHOTO_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 export const EVIDENCE_PHOTO_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 export const PROFILE_FILE_SIZE = 3 * 1024 * 1024; // 3MB
+export const VALID_IMAGE_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+export const VALID_IMAGE_EXTENSIONS = ['jpeg', 'jpg', 'png', 'webp'];
