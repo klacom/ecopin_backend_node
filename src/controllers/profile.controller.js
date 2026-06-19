@@ -61,28 +61,29 @@ export const updateProfile = async (req, res, next) => {
 
 export const uploadAvatar = async (req, res, next) => {
     try {
-        if (!req.file) {
+        const file = req.file;
+        if (!file) {
             return res.status(400).json({
                 message: 'No file uploaded'
             });
         }
 
         // Validate file size
-        if (req.file.size > PROFILE_FILE_SIZE) {
+        if (file.size > PROFILE_FILE_SIZE) {
             return res.status(400).json({
                 message: `File size too large. Maximum allowed is ${PROFILE_FILE_SIZE / (1024 * 1024)}MB`
             });
         }
 
         // Validate file mimetype
-        if (!VALID_IMAGE_MIME_TYPES.includes(req.file.mimetype)) {
+        if (!VALID_IMAGE_MIME_TYPES.includes(file.mimetype)) {
             return res.status(400).json({
                 message: 'Invalid file type. Only JPEG, JPG, PNG, and WEBP are allowed.'
             });
         }
 
         // Validate file extension
-        const fileExt = req.file.originalname.split('.').pop()?.toLowerCase();
+        const fileExt = file.originalname.split('.').pop()?.toLowerCase();
         if (!fileExt || !VALID_IMAGE_EXTENSIONS.includes(fileExt)) {
             return res.status(400).json({
                 message: 'Invalid file extension. Only JPEG, JPG, PNG, and WEBP are allowed.'
@@ -109,7 +110,7 @@ export const uploadAvatar = async (req, res, next) => {
                 upsert: true
             });
 
-        if (uploadError) {
+            if (uploadError) {
             return res.status(400).json({
                 message: 'Failed to upload avatar',
                 error: uploadError.message
