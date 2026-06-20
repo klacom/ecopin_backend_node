@@ -7,6 +7,7 @@ dotenv.config();
 export const NODE_ENV = process.env.NODE_ENV || 'development';
 export const PORT = process.env.PORT || 3000;
 export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3001';
+export const MOBILE_REDIRECT_URL = process.env.MOBILE_REDIRECT_URL || 'ecopin://auth/callback';
 export const NEXT_PUBLIC_SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 export const SUPABASE_SERVICE_ROLE_KEY = process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY;
 export const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -65,3 +66,7 @@ export const EVIDENCE_PHOTO_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 export const PROFILE_FILE_SIZE = 3 * 1024 * 1024; // 3MB
 export const VALID_IMAGE_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
 export const VALID_IMAGE_EXTENSIONS = ['jpeg', 'jpg', 'png', 'webp'];
+export const REPORT_MIN_PHOTOS = 1;
+export const REPORT_MAX_PHOTOS = 5;
+export const REPORT_TOTAL_PHOTOS_SIZE = 10 * 1024 * 1024; // 10MB total
+

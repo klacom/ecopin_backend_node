@@ -2,6 +2,7 @@
 // Handles user registration, login, logout, token refresh, and password reset.
 
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
+import { MOBILE_REDIRECT_URL } from "../config/index.js";
 
 // TODO: Add Validation here
 export const register = async (req, res, next) => {
