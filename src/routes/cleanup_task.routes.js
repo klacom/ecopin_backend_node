@@ -4,22 +4,25 @@ import {
     getAllCleanupTasks,
     getCleanupTaskById,
     uploadCleanupPhoto,
+    deleteCleanupPhoto,
     markTaskComplete,
     getTasksByClusterId,
     upload
 } from '../controllers/cleanup_task.controller.js';
-import { authenticate } from '../middleware/auth.middleware.js';
+import { authenticate, authorize } from '../middleware/auth.middleware.js';
 
 const router = Router();
 
-// All cleanup task routes require authentication
+// All cleanup task routes require authentication and LGU/admin role
 router.use(authenticate);
+router.use(authorize(['lgu', 'admin']));
 
 router.post('/', createCleanupTask);
 router.get('/', getAllCleanupTasks);
 router.get('/:id', getCleanupTaskById);
 router.get('/cluster/:clusterId', getTasksByClusterId);
 router.post('/:taskId/photo', upload.single('image'), uploadCleanupPhoto);
+router.delete('/:taskId/photo', deleteCleanupPhoto);
 router.patch('/:id/complete', markTaskComplete);
 
 export default router;

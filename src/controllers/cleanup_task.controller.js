@@ -44,7 +44,10 @@ export const createCleanupTask = async (req, res, next) => {
         // Update all reports in the cluster to 'in_progress'
         const { error: reportsError } = await supabase
             .from('reports')
-            .update({ status: 'in_progress' })
+            .update({ 
+                status: 'in_progress',
+                updated_at: new Date().toISOString()
+            })
             .eq('cluster_id', cluster_id);
 
         if (reportsError) {
@@ -168,6 +171,92 @@ export const uploadCleanupPhoto = async (req, res, next) => {
     }
 };
 
+// Delete before/after photo for cleanup task
+export const deleteCleanupPhoto = async (req, res, next) => {
+    const { taskId } = req.params;
+    const { photo_type } = req.body; // 'before' or 'after'
+
+    console.log('Deleting cleanup task photo:', { taskId, photo_type });
+
+    try {
+        // Get the current task to find the photo URL
+        const { data: task, error: fetchError } = await supabase
+            .from('cleanup_tasks')
+            .select('*')
+            .eq('id', taskId)
+            .single();
+
+        if (fetchError) {
+            console.error('Failed to fetch task:', fetchError);
+            return res.status(404).json({
+                message: 'Cleanup task not found',
+                error: fetchError.message
+            });
+        }
+
+        const photoUrl = photo_type === 'before' ? task.before_photo_url : task.after_photo_url;
+
+        if (!photoUrl) {
+            return res.status(400).json({
+                message: 'No photo to delete'
+            });
+        }
+
+        // Extract the file path from the URL
+        const urlParts = photoUrl.split('/');
+        const fileName = urlParts[urlParts.length - 1];
+        const filePath = `${taskId}/${photo_type}/${fileName}`;
+
+        console.log('Deleting file path:', filePath);
+
+        // Delete from Supabase storage
+        const { error: deleteError } = await supabase
+            .storage
+            .from(CLEANUP_TASK_PHOTOS_STORAGE_PATH)
+            .remove([filePath]);
+
+        if (deleteError) {
+            console.error('Failed to delete photo from storage:', deleteError);
+            return res.status(400).json({
+                message: 'Failed to delete photo from storage',
+                error: deleteError.message
+            });
+        }
+
+        console.log('Photo deleted from storage successfully');
+
+        // Update the task to remove the photo URL
+        const updateData = photo_type === 'before'
+            ? { before_photo_url: null }
+            : { after_photo_url: null };
+
+        const { data: taskData, error: taskError } = await supabase
+            .from('cleanup_tasks')
+            .update(updateData)
+            .eq('id', taskId)
+            .select()
+            .single();
+
+        if (taskError) {
+            console.error('Failed to update task:', taskError);
+            return res.status(400).json({
+                message: 'Failed to update task',
+                error: taskError.message
+            });
+        }
+
+        console.log('Task updated successfully:', taskData);
+
+        res.status(200).json({
+            message: 'Photo deleted successfully',
+            task: taskData
+        });
+    } catch (error) {
+        console.error('Delete photo error:', error);
+        next(error);
+    }
+};
+
 export const markTaskComplete = async (req, res, next) => {
     const { id } = req.params;
 
@@ -196,7 +285,10 @@ export const markTaskComplete = async (req, res, next) => {
         // 3. Update all reports in this cluster to RESOLVED
         const { error: reportsError } = await supabase
             .from('reports')
-            .update({ status: 'resolved' })
+            .update({ 
+                status: 'resolved',
+                updated_at: new Date().toISOString()
+            })
             .eq('cluster_id', clusterId);
 
         if (reportsError) {
