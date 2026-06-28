@@ -3,6 +3,7 @@ import multer from 'multer';
 import exifParser from 'exif-parser';
 import { validateImage } from '../services/imageValidation.service.js';
 import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE } from '../config/index.js';
+import { clusterReports } from '../services/clustering.service.js';
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -121,7 +122,7 @@ export const uploadEvidence = async (req, res, next) => {
         // Get public URL
         const { data: urlData } = supabase
             .storage
-            .from('report evidence')
+            .from('Report Evidence')
             .getPublicUrl(filePath);
 
         console.log('Public URL:', urlData.publicUrl);
