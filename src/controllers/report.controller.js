@@ -2,7 +2,7 @@ import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
 import { validateImage } from '../services/imageValidation.service.js';
-import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE } from '../config/index.js';
+import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE, REPORT_PHOTOS_STORAGE_PATH, BEFORE_AFTER_PHOTO_FILE_SIZE } from '../config/index.js';
 import { clusterReports } from '../services/clustering.service.js';
 
 // Configure multer for memory storage
@@ -19,6 +19,214 @@ export const upload = multer({
     }
 });
 
+// Configure multer for before/after photos
+const beforeAfterStorage = multer.memoryStorage();
+export const beforeAfterUpload = multer({
+    storage: beforeAfterStorage,
+    limits: { fileSize: BEFORE_AFTER_PHOTO_FILE_SIZE },
+    fileFilter: (req, file, cb) => {
+        if (VALID_IMAGE_MIME_TYPES.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Invalid file type. Only JPEG, JPG, PNG, and WEBP are allowed.'), false);
+        }
+    }
+});
+
+export const addReportNote = async (req, res, next) => {
+    const { id } = req.params;
+    const { note } = req.body;
+
+    try {
+       
+        const { data, error } = await supabase
+            .from('reports')
+            .update({ notes: note })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to add note',
+                error: error.message
+            });
+        }
+
+        res.status(200).json({
+            message: 'Note added successfully',
+            report: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Upload before/after photo for report
+export const uploadReportPhoto = async (req, res, next) => {
+    const { id } = req.params;
+    const { photo_type } = req.body; // 'before' or 'after'
+
+    console.log('Uploading report photo:', { id, photo_type });
+
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    try {
+        const timestamp = Date.now();
+        const filename = `${timestamp}_${req.file.originalname}`;
+        const filePath = `${id}/${photo_type}/${filename}`;
+
+        console.log('File path:', filePath);
+        console.log('Storage path:', REPORT_PHOTOS_STORAGE_PATH);
+
+        // Upload to Supabase storage (Report Cleanup bucket)
+        const { data: uploadData, error: uploadError } = await supabase
+            .storage
+            .from(REPORT_PHOTOS_STORAGE_PATH)
+            .upload(filePath, req.file.buffer, {
+                contentType: req.file.mimetype,
+                upsert: false
+            });
+
+        if (uploadError) {
+            console.error('Supabase upload error:', uploadError);
+            return res.status(400).json({
+                message: 'Failed to upload photo',
+                error: uploadError.message
+            });
+        }
+
+        console.log('Upload successful:', uploadData);
+
+        // Get public URL
+        const { data: urlData } = supabase
+            .storage
+            .from(REPORT_PHOTOS_STORAGE_PATH)
+            .getPublicUrl(filePath);
+
+        console.log('Public URL:', urlData.publicUrl);
+
+        // Update the report with the photo URL
+        const updateData = photo_type === 'before'
+            ? { before_photo_url: urlData.publicUrl }
+            : { after_photo_url: urlData.publicUrl };
+
+        console.log('Updating report with:', updateData);
+
+        const { data: reportData, error: reportError } = await supabase
+            .from('reports')
+            .update(updateData)
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (reportError) {
+            console.error('Database update error:', reportError);
+            return res.status(400).json({
+                message: 'Failed to update report with photo',
+                error: reportError.message
+            });
+        }
+
+        console.log('Report updated successfully:', reportData);
+
+        res.status(200).json({
+            message: 'Photo uploaded successfully',
+            report: reportData
+        });
+    } catch (error) {
+        console.error('Upload photo error:', error);
+        next(error);
+    }
+};
+
+// Delete before/after photo for report
+export const deleteReportPhoto = async (req, res, next) => {
+    const { id } = req.params;
+    const { photo_type } = req.body; // 'before' or 'after'
+
+    console.log('Deleting report photo:', { id, photo_type });
+
+    try {
+        // Get the current report to find the photo URL
+        const { data: report, error: fetchError } = await supabase
+            .from('reports')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        if (fetchError) {
+            console.error('Failed to fetch report:', fetchError);
+            return res.status(404).json({
+                message: 'Report not found',
+                error: fetchError.message
+            });
+        }
+
+        const photoUrl = photo_type === 'before' ? report.before_photo_url : report.after_photo_url;
+
+        if (!photoUrl) {
+            return res.status(400).json({
+                message: 'No photo to delete'
+            });
+        }
+
+        // Extract the file path from the URL
+        const urlParts = photoUrl.split('/');
+        const fileName = urlParts[urlParts.length - 1];
+        const filePath = `${id}/${photo_type}/${fileName}`;
+
+        console.log('Deleting file path:', filePath);
+
+        // Delete from Supabase storage
+        const { error: deleteError } = await supabase
+            .storage
+            .from(REPORT_PHOTOS_STORAGE_PATH)
+            .remove([filePath]);
+
+        if (deleteError) {
+            console.error('Failed to delete photo from storage:', deleteError);
+            return res.status(400).json({
+                message: 'Failed to delete photo from storage',
+                error: deleteError.message
+            });
+        }
+
+        console.log('Photo deleted from storage successfully');
+
+        // Update the report to remove the photo URL
+        const updateData = photo_type === 'before'
+            ? { before_photo_url: null }
+            : { after_photo_url: null };
+
+        const { data: reportData, error: reportError } = await supabase
+            .from('reports')
+            .update(updateData)
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (reportError) {
+            console.error('Failed to update report:', reportError);
+            return res.status(400).json({
+                message: 'Failed to update report',
+                error: reportError.message
+            });
+        }
+
+        console.log('Report updated successfully:', reportData);
+
+        res.status(200).json({
+            message: 'Photo deleted successfully',
+            report: reportData
+        });
+    } catch (error) {
+        console.error('Delete photo error:', error);
+        next(error);
+    }
+};
 
 export const uploadEvidence = async (req, res, next) => {
     const { reportId } = req.params;
@@ -333,7 +541,10 @@ export const updateReportStatus = async (req, res, next) => {
     try {
         const { data, error } = await supabase
             .from('reports')
-            .update({ status })
+            .update({ 
+                status,
+                updated_at: new Date().toISOString()
+            })
             .eq('id', id)
             .select()
             .single();
@@ -383,7 +594,10 @@ export const batchCompleteReportsByCluster = async (req, res, next) => {
     try {
         const { data, error } = await supabase
             .from('reports')
-            .update({ status: 'resolved' })
+            .update({ 
+                status: 'resolved',
+                updated_at: new Date().toISOString()
+            })
             .eq('cluster_id', clusterId)
             .select();
 

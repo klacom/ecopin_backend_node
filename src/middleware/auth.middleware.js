@@ -51,7 +51,7 @@ export const authorize = (roles = []) => {
         const userRole = req.user.role || 'citizen';
 
         if (roles.length && !roles.includes(userRole)) {
-            return res.status(403).json({ error: 'Forbidden: Insufficient permissions' });
+            return res.status(403).json({ error: 'Authorized accounts only' });
         }
 
         next();

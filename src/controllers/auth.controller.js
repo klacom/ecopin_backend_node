@@ -82,8 +82,26 @@ export const login = async (req, res, next) => {
 // req.user is already populated by the authenticate middleware
 export const getMe = async (req, res, next) => {
     try {
+        // Fetch full profile data including avatar_url
+        const { data: profile, error: profileError } = await supabaseAdmin
+            .from('profiles')
+            .select('*')
+            .eq('id', req.user.id)
+            .single();
+
+        if (profileError) {
+            // Return basic user data if profile fetch fails
+            return res.status(200).json({
+                user: req.user
+            });
+        }
+
+        // Merge profile data with user data
         res.status(200).json({
-            user: req.user
+            user: {
+                ...req.user,
+                ...profile
+            }
         });
     } catch (error) {
         next(error);

@@ -37,6 +37,7 @@ export const IMAGE_VALIDATION_THRESHOLDS = {
 };
 
 export const CLEANUP_TASK_PHOTOS_STORAGE_PATH = 'Cleanup Task Photos';
+export const REPORT_PHOTOS_STORAGE_PATH = 'Report Cleanup';
 export const VALID_STATUSES = ['unresolved', 'in_progress', 'resolved'];
 
 
