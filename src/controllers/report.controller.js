@@ -38,7 +38,7 @@ export const addReportNote = async (req, res, next) => {
     const { note } = req.body;
 
     try {
-       
+
         const { data, error } = await supabase
             .from('reports')
             .update({ notes: note })
@@ -396,9 +396,19 @@ export const getReportEvidence = async (req, res, next) => {
 };
 
 export const createReport = async (req, res, next) => {
-    const { title, description, issue_type, latitude, longitude } = req.body;
+    const {
+        title,
+        description,
+        issue_type,
+        latitude,
+        longitude,
+        on_private_property
+    } = req.body;
     const user_id = req.user.id;
     const image = req.file;
+    const onPrivateProperty =
+        req.body.on_private_property === true ||
+        req.body.on_private_property === "true";
 
     try {
         // Validate image if present
@@ -433,6 +443,15 @@ export const createReport = async (req, res, next) => {
         // PostGIS point format: 'POINT(longitude latitude)'
         const point = `POINT(${longitude} ${latitude})`;
 
+        // console.log("IS ON PRIVATE PROPERTY: ", onPrivateProperty);
+        // console.log("TYPE OF ON PRIVATE PROPERTY: ", typeof onPrivateProperty);
+
+        // console.log(req.body.onPrivateProperty);
+        // console.log(typeof req.body.onPrivateProperty);
+
+        // Determine property owner consent status
+        const propertyOwnerConsentStatus = onPrivateProperty ? 'pending' : 'not_required';
+
         const { data, error } = await supabase
             .from('reports')
             .insert({
@@ -441,7 +460,9 @@ export const createReport = async (req, res, next) => {
                 description,
                 issue_type,
                 location: point,
-                status: 'unresolved',
+                on_private_property: onPrivateProperty,
+                property_owner_consent_status: propertyOwnerConsentStatus,
+                status: onPrivateProperty ? 'pending_owner_consent' : 'unresolved',
                 validation_status: validationStatus
             })
             .select()
@@ -541,7 +562,7 @@ export const updateReportStatus = async (req, res, next) => {
     try {
         const { data, error } = await supabase
             .from('reports')
-            .update({ 
+            .update({
                 status,
                 updated_at: new Date().toISOString()
             })
@@ -594,7 +615,7 @@ export const batchCompleteReportsByCluster = async (req, res, next) => {
     try {
         const { data, error } = await supabase
             .from('reports')
-            .update({ 
+            .update({
                 status: 'resolved',
                 updated_at: new Date().toISOString()
             })
@@ -612,6 +633,131 @@ export const batchCompleteReportsByCluster = async (req, res, next) => {
             message: 'Reports batch completed successfully',
             updatedReports: data
         });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const updatePropertyOwnerConsent = async (req, res, next) => {
+    const { id } = req.params;
+    const { consent_status } = req.body;
+
+    try {
+        const updateData = {
+            property_owner_consent_status: consent_status,
+            updated_at: new Date().toISOString()
+        };
+
+        if (consent_status === 'obtained') {
+            updateData.status = 'unresolved';
+        }
+
+        const { data, error } = await supabase
+            .from('reports')
+            .update(updateData)
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to update property owner consent status',
+                error: error.message
+            });
+        }
+
+        res.status(200).json({
+            message: 'Property owner consent status updated successfully',
+            report: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const createDisclosureRequest = async (req, res, next) => {
+    const { report_id, requested_by, request_type, requester_notes } = req.body;
+
+    try {
+        const { data, error } = await supabase
+            .from('disclosure_requests')
+            .insert({
+                report_id,
+                requested_by,
+                request_type,
+                requester_notes
+            })
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to create disclosure request',
+                error: error.message
+            });
+        }
+
+        res.status(201).json({
+            message: 'Disclosure request created successfully',
+            request: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const respondToDisclosureRequest = async (req, res, next) => {
+    const { id } = req.params;
+    const { status, reporter_response } = req.body;
+
+    try {
+        const updateData = {
+            status,
+            reporter_response,
+            response_date: new Date().toISOString()
+        };
+
+        const { data, error } = await supabase
+            .from('disclosure_requests')
+            .update(updateData)
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to respond to disclosure request',
+                error: error.message
+            });
+        }
+
+        res.status(200).json({
+            message: 'Disclosure request response submitted successfully',
+            request: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getDisclosureRequests = async (req, res, next) => {
+    const { reportId } = req.params;
+
+    try {
+        const { data, error } = await supabase
+            .from('disclosure_requests')
+            .select('*')
+            .eq('report_id', reportId)
+            .order('request_date', { ascending: false });
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to fetch disclosure requests',
+                error: error.message
+            });
+        }
+
+        res.status(200).json(data);
     } catch (error) {
         next(error);
     }

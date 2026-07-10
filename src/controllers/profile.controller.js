@@ -145,3 +145,40 @@ export const uploadAvatar = async (req, res, next) => {
         next(error);
     }
 };
+
+export const updateDataConsent = async (req, res, next) => {
+    try {
+        const userId = req.user.id;
+        const { data_consent } = req.body;
+
+        console.log("Data Consent Given: ", data_consent)
+
+        // Validate input
+        if (typeof data_consent !== "boolean") {
+            return res.status(400).json({
+                message: "data_consent must be a boolean value."
+            });
+        }
+        const { data, error } = await supabaseAdmin
+            .from("profiles")
+            .update({ data_consent })
+            .eq("id", userId)
+            .select("*")
+            .single();
+
+        if (error) {
+            console.log(error);
+            return res.status(400).json({
+                message: "Failed to update data consent.",
+                error: error.message
+            });
+        }
+
+        res.status(200).json({
+            message: "Data consent updated successfully.",
+            profile: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};

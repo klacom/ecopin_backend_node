@@ -1,5 +1,10 @@
 import express from 'express';
-import { getProfile, updateProfile, uploadAvatar } from '../controllers/profile.controller.js';
+import {
+    getProfile,
+    updateProfile,
+    uploadAvatar,
+    updateDataConsent
+} from '../controllers/profile.controller.js';
 import { authenticate } from '../middleware/auth.middleware.js';
 import multer from 'multer';
 import { PROFILE_FILE_SIZE } from '../config/index.js';
@@ -27,6 +32,7 @@ router.use(authenticate);
 
 router.get('/', getProfile);
 router.put('/', updateProfile);
+router.patch('/data-consent', updateDataConsent);
 router.post('/avatar', upload.single('avatar'), uploadAvatar);
 
 export default router;
