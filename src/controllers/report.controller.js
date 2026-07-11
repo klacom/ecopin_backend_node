@@ -891,3 +891,106 @@ export const updatePropertyOwnerConsent = async (req, res, next) => {
         next(error);
     }
 };
+
+// LGU resolves the issue (sets status to waiting_for_feedback and lgu_resolved_at)
+export const lguResolveReport = async (req, res, next) => {
+    const { id } = req.params;
+    const user_id = req.user.id;
+
+    try {
+        const { data: currentReport } = await supabase
+            .from('reports')
+            .select('user_id')
+            .eq('id', id)
+            .single();
+
+        const { data, error } = await supabase
+            .from('reports')
+            .update({
+                status: 'waiting_for_feedback',
+                lgu_resolved_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to resolve report',
+                error: error.message
+            });
+        }
+
+        // Log audit action
+        await logAuditAction(id, user_id, 'lgu_resolve', 'LGU marked report as resolved');
+
+        // Send notification to reporter
+        if (currentReport?.user_id) {
+            await createNotification(
+                currentReport.user_id,
+                id,
+                'Report Resolved',
+                'The LGU has resolved your report! Please provide feedback.'
+            );
+        }
+
+        res.status(200).json({
+            message: 'Report resolved successfully',
+            report: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Citizen closes the report with satisfaction rating
+export const citizenCloseReport = async (req, res, next) => {
+    const { id } = req.params;
+    const { satisfaction_rating } = req.body;
+    const user_id = req.user.id;
+
+    try {
+        const { data: currentReport } = await supabase
+            .from('reports')
+            .select('user_id')
+            .eq('id', id)
+            .single();
+
+        // Verify that the current user is the report owner
+        if (currentReport?.user_id !== user_id) {
+            return res.status(403).json({
+                message: 'You are not authorized to close this report'
+            });
+        }
+
+        const { data, error } = await supabase
+            .from('reports')
+            .update({
+                status: 'closed',
+                satisfaction_rating,
+                citizen_closed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to close report',
+                error: error.message
+            });
+        }
+
+        // Log audit action
+        await logAuditAction(id, user_id, 'citizen_close', `Citizen closed report with satisfaction rating: ${satisfaction_rating}`);
+
+        res.status(200).json({
+            message: 'Report closed successfully',
+            report: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};

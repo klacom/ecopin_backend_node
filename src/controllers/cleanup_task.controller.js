@@ -44,7 +44,7 @@ export const createCleanupTask = async (req, res, next) => {
         // Update all reports in the cluster to 'in_progress'
         const { error: reportsError } = await supabase
             .from('reports')
-            .update({ 
+            .update({
                 status: 'in_progress',
                 updated_at: new Date().toISOString()
             })
@@ -144,7 +144,7 @@ export const uploadCleanupPhoto = async (req, res, next) => {
             .getPublicUrl(filePath);
 
         // Update the task with the photo URL
-        const updateData = photo_type === 'before' 
+        const updateData = photo_type === 'before'
             ? { before_photo_url: urlData.publicUrl }
             : { after_photo_url: urlData.publicUrl };
 
@@ -264,7 +264,7 @@ export const markTaskComplete = async (req, res, next) => {
         // 1. Mark the task as complete
         const { data: taskData, error: taskError } = await supabase
             .from('cleanup_tasks')
-            .update({ 
+            .update({
                 status: 'completed',
                 completed_at: new Date().toISOString()
             })
@@ -285,7 +285,7 @@ export const markTaskComplete = async (req, res, next) => {
         // 3. Update all reports in this cluster to RESOLVED
         const { error: reportsError } = await supabase
             .from('reports')
-            .update({ 
+            .update({
                 status: 'resolved',
                 updated_at: new Date().toISOString()
             })
@@ -318,6 +318,7 @@ export const getTasksByClusterId = async (req, res, next) => {
             .order('created_at', { ascending: false });
 
         if (error) {
+            console.log("Fail to fetch cleanup tasks: ", error);
             return res.status(400).json({
                 message: 'Failed to fetch cleanup tasks',
                 error: error.message
