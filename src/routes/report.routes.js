@@ -13,11 +13,12 @@ import {
     addReportNote, 
     uploadReportPhoto, 
     beforeAfterUpload, 
-    deleteReportPhoto,
-    updatePropertyOwnerConsent,
-    createDisclosureRequest,
-    respondToDisclosureRequest,
-    getDisclosureRequests
+    deleteReportPhoto, 
+    updateLifecycleStage, 
+    acknowledgeComplaint, 
+    logAgencyResponse, 
+    fetchAgencyResponses,
+    updatePropertyOwnerConsent
 } from '../controllers/report.controller.js';
 import { authenticate, authorize } from '../middleware/auth.middleware.js';
 
@@ -33,20 +34,21 @@ router.use(authenticate);
 router.post('/', upload.single('image'), createReport);
 router.get('/my', getMyReports);
 router.get('/:id', getReportById);
-router.patch('/:id/disclosure-requests/:disclosureRequestId/respond', respondToDisclosureRequest);
-router.get('/:reportId/disclosure-requests', getDisclosureRequests);
 router.post('/:reportId/evidence', upload.single('image'), uploadEvidence);
 router.get('/:reportId/evidence', getReportEvidence);
 
 // Routes that require LGU/admin role
 router.use(authorize(['lgu', 'admin']));
 router.patch('/:id/status', updateReportStatus);
+router.patch('/:id/lifecycle-stage', updateLifecycleStage);
+router.post('/:id/acknowledge', acknowledgeComplaint);
+router.post('/:id/agency-response', logAgencyResponse);
+router.get('/:id/agency-responses', fetchAgencyResponses);
 router.post('/:id/notes', addReportNote);
 router.delete('/:id/photo', deleteReportPhoto);
 router.get('/cluster/:clusterId', getReportsByClusterId);
 router.post('/:id/photo', beforeAfterUpload.single('image'), uploadReportPhoto);
 router.patch('/cluster/:clusterId/complete', batchCompleteReportsByCluster);
 router.patch('/:id/property-owner-consent', updatePropertyOwnerConsent);
-router.post('/:reportId/disclosure-requests', createDisclosureRequest);
 
 export default router;

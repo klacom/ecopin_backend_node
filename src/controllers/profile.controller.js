@@ -5,21 +5,34 @@ export const getProfile = async (req, res, next) => {
     try {
         const userId = req.user.id;
 
-        const { data, error } = await supabaseAdmin
+        const { data: profileData, error: profileError } = await supabaseAdmin
             .from('profiles')
             .select('*')
             .eq('id', userId)
             .single();
 
-        if (error) {
+        if (profileError) {
             return res.status(404).json({
                 message: 'Profile not found',
-                error: error.message
+                error: profileError.message
+            });
+        }
+
+        // Fetch email from auth.users
+        const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(userId);
+
+        if (userError || !userData.user) {
+            return res.status(404).json({
+                message: 'User not found',
+                error: userError?.message
             });
         }
 
         res.status(200).json({
-            profile: data
+            profile: {
+                ...profileData,
+                email: userData.user.email
+            }
         });
     } catch (error) {
         next(error);

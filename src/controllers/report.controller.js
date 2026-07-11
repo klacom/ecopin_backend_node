@@ -538,7 +538,7 @@ export const getReportById = async (req, res, next) => {
     try {
         const { data, error } = await supabase
             .from('reports_view')
-            .select('*, profiles(full_name)')
+            .select('*, profiles(full_name, data_consent)')
             .eq('id', id)
             .single();
 
@@ -558,8 +558,16 @@ export const getReportById = async (req, res, next) => {
 export const updateReportStatus = async (req, res, next) => {
     const { id } = req.params;
     const { status } = req.body;
+    const user_id = req.user.id;
 
     try {
+        // Get current status for audit log
+        const { data: currentReport } = await supabase
+            .from('reports')
+            .select('status')
+            .eq('id', id)
+            .single();
+
         const { data, error } = await supabase
             .from('reports')
             .update({
@@ -576,6 +584,10 @@ export const updateReportStatus = async (req, res, next) => {
                 error: error.message
             });
         }
+
+        // Log audit action
+        await logAuditAction(id, user_id, 'status_update', 
+            `Changed status from ${currentReport?.status || 'none'} to ${status}`);
 
         res.status(200).json({
             message: 'Report status updated successfully',
@@ -638,6 +650,211 @@ export const batchCompleteReportsByCluster = async (req, res, next) => {
     }
 };
 
+// Helper function to log audit action
+const logAuditAction = async (reportId, userId, actionType, actionDetails) => {
+    try {
+        console.log('Logging audit action:', { reportId, userId, actionType, actionDetails });
+        const { data, error } = await supabase
+            .from('response_log')
+            .insert({
+                report_id: reportId,
+                user_id: userId,
+                action_type: actionType,
+                action_details: actionDetails
+            })
+            .select()
+            .single();
+
+        if (error) {
+            console.error('Failed to log audit action:', error);
+        } else {
+            console.log('Audit action logged successfully:', data);
+        }
+    } catch (error) {
+        console.error('Failed to log audit action:', error);
+        // Don't throw error - logging is secondary to main operation
+    }
+};
+
+// Helper function to create notification
+const createNotification = async (userId, reportId, title, body) => {
+    try {
+        console.log('Creating notification:', { userId, reportId, title, body });
+        const { data, error } = await supabase
+            .from('notifications')
+            .insert({
+                user_id: userId,
+                report_id: reportId,
+                title,
+                body,
+                is_read: false
+            })
+            .select()
+            .single();
+
+        if (error) {
+            console.error('Failed to create notification:', error);
+        } else {
+            console.log('Notification created successfully:', data);
+        }
+    } catch (error) {
+        console.error('Failed to create notification:', error);
+        // Don't throw error - notification is secondary to main operation
+    }
+};
+
+// Update lifecycle stage
+export const updateLifecycleStage = async (req, res, next) => {
+    const { id } = req.params;
+    const { stage } = req.body;
+    const user_id = req.user.id;
+
+    try {
+        // Get current stage for audit log and notification
+        const { data: currentReport } = await supabase
+            .from('reports')
+            .select('stage, user_id')
+            .eq('id', id)
+            .single();
+
+        const { data, error } = await supabase
+            .from('reports')
+            .update({
+                stage: stage,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            console.error('Supabase error updating lifecycle stage:', error);
+            return res.status(400).json({
+                message: 'Failed to update lifecycle stage',
+                error: error.message
+            });
+        }
+
+        // Log audit action
+        await logAuditAction(id, user_id, 'lifecycle_stage_update',
+            `Changed stage from ${currentReport?.stage || 'none'} to ${stage}`);
+
+        // Create notification for the report owner
+        if (currentReport?.user_id) {
+            await createNotification(
+                currentReport.user_id,
+                id,
+                'Lifecycle Stage Updated',
+                `Your report lifecycle stage has been updated to ${stage}`
+            );
+        }
+
+        res.status(200).json({
+            message: 'Lifecycle stage updated successfully',
+            report: data
+        });
+    } catch (error) {
+        console.error('Error updating lifecycle stage:', error);
+        next(error);
+    }
+};
+
+// Acknowledge complaint (sets stage to 'acknowledged')
+export const acknowledgeComplaint = async (req, res, next) => {
+    const { id } = req.params;
+    const user_id = req.user.id;
+
+    try {
+        const { data, error } = await supabase
+            .from('reports')
+            .update({ 
+                stage: 'acknowledged',
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to acknowledge complaint',
+                error: error.message
+            });
+        }
+
+        // Log audit action
+        await logAuditAction(id, user_id, 'acknowledge_complaint', 
+            'Complaint acknowledged by LGU');
+
+        res.status(200).json({
+            message: 'Complaint acknowledged successfully',
+            report: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Log agency response action (manual note from LGU)
+export const logAgencyResponse = async (req, res, next) => {
+    const { id } = req.params;
+    const { action } = req.body;
+    const user_id = req.user.id;
+
+    try {
+        const { data, error } = await supabase
+            .from('response_log')
+            .insert({
+                report_id: id,
+                user_id,
+                action_type: 'manual_note',
+                action_details: action
+            })
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to log agency response',
+                error: error.message
+            });
+        }
+
+        res.status(201).json({
+            message: 'Agency response logged successfully',
+            response: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Fetch agency responses for a report
+export const fetchAgencyResponses = async (req, res, next) => {
+    const { id } = req.params;
+
+    try {
+        const { data, error } = await supabase
+            .from('response_log')
+            .select('*')
+            .eq('report_id', id)
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            console.error('Supabase error fetching agency responses:', error);
+            return res.status(400).json({
+                message: 'Failed to fetch agency responses',
+                error: error.message
+            });
+        }
+
+        res.status(200).json(data || []);
+    } catch (error) {
+        console.error('Error fetching agency responses:', error);
+        next(error);
+    }
+};
+
 export const updatePropertyOwnerConsent = async (req, res, next) => {
     const { id } = req.params;
     const { consent_status } = req.body;
@@ -670,94 +887,6 @@ export const updatePropertyOwnerConsent = async (req, res, next) => {
             message: 'Property owner consent status updated successfully',
             report: data
         });
-    } catch (error) {
-        next(error);
-    }
-};
-
-export const createDisclosureRequest = async (req, res, next) => {
-    const { report_id, requested_by, request_type, requester_notes } = req.body;
-
-    try {
-        const { data, error } = await supabase
-            .from('disclosure_requests')
-            .insert({
-                report_id,
-                requested_by,
-                request_type,
-                requester_notes
-            })
-            .select()
-            .single();
-
-        if (error) {
-            return res.status(400).json({
-                message: 'Failed to create disclosure request',
-                error: error.message
-            });
-        }
-
-        res.status(201).json({
-            message: 'Disclosure request created successfully',
-            request: data
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-export const respondToDisclosureRequest = async (req, res, next) => {
-    const { id } = req.params;
-    const { status, reporter_response } = req.body;
-
-    try {
-        const updateData = {
-            status,
-            reporter_response,
-            response_date: new Date().toISOString()
-        };
-
-        const { data, error } = await supabase
-            .from('disclosure_requests')
-            .update(updateData)
-            .eq('id', id)
-            .select()
-            .single();
-
-        if (error) {
-            return res.status(400).json({
-                message: 'Failed to respond to disclosure request',
-                error: error.message
-            });
-        }
-
-        res.status(200).json({
-            message: 'Disclosure request response submitted successfully',
-            request: data
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-export const getDisclosureRequests = async (req, res, next) => {
-    const { reportId } = req.params;
-
-    try {
-        const { data, error } = await supabase
-            .from('disclosure_requests')
-            .select('*')
-            .eq('report_id', reportId)
-            .order('request_date', { ascending: false });
-
-        if (error) {
-            return res.status(400).json({
-                message: 'Failed to fetch disclosure requests',
-                error: error.message
-            });
-        }
-
-        res.status(200).json(data);
     } catch (error) {
         next(error);
     }
