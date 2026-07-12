@@ -20,7 +20,8 @@ import {
     fetchAgencyResponses,
     updatePropertyOwnerConsent,
     lguResolveReport,
-    citizenCloseReport
+    citizenCloseReport,
+    getSatisfactionAnalytics
 } from '../controllers/report.controller.js';
 import { authenticate, authorize } from '../middleware/auth.middleware.js';
 
@@ -43,6 +44,7 @@ router.get('/cluster/:clusterId', getReportsByClusterId);
 
 // Routes that require LGU/admin role
 router.use(authorize(['lgu', 'admin']));
+router.get('/analytics/satisfaction', getSatisfactionAnalytics);
 router.patch('/:id/status', updateReportStatus);
 router.patch('/:id/lifecycle-stage', updateLifecycleStage);
 router.post('/:id/acknowledge', acknowledgeComplaint);

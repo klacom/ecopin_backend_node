@@ -994,3 +994,52 @@ export const citizenCloseReport = async (req, res, next) => {
         next(error);
     }
 };
+
+// Get satisfaction ratings analytics
+export const getSatisfactionAnalytics = async (req, res, next) => {
+    try {
+        // Get all closed reports with satisfaction ratings
+        const { data, error } = await supabase
+            .from('reports')
+            .select('satisfaction_rating')
+            .not('satisfaction_rating', 'is', null);
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to fetch satisfaction ratings',
+                error: error.message
+            });
+        }
+
+        // Calculate distribution
+        const distribution = {
+            1: 0,
+            2: 0,
+            3: 0,
+            4: 0,
+            5: 0
+        };
+
+        let total = 0;
+        let sum = 0;
+
+        data.forEach(report => {
+            const rating = report.satisfaction_rating;
+            if (rating >= 1 && rating <= 5) {
+                distribution[rating]++;
+                total++;
+                sum += rating;
+            }
+        });
+
+        const average = total > 0 ? sum / total : 0;
+
+        res.status(200).json({
+            total,
+            average: parseFloat(average.toFixed(2)),
+            distribution
+        });
+    } catch (error) {
+        next(error);
+    }
+};
