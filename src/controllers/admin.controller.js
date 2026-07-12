@@ -1,4 +1,66 @@
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
+import { logAuditAction } from "../controllers/auth.controller.js";
+
+// Create user
+export const createUser = async (req, res, next) => {
+    const { email, password, full_name, role } = req.body;
+    const ipAddress = req.ip || req.connection.remoteAddress;
+    const userAgent = req.get('user-agent');
+
+    // Validate role
+    const validRoles = ['citizen', 'lgu', 'admin'];
+    if (!validRoles.includes(role)) {
+        return res.status(400).json({
+            message: 'Invalid role',
+            error: 'Role must be one of: citizen, lgu, admin'
+        });
+    }
+
+    try {
+        // Create user in Supabase Auth
+        const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+            email,
+            password,
+            email_confirm: true
+        });
+
+        if (authError) {
+            return res.status(400).json({
+                message: 'Failed to create user',
+                error: authError.message
+            });
+        }
+
+        // Create profile with role
+        const { data: profileData, error: profileError } = await supabase
+            .from('profiles')
+            .upsert({
+                id: authData.user.id,
+                email: email,
+                full_name: full_name || email.split('@')[0],
+                role: role
+            })
+            .select()
+            .single();
+
+        if (profileError) {
+            return res.status(400).json({
+                message: 'Failed to create user profile',
+                error: profileError.message
+            });
+        }
+
+        // Log user creation event
+        await logAuditAction(req.user.id, 'user_created', `Created user account for ${email}`, ipAddress, userAgent);
+
+        res.status(201).json({
+            message: 'User created successfully',
+            user: profileData
+        });
+    } catch (error) {
+        next(error);
+    }
+};
 
 // Get all users with pagination and filtering
 export const getAllUsers = async (req, res, next) => {

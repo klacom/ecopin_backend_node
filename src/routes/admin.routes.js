@@ -5,6 +5,7 @@ import {
     getUserById,
     updateUserRole,
     deleteUser,
+    createUser,
     getSystemSettings,
     updateSystemSettings,
     getAuditLogs,
@@ -18,6 +19,7 @@ router.use(authenticate);
 router.use(authorize(['admin']));
 
 // User management
+router.post('/users', createUser);
 router.get('/users', getAllUsers);
 router.get('/users/:id', getUserById);
 router.patch('/users/:id/role', updateUserRole);

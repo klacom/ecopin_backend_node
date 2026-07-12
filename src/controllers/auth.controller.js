@@ -5,7 +5,7 @@ import { supabase, supabaseAdmin } from "../config/supabase.config.js";
 import { MOBILE_REDIRECT_URL } from "../config/index.js";
 
 // Helper function to log audit action
-const logAuditAction = async (userId, actionType, actionDetails, ipAddress = null, userAgent = null) => {
+export const logAuditAction = async (userId, actionType, actionDetails, ipAddress = null, userAgent = null) => {
     try {
         await supabaseAdmin
             .from('audit_logs')
@@ -180,6 +180,46 @@ export const resetPassword = async (req, res, next) => {
         await logAuditAction(data.user.id, 'password_change', `User reset password`, ipAddress, userAgent);
 
         res.status(200).json({ message: 'Password reset successful' });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const changePassword = async (req, res, next) => {
+    const { current_password, new_password } = req.body;
+    const ipAddress = req.ip || req.connection.remoteAddress;
+    const userAgent = req.get('user-agent');
+
+    try {
+        // First verify current password by attempting to sign in
+        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+            email: req.user.email,
+            password: current_password
+        });
+
+        if (signInError) {
+            return res.status(400).json({
+                message: 'Current password is incorrect',
+                error: 'Invalid current password'
+            });
+        }
+
+        // Update password using the admin client
+        const { data, error } = await supabaseAdmin.auth.admin.updateUserById(req.user.id, {
+            password: new_password
+        });
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Password change failed',
+                error: error.message
+            });
+        }
+
+        // Log password change event
+        await logAuditAction(req.user.id, 'password_change', `User changed password`, ipAddress, userAgent);
+
+        res.status(200).json({ message: 'Password changed successfully' });
     } catch (error) {
         next(error);
     }
