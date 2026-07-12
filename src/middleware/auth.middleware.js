@@ -3,11 +3,14 @@ import { supabase, supabaseAdmin } from "../config/supabase.config.js";
 export const authenticate = async (req, res, next) => {
     const authHeader = req.headers.authorization;
 
+    console.log('Authenticating request:', { authHeader: authHeader ? `${authHeader.substring(0, 20)}...` : null, path: req.path });
+    
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'No token provided' });
     }
 
     const token = authHeader.split(' ')[1];
+    console.log('Received token:', token ? `${token.substring(0, 20)}...` : null);
 
     try {
         // 1. Verify the JWT and get the user

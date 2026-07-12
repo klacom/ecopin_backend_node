@@ -713,14 +713,23 @@ export const updateLifecycleStage = async (req, res, next) => {
         // Get current stage for audit log and notification
         const { data: currentReport } = await supabase
             .from('reports')
-            .select('stage, user_id')
+            .select('stage, user_id, status')
             .eq('id', id)
             .single();
+
+        // Determine status based on lifecycle stage
+        let status = currentReport?.status || 'unresolved';
+        if (stage === 'acknowledged' || stage === 'responded') {
+            status = 'in_progress';
+        } else if (stage === 'resolved') {
+            status = 'waiting_for_feedback';
+        }
 
         const { data, error } = await supabase
             .from('reports')
             .update({
                 stage: stage,
+                status: status,
                 updated_at: new Date().toISOString()
             })
             .eq('id', id)
