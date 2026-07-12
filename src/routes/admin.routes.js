@@ -30,7 +30,7 @@ router.patch('/settings', updateSystemSettings);
 // Audit logs
 router.get('/audit-logs', getAuditLogs);
 
-// System statistics
-router.get('/stats', getSystemStats);
+// System statistics (accessible by both admin and LGU)
+router.get('/stats', authorize(['admin', 'lgu']), getSystemStats);
 
 export default router;
