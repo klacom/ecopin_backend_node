@@ -599,12 +599,47 @@ export const updateReportStatus = async (req, res, next) => {
             });
         }
 
-        // Log audit action
-        await logAuditAction(id, user_id, 'status_update', 
-            `Changed status from ${currentReport?.status || 'none'} to ${status}`);
-
         res.status(200).json({
             message: 'Report status updated successfully',
+            report: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const updateReportValidation = async (req, res, next) => {
+    const { id } = req.params;
+    const { validation_status } = req.body;
+    const user_id = req.user.id;
+
+    try {
+        // Get current validation status for audit log
+        const { data: currentReport } = await supabase
+            .from('reports')
+            .select('validation_status')
+            .eq('id', id)
+            .single();
+
+        const { data, error } = await supabase
+            .from('reports')
+            .update({
+                validation_status,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to update report validation status',
+                error: error.message
+            });
+        }
+
+        res.status(200).json({
+            message: 'Report validation status updated successfully',
             report: data
         });
     } catch (error) {
@@ -739,13 +774,21 @@ export const updateLifecycleStage = async (req, res, next) => {
             status = 'waiting_for_feedback';
         }
 
+        // Update data - include validation_status when acknowledging
+        const updateData = {
+            stage: stage,
+            status: status,
+            updated_at: new Date().toISOString()
+        };
+
+        // Auto-validate when acknowledging
+        if (stage === 'acknowledged') {
+            updateData.validation_status = 'validated';
+        }
+
         const { data, error } = await supabase
             .from('reports')
-            .update({
-                stage: stage,
-                status: status,
-                updated_at: new Date().toISOString()
-            })
+            .update(updateData)
             .eq('id', id)
             .select()
             .single();
@@ -760,7 +803,7 @@ export const updateLifecycleStage = async (req, res, next) => {
 
         // Log audit action
         await logAuditAction(id, user_id, 'lifecycle_stage_update',
-            `Changed stage from ${currentReport?.stage || 'none'} to ${stage}`);
+            `Changed stage from ${currentReport?.stage || 'none'} to ${stage}${stage === 'acknowledged' ? ' and validated' : ''}`);
 
         // Create notification for the report owner
         if (currentReport?.user_id) {
@@ -782,7 +825,7 @@ export const updateLifecycleStage = async (req, res, next) => {
     }
 };
 
-// Acknowledge complaint (sets stage to 'acknowledged')
+// Acknowledge complaint (sets stage to 'acknowledged' and validation_status to 'validated')
 export const acknowledgeComplaint = async (req, res, next) => {
     const { id } = req.params;
     const user_id = req.user.id;
@@ -792,6 +835,7 @@ export const acknowledgeComplaint = async (req, res, next) => {
             .from('reports')
             .update({ 
                 stage: 'acknowledged',
+                validation_status: 'validated',
                 updated_at: new Date().toISOString()
             })
             .eq('id', id)
@@ -807,7 +851,7 @@ export const acknowledgeComplaint = async (req, res, next) => {
 
         // Log audit action
         await logAuditAction(id, user_id, 'acknowledge_complaint', 
-            'Complaint acknowledged by LGU');
+            'Complaint acknowledged by LGU and validated');
 
         res.status(200).json({
             message: 'Complaint acknowledged successfully',

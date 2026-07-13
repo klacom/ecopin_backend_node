@@ -64,6 +64,63 @@ export const createCleanupTask = async (req, res, next) => {
     }
 };
 
+// Create custom cleanup task with selected report IDs
+export const createCustomCleanupTask = async (req, res, next) => {
+    const { report_ids, title, description } = req.body;
+    const user_id = req.user.id;
+
+    if (!report_ids || !Array.isArray(report_ids) || report_ids.length === 0) {
+        return res.status(400).json({
+            message: 'Report IDs are required',
+            error: 'Please provide at least one report ID'
+        });
+    }
+
+    try {
+        // Create cleanup task with report_ids array (custom task)
+        const { data, error } = await supabase
+            .from('cleanup_tasks')
+            .insert({
+                title,
+                description,
+                status: 'pending',
+                created_by: user_id,
+                is_custom: true,
+                report_ids: report_ids
+            })
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to create cleanup task',
+                error: error.message
+            });
+        }
+
+        // Update selected reports to 'in_progress'
+        const { error: reportsError } = await supabase
+            .from('reports')
+            .update({
+                status: 'in_progress',
+                updated_at: new Date().toISOString()
+            })
+            .in('id', report_ids);
+
+        if (reportsError) {
+            console.error('Failed to update reports to in_progress:', reportsError);
+            // Don't fail the request, just log the error
+        }
+
+        res.status(201).json({
+            message: 'Custom cleanup task created successfully',
+            task: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const getAllCleanupTasks = async (req, res, next) => {
     try {
         const { data, error } = await supabase
@@ -279,23 +336,48 @@ export const markTaskComplete = async (req, res, next) => {
             });
         }
 
-        // 2. Get the cluster_id from the task
-        const clusterId = taskData.cluster_id;
+        // 2. Handle different task types
+        if (taskData.is_custom && taskData.report_ids) {
+            // Custom task: Update reports from report_ids array
+            const reportIds = taskData.report_ids;
 
-        // 3. Update all reports in this cluster to RESOLVED
-        const { error: reportsError } = await supabase
-            .from('reports')
-            .update({
-                status: 'resolved',
-                updated_at: new Date().toISOString()
-            })
-            .eq('cluster_id', clusterId);
+            if (reportIds.length > 0) {
+                const { error: reportsError } = await supabase
+                    .from('reports')
+                    .update({
+                        status: 'resolved',
+                        updated_at: new Date().toISOString()
+                    })
+                    .in('id', reportIds);
 
-        if (reportsError) {
-            return res.status(400).json({
-                message: 'Task marked complete, but failed to update reports',
-                error: reportsError.message
-            });
+                if (reportsError) {
+                    console.error('Failed to update reports:', reportsError);
+                    return res.status(400).json({
+                        message: 'Task marked complete, but failed to update reports',
+                        error: reportsError.message
+                    });
+                }
+            }
+        } else {
+            // Cluster-based task: Update all reports in the cluster
+            const clusterId = taskData.cluster_id;
+
+            if (clusterId) {
+                const { error: reportsError } = await supabase
+                    .from('reports')
+                    .update({
+                        status: 'resolved',
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('cluster_id', clusterId);
+
+                if (reportsError) {
+                    return res.status(400).json({
+                        message: 'Task marked complete, but failed to update reports',
+                        error: reportsError.message
+                    });
+                }
+            }
         }
 
         res.status(200).json({

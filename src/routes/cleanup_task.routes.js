@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
     createCleanupTask,
+    createCustomCleanupTask,
     getAllCleanupTasks,
     getCleanupTaskById,
     uploadCleanupPhoto,
@@ -21,6 +22,7 @@ router.get('/cluster/:clusterId', getTasksByClusterId);
 router.use(authorize(['lgu', 'admin']));
 
 router.post('/', createCleanupTask);
+router.post('/custom', createCustomCleanupTask);
 router.get('/', getAllCleanupTasks);
 router.get('/:id', getCleanupTaskById);
 

@@ -8,6 +8,7 @@ import {
     getReportEvidence,
     upload,
     updateReportStatus,
+    updateReportValidation,
     getReportsByClusterId,
     batchCompleteReportsByCluster,
     addReportNote,
@@ -46,6 +47,7 @@ router.get('/cluster/:clusterId', getReportsByClusterId);
 router.use(authorize(['lgu', 'admin']));
 router.get('/analytics/satisfaction', getSatisfactionAnalytics);
 router.patch('/:id/status', updateReportStatus);
+router.patch('/:id/validation', updateReportValidation);
 router.patch('/:id/lifecycle-stage', updateLifecycleStage);
 router.post('/:id/acknowledge', acknowledgeComplaint);
 router.post('/:id/agency-response', logAgencyResponse);
