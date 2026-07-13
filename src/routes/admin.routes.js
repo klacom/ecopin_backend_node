@@ -14,23 +14,22 @@ import {
 
 const router = Router();
 
-// All admin routes require authentication and admin role
+// All admin routes require authentication
 router.use(authenticate);
-router.use(authorize(['admin']));
 
-// User management
-router.post('/users', createUser);
-router.get('/users', getAllUsers);
-router.get('/users/:id', getUserById);
-router.patch('/users/:id/role', updateUserRole);
-router.delete('/users/:id', deleteUser);
+// User management (admin only)
+router.post('/users', authorize(['admin']), createUser);
+router.get('/users', authorize(['admin']), getAllUsers);
+router.get('/users/:id', authorize(['admin']), getUserById);
+router.patch('/users/:id/role', authorize(['admin']), updateUserRole);
+router.delete('/users/:id', authorize(['admin']), deleteUser);
 
-// System settings
-router.get('/settings', getSystemSettings);
-router.patch('/settings', updateSystemSettings);
+// System settings (admin only)
+router.get('/settings', authorize(['admin']), getSystemSettings);
+router.patch('/settings', authorize(['admin']), updateSystemSettings);
 
-// Audit logs
-router.get('/audit-logs', getAuditLogs);
+// Audit logs (admin only)
+router.get('/audit-logs', authorize(['admin']), getAuditLogs);
 
 // System statistics (accessible by both admin and LGU)
 router.get('/stats', authorize(['admin', 'lgu']), getSystemStats);
