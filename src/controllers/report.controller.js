@@ -536,20 +536,34 @@ export const getReportById = async (req, res, next) => {
     const { id } = req.params;
 
     try {
-        const { data, error } = await supabase
+        const { data: report, error: reportError } = await supabase
             .from('reports_view')
-            .select('*, profiles(full_name, data_consent)')
+            .select('*, profiles(id, full_name, data_consent)')
             .eq('id', id)
             .single();
 
-        if (error) {
+        if (reportError) {
             return res.status(404).json({
                 message: 'Report not found',
-                error: error.message
+                error: reportError.message
             });
         }
 
-        res.status(200).json(data);
+        // Fetch response logs (activity logs and agency responses)
+        const { data: responseLogs, error: logsError } = await supabase
+            .from('response_log')
+            .select('*, profiles(full_name)')
+            .eq('report_id', id)
+            .order('created_at', { ascending: false });
+
+        if (logsError) {
+            console.error('Error fetching response logs:', logsError);
+        }
+
+        res.status(200).json({
+            ...report,
+            response_logs: responseLogs || []
+        });
     } catch (error) {
         next(error);
     }
