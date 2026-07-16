@@ -18,10 +18,11 @@ export const RATE_LIMIT_MAX_REQUESTS = process.env.RATE_LIMIT_MAX_REQUESTS || 10
 export const MIN_PASSWORD_LENGTH = 8;
 
 export const VALIDATION_STATUS = {
-    AUTOMATICALLY_VALID: 'automatically_valid',
+    PENDING_AI_VALIDATION: 'pending_ai_validation',
+    APPROVED: 'approved',
     MANUAL_REVIEW: 'manual_review',
     REJECTED: 'rejected',
-    PENDING: 'pending'
+    ARCHIVED: 'archived'
 };
 
 export const IMAGE_VALIDATION_WEIGHTS = {
@@ -59,6 +60,16 @@ export const OBJECT_KEYWORDS = {
     waste: ['bottle', 'cup', 'handbag', 'suitcase', 'backpack'], // COCO-SSD limited set, mapping trash-like items
     flooding: ['boat', 'car', 'truck', 'bus'], // Items often submerged or in water
     pollution: ['train', 'truck', 'car'] // Associated with emissions/oil
+};
+
+// Severe Violation Keywords for content moderation
+export const SEVERE_VIOLATION_KEYWORDS = {
+    nudity: ['naked', 'nude', 'bare', 'skin', 'body', 'underwear', 'lingerie', 'bikini', 'swimsuit'],
+    pornography: ['porn', 'erotic', 'sexual', 'explicit', 'adult', 'xxx', 'nude', 'naked'],
+    graphic_violence: ['blood', 'gore', 'violent', 'violence', 'injury', 'wound', 'kill', 'murder', 'death', 'corpse'],
+    gore: ['gore', 'blood', 'guts', 'intestine', 'dismembered', 'decapitated', 'mutilated', 'graphic'],
+    terrorism: ['terror', 'bomb', 'explosion', 'weapon', 'gun', 'rifle', 'explosive', 'isis', 'al qaeda'],
+    hate_symbols: ['swastika', 'nazi', 'kkk', 'confederate', 'hate', 'racist', 'discrimination']
 };
 
 // File size limits for different uploads

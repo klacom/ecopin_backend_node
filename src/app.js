@@ -14,6 +14,8 @@ import profileRoutes from './routes/profile.routes.js';
 import cleanupTaskRoutes from './routes/cleanup_task.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import responseLogRoutes from './routes/response_log.routes.js';
+import strikeRoutes from './routes/strike.routes.js';
+import manualReviewRoutes from './routes/manualReview.routes.js';
 
 // Import middleware
 import { errorHandler } from './middleware/errorHandler.middleware.js';
@@ -47,6 +49,8 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/cleanup-tasks', cleanupTaskRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/response-logs', responseLogRoutes);
+app.use('/api/strikes', strikeRoutes);
+app.use('/api/manual-review', manualReviewRoutes);
 
 // 404 handler
 app.use((req, res) => {

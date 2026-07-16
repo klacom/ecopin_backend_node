@@ -411,7 +411,7 @@ export const createReport = async (req, res, next) => {
         req.body.on_private_property === "true";
 
     try {
-        // Validate image if present
+        // Validate image format if present
         if (image) {
             const fileExt = image.originalname.split('.').pop()?.toLowerCase();
             if (!fileExt || !VALID_IMAGE_EXTENSIONS.includes(fileExt)) {
@@ -421,38 +421,16 @@ export const createReport = async (req, res, next) => {
             }
         }
 
-        let validationStatus = VALIDATION_STATUS.PENDING;
-        let aiScore = 0;
-
-        // If an image is provided, validate it using TensorFlow
-        if (image) {
-            // console.log("IMAGE BUFFER: ", image.buffer)
-            const validation = await validateImage(image.buffer);
-            aiScore = validation.score;
-            validationStatus = validation.status;
-
-            if (validationStatus === VALIDATION_STATUS.REJECTED) {
-                return res.status(400).json({
-                    message: 'Image validation failed. The image does not seem relevant to environmental issues.',
-                    ai_score: aiScore,
-                    details: validation.details
-                });
-            }
-        }
+        // Set initial validation status to pending AI validation
+        const validationStatus = VALIDATION_STATUS.PENDING_AI_VALIDATION;
 
         // PostGIS point format: 'POINT(longitude latitude)'
         const point = `POINT(${longitude} ${latitude})`;
 
-        // console.log("IS ON PRIVATE PROPERTY: ", onPrivateProperty);
-        // console.log("TYPE OF ON PRIVATE PROPERTY: ", typeof onPrivateProperty);
-
-        // console.log(req.body.onPrivateProperty);
-        // console.log(typeof req.body.onPrivateProperty);
-
         // Determine property owner consent status
         const propertyOwnerConsentStatus = onPrivateProperty ? 'pending' : 'not_required';
 
-        const { data, error } = await supabase
+        const { data: report, error } = await supabase
             .from('reports')
             .insert({
                 user_id,
@@ -475,16 +453,171 @@ export const createReport = async (req, res, next) => {
             });
         }
 
+        // Send response to user immediately
         res.status(201).json({
-            message: 'Report created successfully',
-            report: data,
-            ai_score: aiScore
+            message: 'Report submitted successfully! AI validation is in progress.',
+            report: report
         });
 
-        // Trigger clustering in the background (don't wait for it)
-        clusterReports().catch(err => {
-            console.error('Error in background clustering:', err);
-        });
+        // Send pending validation notification
+        createNotification(
+            user_id,
+            report.id,
+            'pending_validation',
+            'Report Submitted',
+            'Your report is currently undergoing AI validation.'
+        ).catch(err => console.error('Failed to send pending validation notification:', err));
+
+        // Trigger background tasks without waiting
+        (async () => {
+            try {
+                // Run AI validation in background if image is present
+                if (image) {
+                    const validation = await validateImage(image.buffer);
+                    
+                    // Handle severe violations
+                    if (validation.severeViolation) {
+                        console.log(`[SevereViolation] Detected in report ${report.id}: ${validation.severeCategories.join(', ')}`);
+                        
+                        // Get system settings for severe violation handling
+                        const { data: settings } = await supabase
+                            .from('system_settings')
+                            .select('*')
+                            .single();
+                        
+                        // Update report with severe violation flags
+                        const severeCategory = validation.severeCategories[0] || 'other';
+                        await supabase
+                            .from('reports')
+                            .update({
+                                validation_status: VALIDATION_STATUS.REJECTED,
+                                flagged_severe: true,
+                                severe_violation_category: severeCategory,
+                                rejection_reason: `Severe content violation detected: ${severeCategory}`,
+                                updated_at: new Date().toISOString()
+                            })
+                            .eq('id', report.id);
+                        
+                        // Add to manual review queue
+                        const { data: reviewItem } = await supabase
+                            .from('manual_review_queue')
+                            .insert({
+                                report_id: report.id,
+                                review_type: 'severe_violation',
+                                priority: 'urgent',
+                                status: 'pending'
+                            })
+                            .select()
+                            .single();
+                        
+                        // Link report to review queue
+                        await supabase
+                            .from('reports')
+                            .update({
+                                manual_review_id: reviewItem.id
+                            })
+                            .eq('id', report.id);
+                        
+                        // Issue immediate strike if configured
+                        if (settings && settings.severe_violation_immediate_strike) {
+                            const suspensionDuration = settings.severe_violation_action === 'suspend_7d' 
+                                ? settings.severe_violation_duration_hours || 168
+                                : settings.severe_violation_action === 'suspend_24h'
+                                    ? settings.severe_violation_duration_hours || 24
+                                    : settings.severe_violation_action === 'permanent_ban'
+                                        ? -1
+                                        : null;
+                            
+                            // Create strike
+                            const { data: strike } = await supabase
+                                .from('strikes')
+                                .insert({
+                                    user_id,
+                                    reason: `Severe content violation: ${severeCategory}`,
+                                    violation_type: 'severe_content',
+                                    issued_by: user_id, // System-issued
+                                    severity: 'severe',
+                                    severe_category: severeCategory,
+                                    requires_manual_review: true,
+                                    manual_review_status: 'pending',
+                                    is_active: true
+                                })
+                                .select()
+                                .single();
+                            
+                            // Link strike to review queue
+                            await supabase
+                                .from('manual_review_queue')
+                                .update({
+                                    strike_id: strike.id
+                                })
+                                .eq('id', reviewItem.id);
+                            
+                            // Apply suspension
+                            if (suspensionDuration !== null) {
+                                let suspendedUntil = null;
+                                if (suspensionDuration === -1) {
+                                    suspendedUntil = new Date('2099-12-31').toISOString();
+                                } else {
+                                    const now = new Date();
+                                    suspendedUntil = new Date(now.getTime() + suspensionDuration * 60 * 60 * 1000).toISOString();
+                                }
+                                
+                                await supabase
+                                    .from('profiles')
+                                    .update({
+                                        suspended_until: suspendedUntil,
+                                        strike_count: 1,
+                                        last_strike_at: new Date().toISOString(),
+                                        updated_at: new Date().toISOString()
+                                    })
+                                    .eq('id', user_id);
+                            }
+                        }
+                    } else {
+                        // Normal validation flow
+                        await supabase
+                            .from('reports')
+                            .update({
+                                validation_status: validation.status,
+                                updated_at: new Date().toISOString()
+                            })
+                            .eq('id', report.id);
+
+                        // Send notification based on validation result
+                        if (validation.status === VALIDATION_STATUS.APPROVED) {
+                            createNotification(
+                                user_id,
+                                report.id,
+                                'approved',
+                                'Report Approved',
+                                'Your report has been approved.'
+                            ).catch(err => console.error('Failed to send approval notification:', err));
+                        } else if (validation.status === VALIDATION_STATUS.REJECTED) {
+                            createNotification(
+                                user_id,
+                                report.id,
+                                'rejected',
+                                'Report Rejected',
+                                'Your report violated our image policy.'
+                            ).catch(err => console.error('Failed to send rejection notification:', err));
+                        } else if (validation.status === VALIDATION_STATUS.MANUAL_REVIEW) {
+                            createNotification(
+                                user_id,
+                                report.id,
+                                'manual_review',
+                                'Report Under Review',
+                                'Your report has been flagged for manual review.'
+                            ).catch(err => console.error('Failed to send manual review notification:', err));
+                        }
+                    }
+                }
+                // Trigger clustering
+                await clusterReports();
+            } catch (err) {
+                console.error('Error in background tasks:', err);
+            }
+        })();
     } catch (error) {
         next(error);
     }
@@ -526,7 +659,13 @@ export const getPublicReports = async (req, res, next) => {
             });
         }
 
-        res.status(200).json(data);
+        // Filter out rejected reports and reports with denied consent
+        const filteredData = (data || []).filter(report =>
+            report.validation_status !== 'rejected' &&
+            !(report.on_private_property && report.property_owner_consent_status === 'denied')
+        );
+
+        res.status(200).json(filteredData);
     } catch (error) {
         next(error);
     }
@@ -610,23 +749,35 @@ export const updateReportStatus = async (req, res, next) => {
 
 export const updateReportValidation = async (req, res, next) => {
     const { id } = req.params;
-    const { validation_status } = req.body;
+    const { validation_status, rejection_reason } = req.body;
     const user_id = req.user.id;
 
     try {
         // Get current validation status for audit log
         const { data: currentReport } = await supabase
             .from('reports')
-            .select('validation_status')
+            .select('validation_status, user_id')
             .eq('id', id)
             .single();
 
+        const updateData = {
+            validation_status,
+            updated_at: new Date().toISOString()
+        };
+
+        // Set rejection reason and timestamp if rejecting
+        if (validation_status === 'rejected') {
+            updateData.rejection_reason = rejection_reason || null;
+            updateData.rejected_at = new Date().toISOString();
+        } else {
+            // Clear rejection fields if not rejected
+            updateData.rejection_reason = null;
+            updateData.rejected_at = null;
+        }
+
         const { data, error } = await supabase
             .from('reports')
-            .update({
-                validation_status,
-                updated_at: new Date().toISOString()
-            })
+            .update(updateData)
             .eq('id', id)
             .select()
             .single();
@@ -636,6 +787,19 @@ export const updateReportValidation = async (req, res, next) => {
                 message: 'Failed to update report validation status',
                 error: error.message
             });
+        }
+
+        // Create notification for the report owner if rejected
+        if (validation_status === 'rejected' && currentReport?.user_id) {
+            await createNotification(
+                currentReport.user_id,
+                id,
+                'rejected',
+                'Report Rejected',
+                rejection_reason
+                    ? `Your report has been rejected: ${rejection_reason}`
+                    : 'Your report has been rejected.'
+            );
         }
 
         res.status(200).json({
@@ -665,8 +829,8 @@ export const getReportsByClusterId = async (req, res, next) => {
         }
 
         // Filter out rejected and denied reports
-        const filteredData = (data || []).filter(report => 
-            report.validation_status !== 'rejected' && 
+        const filteredData = (data || []).filter(report =>
+            report.validation_status !== 'rejected' &&
             !(report.on_private_property && report.property_owner_consent_status === 'denied')
         );
 
@@ -732,14 +896,15 @@ const logAuditAction = async (reportId, userId, actionType, actionDetails) => {
 };
 
 // Helper function to create notification
-const createNotification = async (userId, reportId, title, body) => {
+const createNotification = async (userId, reportId, type, title, body) => {
     try {
-        console.log('Creating notification:', { userId, reportId, title, body });
+        console.log('Creating notification:', { userId, reportId, type, title, body });
         const { data, error } = await supabase
             .from('notifications')
             .insert({
                 user_id: userId,
                 report_id: reportId,
+                type,
                 title,
                 body,
                 is_read: false
@@ -787,9 +952,9 @@ export const updateLifecycleStage = async (req, res, next) => {
             updated_at: new Date().toISOString()
         };
 
-        // Auto-validate when acknowledging
+        // Auto-approve when acknowledging
         if (stage === 'acknowledged') {
-            updateData.validation_status = 'validated';
+            updateData.validation_status = VALIDATION_STATUS.APPROVED;
         }
 
         const { data, error } = await supabase
@@ -809,13 +974,14 @@ export const updateLifecycleStage = async (req, res, next) => {
 
         // Log audit action
         await logAuditAction(id, user_id, 'lifecycle_stage_update',
-            `Changed stage from ${currentReport?.stage || 'none'} to ${stage}${stage === 'acknowledged' ? ' and validated' : ''}`);
+            `Changed stage from ${currentReport?.stage || 'none'} to ${stage}${stage === 'acknowledged' ? ' and approved' : ''}`);
 
         // Create notification for the report owner
         if (currentReport?.user_id) {
             await createNotification(
                 currentReport.user_id,
                 id,
+                'lifecycle_update',
                 'Lifecycle Stage Updated',
                 `Your report lifecycle stage has been updated to ${stage}`
             );
@@ -831,7 +997,7 @@ export const updateLifecycleStage = async (req, res, next) => {
     }
 };
 
-// Acknowledge complaint (sets stage to 'acknowledged' and validation_status to 'validated')
+// Acknowledge complaint (sets stage to 'acknowledged' and validation_status to 'approved')
 export const acknowledgeComplaint = async (req, res, next) => {
     const { id } = req.params;
     const user_id = req.user.id;
@@ -839,9 +1005,9 @@ export const acknowledgeComplaint = async (req, res, next) => {
     try {
         const { data, error } = await supabase
             .from('reports')
-            .update({ 
+            .update({
                 stage: 'acknowledged',
-                validation_status: 'validated',
+                validation_status: 'approved',
                 updated_at: new Date().toISOString()
             })
             .eq('id', id)
@@ -856,8 +1022,8 @@ export const acknowledgeComplaint = async (req, res, next) => {
         }
 
         // Log audit action
-        await logAuditAction(id, user_id, 'acknowledge_complaint', 
-            'Complaint acknowledged by LGU and validated');
+        await logAuditAction(id, user_id, 'acknowledge_complaint',
+            'Complaint acknowledged by LGU and approved');
 
         res.status(200).json({
             message: 'Complaint acknowledged successfully',
@@ -1003,6 +1169,7 @@ export const lguResolveReport = async (req, res, next) => {
             await createNotification(
                 currentReport.user_id,
                 id,
+                'resolved',
                 'Report Resolved',
                 'The LGU has resolved your report! Please provide feedback.'
             );
@@ -1111,6 +1278,89 @@ export const getSatisfactionAnalytics = async (req, res, next) => {
             total,
             average: parseFloat(average.toFixed(2)),
             distribution
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Create new report from rejected report (copies title, description, location only)
+export const createReportFromRejected = async (req, res, next) => {
+    const { id } = req.params;
+    const user_id = req.user.id;
+
+    try {
+        // Fetch the rejected report
+        const { data: originalReport, error: fetchError } = await supabase
+            .from('reports')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        if (fetchError) {
+            return res.status(404).json({
+                message: 'Report not found',
+                error: fetchError.message
+            });
+        }
+
+        // Verify the report belongs to the current user
+        if (originalReport.user_id !== user_id) {
+            return res.status(403).json({
+                message: 'You can only create new reports from your own rejected reports'
+            });
+        }
+
+        // Verify the report is rejected
+        if (originalReport.validation_status !== 'rejected') {
+            return res.status(400).json({
+                message: 'You can only create new reports from rejected reports'
+            });
+        }
+
+        // Parse location from PostGIS point format
+        let latitude = null;
+        let longitude = null;
+        if (originalReport.location) {
+            try {
+                // Handle PostGIS point format: 'POINT(longitude latitude)'
+                const match = originalReport.location.match(/POINT\s*\(([^]+)\s+([^]+)\)/i);
+                if (match) {
+                    longitude = parseFloat(match[1]);
+                    latitude = parseFloat(match[2]);
+                }
+            } catch (error) {
+                console.error('Error parsing location:', error);
+            }
+        }
+
+        // Create new report with copied data
+        const { data: newReport, error: createError } = await supabase
+            .from('reports')
+            .insert({
+                user_id,
+                title: originalReport.title,
+                description: originalReport.description,
+                issue_type: originalReport.issue_type,
+                location: originalReport.location,
+                on_private_property: originalReport.on_private_property,
+                property_owner_consent_status: originalReport.on_private_property ? 'pending' : 'not_required',
+                status: originalReport.on_private_property ? 'pending_owner_consent' : 'unresolved',
+                validation_status: VALIDATION_STATUS.PENDING
+            })
+            .select()
+            .single();
+
+        if (createError) {
+            return res.status(400).json({
+                message: 'Failed to create new report',
+                error: createError.message
+            });
+        }
+
+        res.status(201).json({
+            message: 'New report created successfully from rejected report',
+            report: newReport
         });
     } catch (error) {
         next(error);

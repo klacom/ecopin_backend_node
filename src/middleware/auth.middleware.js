@@ -1,4 +1,5 @@
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
+import { checkSuspension, expireOldStrikes } from "./strike.middleware.js";
 
 export const authenticate = async (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -37,7 +38,10 @@ export const authenticate = async (req, res, next) => {
 
         // Attach user and role to request object
         req.user = user;
-        next();
+
+        // 3. Check for suspension and expire old strikes
+        await expireOldStrikes(req, res, () => {});
+        await checkSuspension(req, res, next);
     } catch (error) {
         return res.status(401).json({ error: 'Authentication failed' });
     }

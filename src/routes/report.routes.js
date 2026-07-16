@@ -22,7 +22,8 @@ import {
     updatePropertyOwnerConsent,
     lguResolveReport,
     citizenCloseReport,
-    getSatisfactionAnalytics
+    getSatisfactionAnalytics,
+    createReportFromRejected
 } from '../controllers/report.controller.js';
 import { authenticate, authorize } from '../middleware/auth.middleware.js';
 
@@ -41,6 +42,7 @@ router.get('/:id', getReportById);
 router.post('/:reportId/evidence', upload.single('image'), uploadEvidence);
 router.get('/:reportId/evidence', getReportEvidence);
 router.patch('/:id/close', citizenCloseReport); // Citizen can close their own report
+router.post('/:id/create-new', createReportFromRejected); // Create new report from rejected
 router.get('/cluster/:clusterId', getReportsByClusterId);
 
 // Routes that require LGU/admin role

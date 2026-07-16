@@ -3,7 +3,7 @@ import * as mobilenet from '@tensorflow-models/mobilenet';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import sharp from 'sharp';
 import { bufferToTensor } from './tfUtils.js';
-import { IMAGE_VALIDATION_WEIGHTS, IMAGE_VALIDATION_THRESHOLDS, VALIDATION_STATUS, ISSUE_CATEGORIES, VALID_SCENES, INVALID_SCENES, OBJECT_KEYWORDS } from '../config/index.js';
+import { IMAGE_VALIDATION_WEIGHTS, IMAGE_VALIDATION_THRESHOLDS, VALIDATION_STATUS, ISSUE_CATEGORIES, VALID_SCENES, INVALID_SCENES, OBJECT_KEYWORDS, SEVERE_VIOLATION_KEYWORDS } from '../config/index.js';
 
 let mobilenetModel = null;
 let cocoSsdModel = null;
@@ -16,6 +16,44 @@ const loadModels = async () => {
     if (!cocoSsdModel) {
         cocoSsdModel = await cocoSsd.load();
     }
+};
+
+// Check for severe violations in image content
+const checkSevereViolations = (mobilenetPredictions, cocoPredictions) => {
+    const detectedViolations = [];
+    
+    // Check MobileNet predictions for severe content keywords
+    const topPredictions = mobilenetPredictions.slice(0, 5).map(p => p.className.toLowerCase());
+    
+    for (const [category, keywords] of Object.entries(SEVERE_VIOLATION_KEYWORDS)) {
+        for (const prediction of topPredictions) {
+            if (keywords.some(keyword => prediction.includes(keyword))) {
+                if (!detectedViolations.includes(category)) {
+                    detectedViolations.push(category);
+                }
+                break;
+            }
+        }
+    }
+    
+    // Check COCO-SSD objects for severe content indicators
+    const detectedObjects = cocoPredictions.map(p => p.class.toLowerCase());
+    const severeObjectKeywords = ['person', 'naked', 'blood', 'weapon', 'gun', 'knife'];
+    
+    for (const obj of detectedObjects) {
+        if (severeObjectKeywords.some(keyword => obj.includes(keyword))) {
+            // Additional context needed to determine if it's severe
+            // For now, flag for manual review if person detected with other indicators
+            if (detectedViolations.length > 0 && !detectedViolations.includes('manual_review')) {
+                detectedViolations.push('manual_review');
+            }
+        }
+    }
+    
+    return {
+        hasSevereViolation: detectedViolations.length > 0,
+        categories: detectedViolations
+    };
 };
 
 // Image Validation 
@@ -39,8 +77,29 @@ export const validateImage = async (imageBuffer) => {
     const cocoPredictions = await cocoSsdModel.detect(tensor);
     const objectScore = analyzeCocoSsd(cocoPredictions, predictedCategory);
 
+    // 5. Check for severe violations
+    const severeViolationCheck = checkSevereViolations(mobilenetPredictions, cocoPredictions);
+
     // Cleanup tensor
     tensor.dispose();
+
+    // If severe violation detected, immediately reject
+    if (severeViolationCheck.hasSevereViolation) {
+        console.log(`[ImageValidation] SEVERE VIOLATION DETECTED: ${severeViolationCheck.categories.join(', ')}`);
+        return {
+            score: 0,
+            status: VALIDATION_STATUS.REJECTED,
+            predictedCategory,
+            severeViolation: true,
+            severeCategories: severeViolationCheck.categories,
+            details: {
+                relevance: relevanceScore,
+                objects: objectScore,
+                scene: sceneScore,
+                quality: qualityScore
+            }
+        };
+    }
 
     // Calculate Final Score
     const finalScore = (
@@ -54,7 +113,7 @@ export const validateImage = async (imageBuffer) => {
 
     let status = VALIDATION_STATUS.REJECTED;
     if (finalScore >= IMAGE_VALIDATION_THRESHOLDS.VALID) {
-        status = VALIDATION_STATUS.AUTOMATICALLY_VALID;
+        status = VALIDATION_STATUS.APPROVED;
     } else if (finalScore >= IMAGE_VALIDATION_THRESHOLDS.REVIEW) {
         status = VALIDATION_STATUS.MANUAL_REVIEW;
     }
@@ -63,6 +122,7 @@ export const validateImage = async (imageBuffer) => {
         score: finalScore,
         status,
         predictedCategory,
+        severeViolation: false,
         details: {
             relevance: relevanceScore,
             objects: objectScore,
