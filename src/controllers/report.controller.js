@@ -664,7 +664,13 @@ export const getReportsByClusterId = async (req, res, next) => {
             });
         }
 
-        res.status(200).json(data);
+        // Filter out rejected and denied reports
+        const filteredData = (data || []).filter(report => 
+            report.validation_status !== 'rejected' && 
+            !(report.on_private_property && report.property_owner_consent_status === 'denied')
+        );
+
+        res.status(200).json(filteredData);
     } catch (error) {
         next(error);
     }

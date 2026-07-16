@@ -338,50 +338,15 @@ export const markTaskComplete = async (req, res, next) => {
 
         // 2. Handle different task types
         if (taskData.is_custom && taskData.report_ids) {
-            // Custom task: Update reports from report_ids array
+            // Custom task: No need to update reports status
             const reportIds = taskData.report_ids;
-
-            if (reportIds.length > 0) {
-                const { error: reportsError } = await supabase
-                    .from('reports')
-                    .update({
-                        status: 'resolved',
-                        updated_at: new Date().toISOString()
-                    })
-                    .in('id', reportIds);
-
-                if (reportsError) {
-                    console.error('Failed to update reports:', reportsError);
-                    return res.status(400).json({
-                        message: 'Task marked complete, but failed to update reports',
-                        error: reportsError.message
-                    });
-                }
-            }
         } else {
-            // Cluster-based task: Update all reports in the cluster
+            // Cluster-based task: No need to update reports status
             const clusterId = taskData.cluster_id;
-
-            if (clusterId) {
-                const { error: reportsError } = await supabase
-                    .from('reports')
-                    .update({
-                        status: 'resolved',
-                        updated_at: new Date().toISOString()
-                    })
-                    .eq('cluster_id', clusterId);
-
-                if (reportsError) {
-                    return res.status(400).json({
-                        message: 'Task marked complete, but failed to update reports',
-                        error: reportsError.message
-                    });
-                }
-            }
         }
 
         res.status(200).json({
-            message: 'Cleanup task completed successfully, all linked reports marked as resolved',
+            message: 'Cleanup task completed successfully',
             task: taskData
         });
     } catch (error) {
