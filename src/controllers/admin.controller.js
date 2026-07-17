@@ -31,12 +31,11 @@ export const createUser = async (req, res, next) => {
             });
         }
 
-        // Create profile with role
+        // Create profile with role (no email column)
         const { data: profileData, error: profileError } = await supabase
             .from('profiles')
             .upsert({
                 id: authData.user.id,
-                email: email,
                 full_name: full_name || email.split('@')[0],
                 role: role
             })
@@ -62,44 +61,71 @@ export const createUser = async (req, res, next) => {
     }
 };
 
-// Get all users with pagination and filtering
+ // Get all users with pagination and filtering
 export const getAllUsers = async (req, res, next) => {
     const { page = 1, limit = 20, search = '', role = '' } = req.query;
     const offset = (page - 1) * limit;
 
+    console.log('getAllUsers called with:', { page, limit, search, role });
+
     try {
+        // First, fetch all profiles (without search/email filter first)
         let query = supabase
             .from('profiles')
             .select('*', { count: 'exact' })
-            .range(offset, offset + limit - 1)
             .order('created_at', { ascending: false });
 
-        // Apply role filter
+        // Apply role filter (this can be done in Supabase)
         if (role) {
+            console.log('Applying role filter:', role);
             query = query.eq('role', role);
         }
 
-        // Apply search filter
-        if (search) {
-            query = query.or(`full_name.ilike.%${search}%,email.ilike.%${search}%`);
-        }
-
-        const { data, error, count } = await query;
-
-        if (error) {
+        // First get all matching profiles (without search)
+        const { data: allProfiles, error: profilesError } = await query;
+        
+        if (profilesError) {
             return res.status(400).json({
                 message: 'Failed to fetch users',
-                error: error.message
+                error: profilesError.message
             });
         }
 
+        // Now fetch all emails from auth.users for these profiles
+        const usersWithEmails = await Promise.all(allProfiles.map(async (user) => {
+            try {
+                const { data: authUser } = await supabase.auth.admin.getUserById(user.id);
+                if (authUser?.user?.email) {
+                    return { ...user, email: authUser.user.email };
+                }
+                return { ...user, email: 'N/A' };
+            } catch (authError) {
+                console.error('Failed to fetch email for user:', user.id, authError);
+                return { ...user, email: 'N/A' };
+            }
+        }));
+
+        // Now apply search filter in JavaScript
+        let filteredUsers = usersWithEmails;
+        if (search) {
+            const searchLower = search.toLowerCase();
+            filteredUsers = usersWithEmails.filter(user => 
+                (user.full_name && user.full_name.toLowerCase().includes(searchLower)) || 
+                (user.email && user.email.toLowerCase().includes(searchLower))
+            );
+        }
+
+        // Apply pagination
+        const total = filteredUsers.length;
+        const paginatedUsers = filteredUsers.slice(offset, offset + parseInt(limit));
+
         res.status(200).json({
-            users: data,
+            users: paginatedUsers,
             pagination: {
                 page: parseInt(page),
                 limit: parseInt(limit),
-                total: count || 0,
-                totalPages: Math.ceil((count || 0) / limit)
+                total: total,
+                totalPages: Math.ceil(total / parseInt(limit))
             }
         });
     } catch (error) {
@@ -112,20 +138,35 @@ export const getUserById = async (req, res, next) => {
     const { id } = req.params;
 
     try {
-        const { data, error } = await supabase
+        const { data: profile, error: profileError } = await supabase
             .from('profiles')
-            .select('*, auth.users(email, created_at, last_sign_in_at)')
+            .select('*')
             .eq('id', id)
             .single();
 
-        if (error) {
+        if (profileError) {
             return res.status(404).json({
                 message: 'User not found',
-                error: error.message
+                error: profileError.message
             });
         }
 
-        res.status(200).json(data);
+        // Fetch auth user data separately
+        let authUserData = {};
+        try {
+            const { data: authUser } = await supabase.auth.admin.getUserById(id);
+            if (authUser?.user) {
+                authUserData = {
+                    email: authUser.user.email,
+                    created_at: authUser.user.created_at,
+                    last_sign_in_at: authUser.user.last_sign_in_at
+                };
+            }
+        } catch (authError) {
+            console.error('Failed to fetch auth user data for:', id, authError);
+        }
+
+        res.status(200).json({ ...profile, auth: authUserData });
     } catch (error) {
         next(error);
     }
