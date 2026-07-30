@@ -9,6 +9,7 @@ import {
     liftSuspension
 } from '../controllers/strike.controller.js';
 import { authenticate, authorize } from '../middleware/auth.middleware.js';
+import { ROLE_GROUPS } from '../constants/roles.js';
 
 const router = Router();
 
@@ -23,7 +24,7 @@ router.get('/my/suspension-status', (req, res, next) => {
 });
 
 // Routes for admins to manage strikes
-router.use(authorize(['admin', 'lgu']));
+router.use(authorize(ROLE_GROUPS.DESK_OPS));
 
 router.post('/', issueStrike);
 router.get('/all', getAllStrikes);

@@ -1,4 +1,5 @@
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
+import { ROLE } from "../constants/roles.js";
 
 // Helper function to calculate suspension duration based on strike count and system settings
 const calculateSuspensionDuration = async (strikeCount) => {
@@ -262,7 +263,7 @@ export const getUserStrikes = async (req, res, next) => {
     try {
         // Check if the requesting user is an admin or the user themselves
         const isSelf = req.user.id === userId;
-        const isAdmin = req.user.role === 'admin' || req.user.role === 'lgu';
+        const isAdmin = req.user.role === ROLE.ADMIN || req.user.role === ROLE.OFFICER;
 
         if (!isSelf && !isAdmin) {
             return res.status(403).json({

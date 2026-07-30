@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate, authorize } from '../middleware/auth.middleware.js';
+import { ROLE_GROUPS } from '../constants/roles.js';
 import {
     getAllUsers,
     getUserById,
@@ -31,7 +32,7 @@ router.patch('/settings', authorize(['admin']), updateSystemSettings);
 // Audit logs (admin only)
 router.get('/audit-logs', authorize(['admin']), getAuditLogs);
 
-// System statistics (accessible by both admin and LGU)
-router.get('/stats', authorize(['admin', 'lgu']), getSystemStats);
+// System statistics (accessible by admin and officer)
+router.get('/stats', authorize(ROLE_GROUPS.STATS_VIEWERS), getSystemStats);
 
 export default router;

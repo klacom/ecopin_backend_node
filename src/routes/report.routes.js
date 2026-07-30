@@ -26,6 +26,7 @@ import {
     createReportFromRejected
 } from '../controllers/report.controller.js';
 import { authenticate, authorize } from '../middleware/auth.middleware.js';
+import { ROLE_GROUPS } from '../constants/roles.js';
 
 const router = Router();
 
@@ -45,8 +46,8 @@ router.patch('/:id/close', citizenCloseReport); // Citizen can close their own r
 router.post('/:id/create-new', createReportFromRejected); // Create new report from rejected
 router.get('/cluster/:clusterId', getReportsByClusterId);
 
-// Routes that require LGU/admin role
-router.use(authorize(['lgu', 'admin']));
+// Routes that require officer/admin role
+router.use(authorize(ROLE_GROUPS.REPORT_MGMT));
 router.get('/analytics/satisfaction', getSatisfactionAnalytics);
 router.patch('/:id/status', updateReportStatus);
 router.patch('/:id/validation', updateReportValidation);

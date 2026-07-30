@@ -1,5 +1,6 @@
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import { logAuditAction } from "../controllers/auth.controller.js";
+import { ALL_ROLES } from "../constants/roles.js";
 
 // Create user
 export const createUser = async (req, res, next) => {
@@ -8,11 +9,10 @@ export const createUser = async (req, res, next) => {
     const userAgent = req.get('user-agent');
 
     // Validate role
-    const validRoles = ['citizen', 'lgu', 'admin'];
-    if (!validRoles.includes(role)) {
+    if (!ALL_ROLES.includes(role)) {
         return res.status(400).json({
             message: 'Invalid role',
-            error: 'Role must be one of: citizen, lgu, admin'
+            error: `Role must be one of: ${ALL_ROLES.join(', ')}`
         });
     }
 
@@ -178,11 +178,10 @@ export const updateUserRole = async (req, res, next) => {
     const { role } = req.body;
 
     // Validate role
-    const validRoles = ['citizen', 'lgu', 'admin'];
-    if (!validRoles.includes(role)) {
+    if (!ALL_ROLES.includes(role)) {
         return res.status(400).json({
             message: 'Invalid role',
-            error: 'Role must be one of: citizen, lgu, admin'
+            error: `Role must be one of: ${ALL_ROLES.join(', ')}`
         });
     }
 

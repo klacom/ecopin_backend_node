@@ -49,6 +49,8 @@ const checkSevereViolations = (mobilenetPredictions, cocoPredictions) => {
             }
         }
     }
+
+    console.log(`[DetectedObjects]: ${detectedObjects}`)
     
     return {
         hasSevereViolation: detectedViolations.length > 0,

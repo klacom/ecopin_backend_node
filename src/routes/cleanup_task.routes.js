@@ -11,15 +11,16 @@ import {
     upload
 } from '../controllers/cleanup_task.controller.js';
 import { authenticate, authorize } from '../middleware/auth.middleware.js';
+import { ROLE_GROUPS } from '../constants/roles.js';
 
 const router = Router();
 
-// All cleanup task routes require authentication and LGU/admin role
+// All cleanup task routes require authentication
 router.use(authenticate);
 
 // Except this
 router.get('/cluster/:clusterId', getTasksByClusterId);
-router.use(authorize(['lgu', 'admin']));
+router.use(authorize(ROLE_GROUPS.FIELD_OPS));
 
 router.post('/', createCleanupTask);
 router.post('/custom', createCustomCleanupTask);

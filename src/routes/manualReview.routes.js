@@ -8,14 +8,15 @@ import {
     getReviewStats
 } from '../controllers/manualReview.controller.js';
 import { authenticate, authorize } from '../middleware/auth.middleware.js';
+import { ROLE_GROUPS } from '../constants/roles.js';
 
 const router = Router();
 
 // All manual review routes require authentication
 router.use(authenticate);
 
-// Routes for admins to manage manual review queue
-router.use(authorize(['admin', 'lgu']));
+// Routes for officers/admins to manage manual review queue
+router.use(authorize(ROLE_GROUPS.DESK_OPS));
 
 router.get('/', getManualReviewQueue);
 router.get('/stats', getReviewStats);
