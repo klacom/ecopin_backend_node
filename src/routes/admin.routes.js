@@ -10,7 +10,8 @@ import {
     getSystemSettings,
     updateSystemSettings,
     getAuditLogs,
-    getSystemStats
+    getSystemStats,
+    getTimeoutMinutes
 } from '../controllers/admin.controller.js';
 
 const router = Router();
@@ -34,5 +35,8 @@ router.get('/audit-logs', authorize(['admin']), getAuditLogs);
 
 // System statistics (accessible by admin and officer)
 router.get('/stats', authorize(ROLE_GROUPS.STATS_VIEWERS), getSystemStats);
+
+// Session Timeout Minutes (Accessible by All)
+router.get('/timeout', authorize(ROLE_GROUPS.DESK_OPS), getTimeoutMinutes)
 
 export default router;

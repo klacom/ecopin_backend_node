@@ -448,3 +448,29 @@ export const getSystemStats = async (req, res, next) => {
         next(error);
     }
 };
+
+export const getTimeoutMinutes = async (req, res, next) => {
+    try {
+        const { data, error } = await supabase
+            .from('system_settings')
+            .select('session_timeout_minutes')
+            .single();
+
+        if (error) {
+            // If settings don't exist, return defaults
+            if (error.code === 'PGRST116') {
+                return res.status(200).json({
+                    session_timeout_minutes: 60
+                });
+            }
+            return res.status(400).json({
+                message: 'Failed to fetch timeout minutes',
+                error: error.message
+            });
+        }
+
+        res.status(200).json(data);
+    } catch (error) {
+        next(error);
+    }
+}
