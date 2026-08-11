@@ -5,7 +5,7 @@ import { PORT as _PORT, NODE_ENV, NEXT_PUBLIC_SUPABASE_URL } from './config/inde
 
 const PORT = _PORT || 3000;
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on ${PORT}`);
     console.log(`Environment: ${NODE_ENV}`);
     console.log(`Supabase URL: ${NEXT_PUBLIC_SUPABASE_URL}`);
