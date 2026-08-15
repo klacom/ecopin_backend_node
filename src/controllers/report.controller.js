@@ -4,6 +4,7 @@ import exifParser from 'exif-parser';
 import { validateImage } from '../services/imageValidation.service.js';
 import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE, REPORT_PHOTOS_STORAGE_PATH, BEFORE_AFTER_PHOTO_FILE_SIZE } from '../config/index.js';
 import { clusterReports } from '../services/clustering.service.js';
+import { uploadFromBuffer, deleteFromCloudinary } from '../services/cloudinary.service.js';
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -81,30 +82,24 @@ export const uploadReportPhoto = async (req, res, next) => {
         console.log('File path:', filePath);
         console.log('Storage path:', REPORT_PHOTOS_STORAGE_PATH);
 
-        // Upload to Supabase storage (Report Cleanup bucket)
-        const { data: uploadData, error: uploadError } = await supabase
-            .storage
-            .from(REPORT_PHOTOS_STORAGE_PATH)
-            .upload(filePath, req.file.buffer, {
-                contentType: req.file.mimetype,
-                upsert: false
-            });
-
-        if (uploadError) {
-            console.error('Supabase upload error:', uploadError);
-            return res.status(400).json({
-                message: 'Failed to upload photo',
-                error: uploadError.message
-            });
+        // Upload to Cloudinary
+        const folder = `report_photos/${id}/${photo_type}`;
+        const publicId = `${Date.now()}_${req.file.originalname.replace(/\.[^/.]+$/, '')}`;
+        let uploadResult;
+        try {
+          uploadResult = await uploadFromBuffer(req.file.buffer, folder, publicId);
+        } catch (uploadError) {
+          console.error('Cloudinary upload error:', uploadError);
+          return res.status(400).json({
+            message: 'Failed to upload photo',
+            error: uploadError.message
+          });
         }
+        const secureUrl = uploadResult.secure_url;
+        console.log('Upload successful:', uploadResult);
 
-        console.log('Upload successful:', uploadData);
-
-        // Get public URL
-        const { data: urlData } = supabase
-            .storage
-            .from(REPORT_PHOTOS_STORAGE_PATH)
-            .getPublicUrl(filePath);
+        // Get public URL (already provided by Cloudinary)
+        const urlData = { publicUrl: secureUrl };
 
         console.log('Public URL:', urlData.publicUrl);
 
@@ -173,28 +168,18 @@ export const deleteReportPhoto = async (req, res, next) => {
             });
         }
 
-        // Extract the file path from the URL
-        const urlParts = photoUrl.split('/');
-        const fileName = urlParts[urlParts.length - 1];
-        const filePath = `${id}/${photo_type}/${fileName}`;
-
-        console.log('Deleting file path:', filePath);
-
-        // Delete from Supabase storage
-        const { error: deleteError } = await supabase
-            .storage
-            .from(REPORT_PHOTOS_STORAGE_PATH)
-            .remove([filePath]);
-
-        if (deleteError) {
-            console.error('Failed to delete photo from storage:', deleteError);
+        // Delete from Cloudinary
+        try {
+            await deleteFromCloudinary(photoUrl);
+        } catch (deleteError) {
+            console.error('Cloudinary delete error:', deleteError);
             return res.status(400).json({
                 message: 'Failed to delete photo from storage',
                 error: deleteError.message
             });
         }
 
-        console.log('Photo deleted from storage successfully');
+        console.log('Photo deleted from Cloudinary successfully');
 
         // Update the report to remove the photo URL
         const updateData = photo_type === 'before'

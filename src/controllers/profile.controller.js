@@ -1,5 +1,6 @@
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
 import { VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, PROFILE_FILE_SIZE } from "../config/index.js";
+import { uploadFromBuffer, deleteFromCloudinary } from "../services/cloudinary.service.js";
 
 export const getProfile = async (req, res, next) => {
     try {
@@ -106,39 +107,42 @@ export const uploadAvatar = async (req, res, next) => {
         const userId = req.user.id;
         const fileName = `${userId}/avatar.${fileExt}`;
 
-        // Delete old avatar if exists
-        try {
-            await supabaseAdmin.storage
-                .from('avatars')
-                .remove([`${userId}/avatar.jpg`, `${userId}/avatar.png`, `${userId}/avatar.webp`]);
-        } catch (err) {
-            // Ignore error if old file doesn't exist
+        // Fetch existing avatar URL (if any)
+        const { data: existingProfile, error: fetchError } = await supabaseAdmin
+            .from('profiles')
+            .select('avatar_url')
+            .eq('id', userId)
+            .single();
+        if (fetchError) {
+            console.error('Error fetching existing avatar:', fetchError);
+        }
+        // Delete old avatar from Cloudinary if URL exists
+        if (existingProfile?.avatar_url) {
+            try {
+                await deleteFromCloudinary(existingProfile.avatar_url);
+            } catch (delErr) {
+                console.warn('Failed to delete old avatar (may not exist):', delErr.message);
+            }
         }
 
-        // Upload new avatar
-        const { data: uploadData, error: uploadError } = await supabaseAdmin.storage
-            .from('avatars')
-            .upload(fileName, file.buffer, {
-                contentType: file.mimetype,
-                upsert: true
-            });
-
-            if (uploadError) {
+        // Upload new avatar to Cloudinary
+        const folder = `profile/${userId}`;
+        const publicId = `${Date.now()}_${file.originalname.replace(/\.[^/.]+$/, '')}`;
+        let uploadResult;
+        try {
+            uploadResult = await uploadFromBuffer(file.buffer, folder, publicId);
+        } catch (uploadErr) {
+            console.error('Cloudinary upload error:', uploadErr);
             return res.status(400).json({
                 message: 'Failed to upload avatar',
-                error: uploadError.message
+                error: uploadErr.message
             });
         }
-
-        // Get public URL
-        const { data: { publicUrl } } = supabaseAdmin.storage
-            .from('avatars')
-            .getPublicUrl(fileName);
-
+        const secureUrl = uploadResult.secure_url;
         // Update profile with new avatar URL
         const { data: profileData, error: profileError } = await supabaseAdmin
             .from('profiles')
-            .update({ avatar_url: publicUrl })
+            .update({ avatar_url: secureUrl })
             .eq('id', userId)
             .select('*')
             .single();
