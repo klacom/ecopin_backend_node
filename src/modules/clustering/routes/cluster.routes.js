@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { triggerClustering, getAllClusters, getCluster, updateCluster } from '../controllers/cluster.controller.js';
-import { authenticate, authorize } from '../middleware/auth.middleware.js';
-import { ROLE_GROUPS } from '../constants/roles.js';
+import { authenticate, authorize } from '../../../middleware/auth.middleware.js';
+import { ROLE_GROUPS } from '../../../constants/roles.js';
 
 const router = Router();
 

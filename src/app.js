@@ -9,7 +9,7 @@ import { FRONTEND_URL } from './config/index.js';
 // Import routes
 import authRoutes from './routes/auth.routes.js';
 import reportRoutes from './routes/report.routes.js';
-import clusterRoutes from './routes/cluster.routes.js';
+import { clusterRoutes } from './modules/clustering/index.js';
 import profileRoutes from './routes/profile.routes.js';
 import cleanupTaskRoutes from './routes/cleanup_task.routes.js';
 import adminRoutes from './routes/admin.routes.js';

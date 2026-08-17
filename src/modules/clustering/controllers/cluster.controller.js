@@ -1,5 +1,7 @@
-import { supabaseAdmin as supabase } from '../config/supabase.config.js';
+import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
 import { clusterReports, getClusters, getClusterById, updateClusterStatus } from '../services/clustering.service.js';
+
+const validStatuses = ['unresolved', 'in_progress', 'resolved'];
 
 // Manually trigger clustering
 export const triggerClustering = async (req, res, next) => {
@@ -38,14 +40,11 @@ export const updateCluster = async (req, res, next) => {
   const { status } = req.body;
 
   // Validate status
-  
   if (!validStatuses.includes(status)) {
     return res.status(400).json({
       message: 'Invalid status. Must be one of: unresolved, in_progress, resolved'
     });
   }
-
-//   Update cluster status service
 
   try {
     const cluster = await updateClusterStatus(id, status);
@@ -56,5 +55,4 @@ export const updateCluster = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-
 };

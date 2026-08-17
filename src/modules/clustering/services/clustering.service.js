@@ -1,4 +1,5 @@
-import { supabaseAdmin } from '../config/supabase.config.js';
+import { supabaseAdmin } from '../../../config/supabase.config.js';
+import { CLUSTERING_CONFIG } from '../config/clustering.config.js';
 
 export const clusterReports = async () => {
   try {
@@ -50,9 +51,11 @@ export const clusterReports = async () => {
       );
       const dominantType = Object.entries(typeCounts).sort((a, b) => b[1] - a[1])[0][0];
 
-      // Determine severity based on report count
+      // Determine severity based on report count using config thresholds
       const count = group.ids.length;
-      const severity = count >= 5 ? 'high' : count >= 3 ? 'medium' : 'low';
+      const severity = count >= CLUSTERING_CONFIG.severity.high ? 'high' 
+                    : count >= CLUSTERING_CONFIG.severity.medium ? 'medium' 
+                    : 'low';
 
       // Compute centroid & insert cluster row via SQL so PostGIS handles geometry
       const { data: newCluster, error: insertError } = await supabaseAdmin.rpc(
@@ -61,7 +64,7 @@ export const clusterReports = async () => {
           p_report_ids: group.ids,
           p_issue_type: dominantType,
           p_severity: severity,
-          p_radius_meters: 50,
+          p_radius_meters: CLUSTERING_CONFIG.dbscan.eps,
         }
       );
 
