@@ -1,7 +1,8 @@
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
-import { validateImage } from '../services/imageValidation.service.js';
+import cloudinary from '../config/cloudinary.config.js';
+import { classifyImage, mapClassifierToValidation } from '../services/classifierClient.service.js';
 import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE, REPORT_PHOTOS_STORAGE_PATH, BEFORE_AFTER_PHOTO_FILE_SIZE } from '../config/index.js';
 import { clusterReports } from '../modules/clustering/index.js';
 import { uploadFromBuffer, deleteFromCloudinary } from '../services/cloudinary.service.js';
@@ -287,44 +288,32 @@ export const uploadEvidence = async (req, res, next) => {
         const filename = `${timestamp}_${req.file.originalname}`;
         const filePath = `${reportId}/${filename}`;
 
-        console.log('Uploading to path:', filePath);
-        console.log('Bucket name: Report Evidence');
+        console.log('Uploading evidence to Cloudinary, folder:', `report_evidence/${reportId}`);
+        console.log('File path:', filePath);
 
-        // Upload to Supabase storage
-        const { data: uploadData, error: uploadError } = await supabase
-            .storage
-            .from('Report Evidence')
-            .upload(filePath, req.file.buffer, {
-                contentType: req.file.mimetype,
-                upsert: false
-            });
-
-        if (uploadError) {
-            console.error('Upload error details:', JSON.stringify(uploadError, null, 2));
-            console.error('Upload error message:', uploadError.message);
-            console.error('Upload error status:', uploadError.statusCode);
+        // Upload to Cloudinary
+        const folder = `report_evidence/${reportId}`;
+        const publicId = `${timestamp}_${req.file.originalname.replace(/\.[^/.]+$/, '')}`;
+        let uploadResult;
+        try {
+            uploadResult = await uploadFromBuffer(req.file.buffer, folder, publicId);
+        } catch (uploadError) {
+            console.error('Cloudinary upload error:', uploadError);
             return res.status(400).json({
                 message: 'Failed to upload image',
-                error: uploadError.message,
-                details: uploadError
+                error: uploadError.message
             });
         }
 
-        console.log('Upload successful:', uploadData);
-
-        // Get public URL
-        const { data: urlData } = supabase
-            .storage
-            .from('Report Evidence')
-            .getPublicUrl(filePath);
-
-        console.log('Public URL:', urlData.publicUrl);
+        const secureUrl = uploadResult.secure_url;
+        console.log('Upload successful, URL:', secureUrl);
 
         res.status(201).json({
             message: 'Evidence uploaded successfully',
             evidence: {
-                url: urlData.publicUrl,
+                url: secureUrl,
                 path: filePath,
+                public_id: uploadResult.public_id,
                 metadata: imageMetadata
             }
         });
@@ -339,40 +328,30 @@ export const getReportEvidence = async (req, res, next) => {
 
     try {
         console.log('Fetching evidence for report:', reportId);
-        const { data, error } = await supabase
-            .storage
-            .from('Report Evidence')
-            .list(reportId, {
-                limit: 100,
-                offset: 0,
-                sortBy: { column: 'created_at', order: 'asc' }
-            });
+        const prefix = `report_evidence/${reportId}/`;
 
-        if (error) {
-            console.error('Error listing evidence:', error);
-            return res.status(400).json({
-                message: 'Failed to fetch evidence',
-                error: error.message
-            });
-        }
+        const resources = await cloudinary.api.resources({
+            type: 'upload',
+            prefix: prefix,
+            max_results: 100,
+            resource_type: 'image'
+        });
 
-        console.log('Evidence files found:', data);
-
-        // Get public URLs for all files
-        const evidence = data.map(file => {
-            const { data: urlData } = supabase
-                .storage
-                .from('Report Evidence')
-                .getPublicUrl(`${reportId}/${file.name}`);
+        const evidence = (resources.resources || []).map(resource => {
+            const fullPublicId = resource.public_id; // e.g. report_evidence/123/169_abc
+            const parts = fullPublicId.split('/');
+            const fileName = parts[parts.length - 1] +
+                (resource.format ? '.' + resource.format : '');
             return {
-                name: file.name,
-                url: urlData.publicUrl,
-                size: file.metadata?.size,
-                createdAt: file.created_at
+                name: fileName,
+                url: resource.secure_url,
+                size: resource.bytes,
+                public_id: resource.public_id,
+                createdAt: resource.created_at
             };
         });
 
-        console.log('Returning evidence:', evidence);
+        console.log('Returning evidence count:', evidence.length);
         res.status(200).json(evidence);
     } catch (error) {
         console.error('Error in getReportEvidence:', error);
@@ -456,145 +435,63 @@ export const createReport = async (req, res, next) => {
         // Trigger background tasks without waiting
         (async () => {
             try {
-                // Run AI validation in background if image is present
+                // Run EfficientNet classifier in background if image is present
                 if (image) {
-                    const validation = await validateImage(image.buffer);
-                    
-                    // Handle severe violations
-                    if (validation.severeViolation) {
-                        console.log(`[SevereViolation] Detected in report ${report.id}: ${validation.severeCategories.join(', ')}`);
-                        
-                        // Get system settings for severe violation handling
-                        const { data: settings } = await supabase
-                            .from('system_settings')
-                            .select('*')
-                            .single();
-                        
-                        // Update report with severe violation flags
-                        const severeCategory = validation.severeCategories[0] || 'other';
-                        await supabase
-                            .from('reports')
-                            .update({
-                                validation_status: VALIDATION_STATUS.REJECTED,
-                                flagged_severe: true,
-                                severe_violation_category: severeCategory,
-                                rejection_reason: `Severe content violation detected: ${severeCategory}`,
-                                updated_at: new Date().toISOString()
-                            })
-                            .eq('id', report.id);
-                        
-                        // Add to manual review queue
-                        const { data: reviewItem } = await supabase
-                            .from('manual_review_queue')
-                            .insert({
-                                report_id: report.id,
-                                review_type: 'severe_violation',
-                                priority: 'urgent',
-                                status: 'pending'
-                            })
-                            .select()
-                            .single();
-                        
-                        // Link report to review queue
-                        await supabase
-                            .from('reports')
-                            .update({
-                                manual_review_id: reviewItem.id
-                            })
-                            .eq('id', report.id);
-                        
-                        // Issue immediate strike if configured
-                        if (settings && settings.severe_violation_immediate_strike) {
-                            const suspensionDuration = settings.severe_violation_action === 'suspend_7d' 
-                                ? settings.severe_violation_duration_hours || 168
-                                : settings.severe_violation_action === 'suspend_24h'
-                                    ? settings.severe_violation_duration_hours || 24
-                                    : settings.severe_violation_action === 'permanent_ban'
-                                        ? -1
-                                        : null;
-                            
-                            // Create strike
-                            const { data: strike } = await supabase
-                                .from('strikes')
-                                .insert({
-                                    user_id,
-                                    reason: `Severe content violation: ${severeCategory}`,
-                                    violation_type: 'severe_content',
-                                    issued_by: user_id, // System-issued
-                                    severity: 'severe',
-                                    severe_category: severeCategory,
-                                    requires_manual_review: true,
-                                    manual_review_status: 'pending',
-                                    is_active: true
-                                })
-                                .select()
-                                .single();
-                            
-                            // Link strike to review queue
-                            await supabase
-                                .from('manual_review_queue')
-                                .update({
-                                    strike_id: strike.id
-                                })
-                                .eq('id', reviewItem.id);
-                            
-                            // Apply suspension
-                            if (suspensionDuration !== null) {
-                                let suspendedUntil = null;
-                                if (suspensionDuration === -1) {
-                                    suspendedUntil = new Date('2099-12-31').toISOString();
-                                } else {
-                                    const now = new Date();
-                                    suspendedUntil = new Date(now.getTime() + suspensionDuration * 60 * 60 * 1000).toISOString();
-                                }
-                                
-                                await supabase
-                                    .from('profiles')
-                                    .update({
-                                        suspended_until: suspendedUntil,
-                                        strike_count: 1,
-                                        last_strike_at: new Date().toISOString(),
-                                        updated_at: new Date().toISOString()
-                                    })
-                                    .eq('id', user_id);
-                            }
+                    let classifierResult;
+                    try {
+                        classifierResult = await classifyImage(
+                            image.buffer,
+                            image.originalname,
+                            image.mimetype
+                        );
+                        if (!classifierResult.ok) {
+                            console.error(`[Classifier] Inference failed for report ${report.id}:`, classifierResult.error);
                         }
-                    } else {
-                        // Normal validation flow
-                        await supabase
-                            .from('reports')
-                            .update({
-                                validation_status: validation.status,
-                                updated_at: new Date().toISOString()
-                            })
-                            .eq('id', report.id);
+                    } catch (classifierErr) {
+                        console.error(`[Classifier] Exception calling classifier for report ${report.id}:`, classifierErr);
+                        classifierResult = { ok: false, error: String(classifierErr) };
+                    }
 
-                        // Send notification based on validation result
-                        if (validation.status === VALIDATION_STATUS.APPROVED) {
-                            createNotification(
-                                user_id,
-                                report.id,
-                                'approved',
-                                'Report Approved',
-                                'Your report has been approved.'
-                            ).catch(err => console.error('Failed to send approval notification:', err));
-                        } else if (validation.status === VALIDATION_STATUS.REJECTED) {
-                            createNotification(
-                                user_id,
-                                report.id,
-                                'rejected',
-                                'Report Rejected',
-                                'Your report violated our image policy.'
-                            ).catch(err => console.error('Failed to send rejection notification:', err));
-                        } else if (validation.status === VALIDATION_STATUS.MANUAL_REVIEW) {
-                            createNotification(
-                                user_id,
-                                report.id,
-                                'manual_review',
-                                'Report Under Review',
-                                'Your report has been flagged for manual review.'
-                            ).catch(err => console.error('Failed to send manual review notification:', err));
-                        }
+                    const mapped = mapClassifierToValidation(classifierResult);
+
+                    const updatePayload = {
+                        validation_status: mapped.status,
+                        updated_at: new Date().toISOString(),
+                    };
+                    if (mapped.rejection_reason) {
+                        updatePayload.rejection_reason = mapped.rejection_reason;
+                    }
+
+                    await supabase
+                        .from('reports')
+                        .update(updatePayload)
+                        .eq('id', report.id);
+
+                    // Send notification based on validation result
+                    if (mapped.status === VALIDATION_STATUS.APPROVED) {
+                        createNotification(
+                            user_id,
+                            report.id,
+                            'approved',
+                            'Report Approved',
+                            'Your report has been approved.'
+                        ).catch(err => console.error('Failed to send approval notification:', err));
+                    } else if (mapped.status === VALIDATION_STATUS.REJECTED) {
+                        createNotification(
+                            user_id,
+                            report.id,
+                            'rejected',
+                            'Report Rejected',
+                            mapped.rejection_reason || 'Your report violated our image policy.'
+                        ).catch(err => console.error('Failed to send rejection notification:', err));
+                    } else if (mapped.status === VALIDATION_STATUS.MANUAL_REVIEW) {
+                        createNotification(
+                            user_id,
+                            report.id,
+                            'manual_review',
+                            'Report Under Review',
+                            'Your report has been flagged for manual review.'
+                        ).catch(err => console.error('Failed to send manual review notification:', err));
                     }
                 }
                 // Trigger clustering
