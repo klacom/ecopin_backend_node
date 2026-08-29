@@ -5,11 +5,14 @@ import { ROLE_GROUPS } from '../../../constants/roles.js';
 
 const router = Router();
 
-// All cluster routes require authentication and officer/admin role
+// All cluster routes require authentication
 router.use(authenticate);
-router.use(authorize(ROLE_GROUPS.DESK_OPS));
 
-router.post('/trigger', triggerClustering);
+// Trigger clustering requires desk ops (admin/officer only)
+router.post('/trigger', authorize(ROLE_GROUPS.DESK_OPS), triggerClustering);
+
+// Viewing clusters and updating status requires field ops (includes field crew)
+router.use(authorize(ROLE_GROUPS.FIELD_OPS));
 router.get('/', getAllClusters);
 router.get('/:id', getCluster);
 router.patch('/:id/status', updateCluster);

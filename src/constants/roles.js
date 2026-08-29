@@ -37,5 +37,5 @@ export const ROLE_GROUPS = Object.freeze({
   STATS_VIEWERS: [ROLE.ADMIN, ROLE.OFFICER],
 
   /** Report management — status updates, validation, lifecycle changes */
-  REPORT_MGMT: [ROLE.ADMIN, ROLE.OFFICER],
+  REPORT_MGMT: [ROLE.ADMIN, ROLE.OFFICER, ROLE.FIELD_CREW],
 });
