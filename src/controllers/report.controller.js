@@ -3,9 +3,12 @@ import multer from 'multer';
 import exifParser from 'exif-parser';
 import cloudinary from '../config/cloudinary.config.js';
 import { classifyImage, mapClassifierToValidation } from '../services/classifierClient.service.js';
-import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE, REPORT_PHOTOS_STORAGE_PATH, BEFORE_AFTER_PHOTO_FILE_SIZE } from '../config/index.js';
+import { extractVideoFrames } from '../services/videoFrameExtractor.service.js';
+import { classifyVideoFrames } from '../services/videoFrameClassifier.service.js';
+import { aggregateVideoValidation } from '../services/videoFrameAggregator.service.js';
+import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, VALID_VIDEO_MIME_TYPES, VALID_VIDEO_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE, REPORT_VIDEO_FILE_SIZE, REPORT_PHOTOS_STORAGE_PATH, BEFORE_AFTER_PHOTO_FILE_SIZE } from '../config/index.js';
 import { clusterReports } from '../modules/clustering/index.js';
-import { uploadFromBuffer, deleteFromCloudinary } from '../services/cloudinary.service.js';
+import { uploadFromBuffer, deleteFromCloudinary, uploadVideoFromBuffer } from '../services/cloudinary.service.js';
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -17,6 +20,23 @@ export const upload = multer({
             cb(null, true);
         } else {
             cb(new Error('Invalid file type. Only JPEG, JPG, PNG, and WEBP are allowed.'), false);
+        }
+    }
+});
+
+// Configure multer for accepting either image or video (for report creation and evidence)
+const mediaStorage = multer.memoryStorage();
+export const mediaUpload = multer({
+    storage: mediaStorage,
+    limits: { fileSize: Math.max(EVIDENCE_PHOTO_FILE_SIZE, REPORT_VIDEO_FILE_SIZE) },
+    fileFilter: (req, file, cb) => {
+        const isImage = VALID_IMAGE_MIME_TYPES.includes(file.mimetype);
+        const isVideo = VALID_VIDEO_MIME_TYPES.includes(file.mimetype);
+        
+        if (isImage || isVideo) {
+            cb(null, true);
+        } else {
+            cb(new Error('Invalid file type. Only JPEG, JPG, PNG, WEBP, MP4, MOV, and WEBM are allowed.'), false);
         }
     }
 });
@@ -219,20 +239,78 @@ export const uploadEvidence = async (req, res, next) => {
     const { latitude, longitude } = req.body;
 
     console.log('Uploading evidence for report:', reportId);
-    console.log('File received:', req.file ? req.file.originalname : 'No file');
+    console.log('Files received:', req.files);
 
-    if (!req.file) {
-        return res.status(400).json({ message: 'No file uploaded' });
-    }
+    // Check for media files (image or video)
+    const imageFile = req.files && req.files['image'] ? req.files['image'][0] : null;
+    const videoFile = req.files && req.files['video'] ? req.files['video'][0] : null;
 
-    // Validate file extension
-    const fileExt = req.file.originalname.split('.').pop()?.toLowerCase();
-    if (!fileExt || !VALID_IMAGE_EXTENSIONS.includes(fileExt)) {
-        return res.status(400).json({
-            message: 'Invalid file extension. Only JPEG, JPG, PNG, and WEBP are allowed.'
+    // Validate that only one media type is provided
+    if (imageFile && videoFile) {
+        return res.status(400).json({ 
+            message: 'Please provide either an image or a video, not both.' 
         });
     }
 
+    if (!imageFile && !videoFile) {
+        return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    const mediaFile = imageFile || videoFile;
+    const mediaType = imageFile ? 'image' : 'video';
+
+    console.log('Media type:', mediaType);
+    console.log('File received:', mediaFile.originalname);
+
+    // Validate file extension based on media type
+    const fileExt = mediaFile.originalname.split('.').pop()?.toLowerCase();
+    if (mediaType === 'image') {
+        if (!fileExt || !VALID_IMAGE_EXTENSIONS.includes(fileExt)) {
+            return res.status(400).json({
+                message: 'Invalid file extension. Only JPEG, JPG, PNG, and WEBP are allowed.'
+            });
+        }
+    } else {
+        if (!fileExt || !VALID_VIDEO_EXTENSIONS.includes(fileExt)) {
+            return res.status(400).json({
+                message: 'Invalid file extension. Only MP4, MOV, and WEBM are allowed.'
+            });
+        }
+    }
+
+    // For videos, upload to Cloudinary
+    if (mediaType === 'video') {
+        try {
+            const timestamp = Date.now();
+            const filename = `${timestamp}_${mediaFile.originalname.replace(/\.[^/.]+$/, '')}`;
+            const videoUploadResult = await uploadVideoFromBuffer(
+                mediaFile.buffer,
+                `report_evidence/${reportId}`,
+                filename
+            );
+            console.log('Video uploaded to Cloudinary:', videoUploadResult.secure_url);
+            
+            return res.status(201).json({
+                message: 'Video evidence uploaded successfully',
+                evidence: {
+                    url: videoUploadResult.secure_url,
+                    public_id: videoUploadResult.public_id,
+                    type: 'video',
+                    filename: mediaFile.originalname,
+                    mimetype: mediaFile.mimetype,
+                    size: mediaFile.size
+                }
+            });
+        } catch (videoError) {
+            console.error('Cloudinary video upload error:', videoError);
+            return res.status(400).json({
+                message: 'Failed to upload video',
+                error: videoError.message
+            });
+        }
+    }
+
+    // For images, proceed with existing upload logic
     try {
         // List buckets to verify the correct bucket name
         const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
@@ -249,7 +327,7 @@ export const uploadEvidence = async (req, res, next) => {
         };
 
         try {
-            const parser = exifParser.create(req.file.buffer);
+            const parser = exifParser.create(mediaFile.buffer);
             const result = parser.parse();
 
             if (result.tags.GPSLatitude && result.tags.GPSLongitude) {
@@ -285,7 +363,7 @@ export const uploadEvidence = async (req, res, next) => {
 
         // Generate unique filename
         const timestamp = Date.now();
-        const filename = `${timestamp}_${req.file.originalname}`;
+        const filename = `${timestamp}_${mediaFile.originalname}`;
         const filePath = `${reportId}/${filename}`;
 
         console.log('Uploading evidence to Cloudinary, folder:', `report_evidence/${reportId}`);
@@ -293,10 +371,10 @@ export const uploadEvidence = async (req, res, next) => {
 
         // Upload to Cloudinary
         const folder = `report_evidence/${reportId}`;
-        const publicId = `${timestamp}_${req.file.originalname.replace(/\.[^/.]+$/, '')}`;
+        const publicId = `${timestamp}_${mediaFile.originalname.replace(/\.[^/.]+$/, '')}`;
         let uploadResult;
         try {
-            uploadResult = await uploadFromBuffer(req.file.buffer, folder, publicId);
+            uploadResult = await uploadFromBuffer(mediaFile.buffer, folder, publicId);
         } catch (uploadError) {
             console.error('Cloudinary upload error:', uploadError);
             return res.status(400).json({
@@ -328,16 +406,27 @@ export const getReportEvidence = async (req, res, next) => {
 
     try {
         console.log('Fetching evidence for report:', reportId);
-        const prefix = `report_evidence/${reportId}/`;
+        const prefix = `report_evidence/${reportId}`;
 
-        const resources = await cloudinary.api.resources({
-            type: 'upload',
-            prefix: prefix,
-            max_results: 100,
-            resource_type: 'image'
-        });
+        // Fetch both image and video resources
+        const [imageResources, videoResources] = await Promise.all([
+            cloudinary.api.resources({
+                type: 'upload',
+                prefix: prefix,
+                max_results: 100,
+                resource_type: 'image'
+            }),
+            cloudinary.api.resources({
+                type: 'upload',
+                prefix: prefix,
+                max_results: 100,
+                resource_type: 'video'
+            })
+        ]);
 
-        const evidence = (resources.resources || []).map(resource => {
+        const allResources = [...(imageResources.resources || []), ...(videoResources.resources || [])];
+
+        const evidence = allResources.map(resource => {
             const fullPublicId = resource.public_id; // e.g. report_evidence/123/169_abc
             const parts = fullPublicId.split('/');
             const fileName = parts[parts.length - 1] +
@@ -347,7 +436,8 @@ export const getReportEvidence = async (req, res, next) => {
                 url: resource.secure_url,
                 size: resource.bytes,
                 public_id: resource.public_id,
-                createdAt: resource.created_at
+                createdAt: resource.created_at,
+                resource_type: resource.resource_type // 'image' or 'video'
             };
         });
 
@@ -363,24 +453,46 @@ export const createReport = async (req, res, next) => {
     const {
         title,
         description,
-        issue_type,
         latitude,
         longitude,
         on_private_property
     } = req.body;
     const user_id = req.user.id;
-    const image = req.file;
+    
+    // Check for media files (image or video)
+    const imageFiles = req.files && req.files['image'] ? req.files['image'] : [];
+    const videoFile = req.files && req.files['video'] ? req.files['video'][0] : null;
+
+    // Require at least one media type
+    if (imageFiles.length === 0 && !videoFile) {
+        return res.status(400).json({ 
+            message: 'Please provide either an image or a video.' 
+        });
+    }
+
+    const mediaFile = imageFiles.length > 0 ? imageFiles[0] : videoFile;
+    const mediaType = imageFiles.length > 0 ? 'image' : 'video';
+
     const onPrivateProperty =
         req.body.on_private_property === true ||
         req.body.on_private_property === "true";
 
     try {
-        // Validate image format if present
-        if (image) {
-            const fileExt = image.originalname.split('.').pop()?.toLowerCase();
+        // Validate file formats
+        for (const imageFile of imageFiles) {
+            const fileExt = imageFile.originalname.split('.').pop()?.toLowerCase();
             if (!fileExt || !VALID_IMAGE_EXTENSIONS.includes(fileExt)) {
                 return res.status(400).json({
                     message: 'Invalid file extension. Only JPEG, JPG, PNG, and WEBP are allowed.'
+                });
+            }
+        }
+        
+        if (videoFile) {
+            const fileExt = videoFile.originalname.split('.').pop()?.toLowerCase();
+            if (!fileExt || !VALID_VIDEO_EXTENSIONS.includes(fileExt)) {
+                return res.status(400).json({
+                    message: 'Invalid file extension. Only MP4, MOV, and WEBM are allowed.'
                 });
             }
         }
@@ -400,7 +512,7 @@ export const createReport = async (req, res, next) => {
                 user_id,
                 title,
                 description,
-                issue_type,
+                issue_type: 'pending', // Will be updated by AI validation
                 location: point,
                 on_private_property: onPrivateProperty,
                 property_owner_consent_status: propertyOwnerConsentStatus,
@@ -435,64 +547,218 @@ export const createReport = async (req, res, next) => {
         // Trigger background tasks without waiting
         (async () => {
             try {
-                // Run EfficientNet classifier in background if image is present
-                if (image) {
-                    let classifierResult;
+                let finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
+                let finalRejectionReason = null;
+                let finalIssueType = null;
+
+                // Upload media to Cloudinary FIRST (independent of AI validation)
+                console.log(`[Evidence] Starting media upload for report ${report.id}`);
+                
+                // Upload video to Cloudinary if present
+                if (videoFile) {
                     try {
-                        classifierResult = await classifyImage(
-                            image.buffer,
-                            image.originalname,
-                            image.mimetype
+                        console.log(`[Video] Uploading video for report ${report.id}`);
+                        const timestamp = Date.now();
+                        const videoUploadResult = await uploadVideoFromBuffer(
+                            videoFile.buffer, 
+                            `report_evidence/${report.id}`, 
+                            `${timestamp}_${report.id}_video`
                         );
-                        if (!classifierResult.ok) {
-                            console.error(`[Classifier] Inference failed for report ${report.id}:`, classifierResult.error);
+                        console.log(`[Video] Uploaded video to Cloudinary: ${videoUploadResult.secure_url}`);
+                    } catch (videoUploadError) {
+                        console.error(`[Video] Upload failed for report ${report.id}:`, videoUploadError);
+                        // Continue with validation even if upload fails
+                        createNotification(
+                            user_id,
+                            report.id,
+                            'error',
+                            'Evidence Upload Failed',
+                            'Your video evidence could not be uploaded. Please try uploading it again.'
+                        ).catch(err => console.error('Failed to send upload error notification:', err));
+                    }
+                }
+
+                // Upload all images to Cloudinary if present
+                for (const imageFile of imageFiles) {
+                    try {
+                        console.log(`[Image] Uploading image for report ${report.id}`);
+                        const timestamp = Date.now();
+                        const filename = `${timestamp}_${imageFile.originalname.replace(/\.[^/.]+$/, '')}`;
+                        const imageUploadResult = await uploadFromBuffer(
+                            imageFile.buffer,
+                            `report_evidence/${report.id}`,
+                            filename
+                        );
+                        console.log(`[Image] Uploaded image to Cloudinary: ${imageUploadResult.secure_url}`);
+                    } catch (imageUploadError) {
+                        console.error(`[Image] Upload failed for report ${report.id}:`, imageUploadError);
+                        // Continue with validation even if upload fails
+                        createNotification(
+                            user_id,
+                            report.id,
+                            'error',
+                            'Evidence Upload Failed',
+                            'Your image evidence could not be uploaded. Please try uploading it again.'
+                        ).catch(err => console.error('Failed to send upload error notification:', err));
+                    }
+                }
+
+                console.log(`[Evidence] Media upload completed for report ${report.id}`);
+
+                // Process video for AI validation if present
+                if (videoFile) {
+                    console.log(`[VIDEO-PIPELINE] START report=${report.id}, filename=${videoFile.originalname}, size=${videoFile.size}, mime=${videoFile.mimetype}`);
+                    
+                    try {
+                        console.log(`[VIDEO-PIPELINE] Stage: EXTRACTION - report=${report.id}`);
+                        
+                        // Extract 5 frames
+                        const frames = await extractVideoFrames(videoFile.buffer, videoFile.originalname);
+                        console.log(`[VIDEO-PIPELINE] Stage: EXTRACTION COMPLETE - report=${report.id}, frames=${frames.length}`);
+                        
+                        console.log(`[VIDEO-PIPELINE] Stage: CLASSIFICATION - report=${report.id}`);
+                        
+                        // Classify frames in parallel
+                        const frameResults = await classifyVideoFrames(frames);
+                        console.log(`[VIDEO-PIPELINE] Stage: CLASSIFICATION COMPLETE - report=${report.id}, results=${frameResults.length}`);
+                        
+                        console.log(`[VIDEO-PIPELINE] Stage: AGGREGATION - report=${report.id}`);
+                        
+                        // Aggregate results
+                        const aggregated = aggregateVideoValidation(frameResults);
+                        console.log(`[VIDEO-PIPELINE] Stage: AGGREGATION COMPLETE - report=${report.id}, status=${aggregated.validation_status}, dominant=${aggregated.dominant_class}`);
+                        
+                        // Use video validation as primary if no image, or for combined reports
+                        if (imageFiles.length === 0) {
+                            finalValidationStatus = aggregated.validation_status;
+                            finalRejectionReason = aggregated.rejection_reason;
+                            if (aggregated.dominant_class) {
+                                finalIssueType = aggregated.dominant_class;
+                            }
                         }
-                    } catch (classifierErr) {
-                        console.error(`[Classifier] Exception calling classifier for report ${report.id}:`, classifierErr);
-                        classifierResult = { ok: false, error: String(classifierErr) };
+                        
+                        console.log(`[VIDEO-PIPELINE] COMPLETE report=${report.id}, status=${finalValidationStatus}`);
+                    } catch (videoError) {
+                        console.error(`[VIDEO-PIPELINE] FAILED report=${report.id}, stage=AI_PROCESSING, error=${videoError.message}`);
+                        // If only video was provided, fall back to MANUAL_REVIEW
+                        if (imageFiles.length === 0) {
+                            finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
+                            finalRejectionReason = `Video processing failed: ${videoError.message}`;
+                        }
+                    }
+                }
+
+                // Run EfficientNet classifier on all images in background if images are present
+                if (imageFiles.length > 0) {
+                    console.log(`[Classifier] Processing ${imageFiles.length} images for report ${report.id}`);
+                    
+                    const imageResults = [];
+                    for (const imageFile of imageFiles) {
+                        try {
+                            const classifierResult = await classifyImage(
+                                imageFile.buffer,
+                                imageFile.originalname,
+                                imageFile.mimetype
+                            );
+                            if (classifierResult.ok) {
+                                imageResults.push(classifierResult);
+                                console.log(`[Classifier] Image ${imageFile.originalname} classified successfully`);
+                            } else {
+                                console.error(`[Classifier] Inference failed for ${imageFile.originalname}:`, classifierResult.error);
+                            }
+                        } catch (classifierErr) {
+                            console.error(`[Classifier] Exception for ${imageFile.originalname}:`, classifierErr);
+                        }
                     }
 
-                    const mapped = mapClassifierToValidation(classifierResult);
+                    // Aggregate image results using simple majority rule
+                    if (imageResults.length > 0) {
+                        const statusCounts = {
+                            approved: 0,
+                            rejected: 0,
+                            manual_review: 0
+                        };
 
-                    const updatePayload = {
-                        validation_status: mapped.status,
-                        updated_at: new Date().toISOString(),
-                    };
-                    if (mapped.rejection_reason) {
-                        updatePayload.rejection_reason = mapped.rejection_reason;
+                        for (const result of imageResults) {
+                            const mapped = mapClassifierToValidation(result);
+                            if (mapped.status === VALIDATION_STATUS.APPROVED) statusCounts.approved++;
+                            else if (mapped.status === VALIDATION_STATUS.REJECTED) statusCounts.rejected++;
+                            else statusCounts.manual_review++;
+                        }
+
+                        console.log(`[Classifier] Image results: ${JSON.stringify(statusCounts)}`);
+
+                        // Determine final status based on majority
+                        if (statusCounts.rejected > statusCounts.approved && statusCounts.rejected > statusCounts.manual_review) {
+                            finalValidationStatus = VALIDATION_STATUS.REJECTED;
+                            finalRejectionReason = 'Majority of images were rejected.';
+                        } else if (statusCounts.approved > statusCounts.rejected && statusCounts.approved > statusCounts.manual_review) {
+                            finalValidationStatus = VALIDATION_STATUS.APPROVED;
+                        } else {
+                            finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
+                            finalRejectionReason = 'Mixed or unclear image validation results.';
+                        }
+
+                        // Use image validation as primary if no video, or for combined reports
+                        if (!videoFile) {
+                            finalValidationStatus = finalValidationStatus;
+                            finalRejectionReason = finalRejectionReason;
+                        }
+                    } else {
+                        // All classifications failed, fall back to manual review
+                        finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
+                        finalRejectionReason = 'All image classifications failed.';
                     }
+                }
 
-                    await supabase
-                        .from('reports')
-                        .update(updatePayload)
-                        .eq('id', report.id);
+                // Final database update with combined validation status
+                console.log(`[DATABASE-UPDATE] START report=${report.id}, status=${finalValidationStatus}, issue_type=${finalIssueType}`);
+                
+                const updatePayload = {
+                    validation_status: finalValidationStatus,
+                    updated_at: new Date().toISOString(),
+                };
+                if (finalIssueType) {
+                    updatePayload.issue_type = finalIssueType;
+                }
 
-                    // Send notification based on validation result
-                    if (mapped.status === VALIDATION_STATUS.APPROVED) {
-                        createNotification(
-                            user_id,
-                            report.id,
-                            'approved',
-                            'Report Approved',
-                            'Your report has been approved.'
-                        ).catch(err => console.error('Failed to send approval notification:', err));
-                    } else if (mapped.status === VALIDATION_STATUS.REJECTED) {
-                        createNotification(
-                            user_id,
-                            report.id,
-                            'rejected',
-                            'Report Rejected',
-                            mapped.rejection_reason || 'Your report violated our image policy.'
-                        ).catch(err => console.error('Failed to send rejection notification:', err));
-                    } else if (mapped.status === VALIDATION_STATUS.MANUAL_REVIEW) {
-                        createNotification(
-                            user_id,
-                            report.id,
-                            'manual_review',
-                            'Report Under Review',
-                            'Your report has been flagged for manual review.'
-                        ).catch(err => console.error('Failed to send manual review notification:', err));
-                    }
+                const { error: dbError } = await supabase
+                    .from('reports')
+                    .update(updatePayload)
+                    .eq('id', report.id);
+                
+                if (dbError) {
+                    console.error(`[DATABASE-UPDATE] FAILED report=${report.id}, error=${dbError.message}`);
+                    throw new Error(`Database update failed: ${dbError.message}`);
+                } else {
+                    console.log(`[DATABASE-UPDATE] SUCCESS report=${report.id}`);
+                }
+
+                // Send notification based on final validation result
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
+                    createNotification(
+                        user_id,
+                        report.id,
+                        'approved',
+                        'Report Approved',
+                        'Your report has been approved.'
+                    ).catch(err => console.error('Failed to send approval notification:', err));
+                } else if (finalValidationStatus === VALIDATION_STATUS.REJECTED) {
+                    createNotification(
+                        user_id,
+                        report.id,
+                        'rejected',
+                        'Report Rejected',
+                        finalRejectionReason || 'Your report violated our policy.'
+                    ).catch(err => console.error('Failed to send rejection notification:', err));
+                } else if (finalValidationStatus === VALIDATION_STATUS.MANUAL_REVIEW) {
+                    createNotification(
+                        user_id,
+                        report.id,
+                        'manual_review',
+                        'Report Under Review',
+                        'Your report has been flagged for manual review.'
+                    ).catch(err => console.error('Failed to send manual review notification:', err));
                 }
                 // Trigger clustering
                 await clusterReports();

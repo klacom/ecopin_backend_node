@@ -7,6 +7,7 @@ import {
     uploadEvidence,
     getReportEvidence,
     upload,
+    mediaUpload,
     updateReportStatus,
     updateReportValidation,
     getReportsByClusterId,
@@ -37,10 +38,10 @@ router.get('/public', getPublicReports);
 router.use(authenticate);
 
 // Routes that don't need LGU/admin role first
-router.post('/', upload.single('image'), createReport);
+router.post('/', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), createReport);
 router.get('/my', getMyReports);
 router.get('/:id', getReportById);
-router.post('/:reportId/evidence', upload.single('image'), uploadEvidence);
+router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), uploadEvidence);
 router.get('/:reportId/evidence', getReportEvidence);
 router.patch('/:id/close', citizenCloseReport); // Citizen can close their own report
 router.post('/:id/create-new', createReportFromRejected); // Create new report from rejected
