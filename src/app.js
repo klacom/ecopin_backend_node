@@ -26,7 +26,7 @@ const app = express();
 // Global middleware
 app.use(helmet()); // Security headers
 app.use(cors({
-    origin: FRONTEND_URL || 'http://localhost:3001', // Flutter web dev server
+    origin: [FRONTEND_URL, 'http://localhost:3001', 'https://ecopin-web.onrender.com'],
     credentials: true,
 }));
 app.use(json({ limit: '10mb' }));
