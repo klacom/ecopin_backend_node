@@ -221,6 +221,40 @@ export const changePassword = async (req, res, next) => {
 
         res.status(200).json({ message: 'Password changed successfully' });
     } catch (error) {
-        next(error);
+        next(error)
+    }
+};
+
+// Lightweight session validation - JWT only, no database operations
+export const validateSession = async (req, res, next) => {
+    try {
+        const authHeader = req.headers.authorization;
+        
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ valid: false, message: 'No token provided' });
+        }
+
+        const token = authHeader.split(' ')[1];
+
+        // Decode and validate JWT only (no database lookup for free tier optimization)
+        try {
+            const parts = token.split('.');
+            if (parts.length !== 3) {
+                return res.status(401).json({ valid: false, message: 'Invalid token format' });
+            }
+
+            const payload = JSON.parse(atob(parts[1]));
+            const currentTime = Math.floor(Date.now() / 1000);
+
+            if (payload.exp && payload.exp < currentTime) {
+                return res.status(401).json({ valid: false, expired: true, message: 'Token expired' });
+            }
+
+            res.status(200).json({ valid: true, message: 'Session valid' });
+        } catch (jwtError) {
+            return res.status(401).json({ valid: false, message: 'Invalid token format' });
+        }
+    } catch (error) {
+        res.status(401).json({ valid: false, message: 'Session validation failed' });
     }
 };
