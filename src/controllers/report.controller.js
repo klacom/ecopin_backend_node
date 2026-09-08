@@ -2,7 +2,7 @@ import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
 import cloudinary from '../config/cloudinary.config.js';
-import { classifyImage, mapClassifierToValidation } from '../services/classifierClient.service.js';
+import { classifyImage, mapClassifierToValidation, calculateRA9003Category, calculateSeverityScore, calculateUrgencyScore } from '../services/classifierClient.service.js';
 import { extractVideoFrames } from '../services/videoFrameExtractor.service.js';
 import { classifyVideoFrames } from '../services/videoFrameClassifier.service.js';
 import { aggregateVideoValidation } from '../services/videoFrameAggregator.service.js';
@@ -720,6 +720,42 @@ export const createReport = async (req, res, next) => {
                 };
                 if (finalIssueType) {
                     updatePayload.issue_type = finalIssueType;
+                }
+                
+                // Persist raw ML outputs
+                if (imageResults.length > 0 && imageResults[0]) {
+                    updatePayload.ml_predicted_class = imageResults[0].predicted_class || null;
+                    updatePayload.ml_confidence = imageResults[0].confidence || null;
+                    updatePayload.ml_probabilities = imageResults[0].probabilities || null;
+                }
+                
+                // Calculate and persist severity, urgency, and RA 9003 category
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED || finalValidationStatus === VALIDATION_STATUS.MANUAL_REVIEW) {
+                    const reportMetadata = {
+                        predictedClass: finalIssueType,
+                        confidence: imageResults.length > 0 && imageResults[0] ? imageResults[0].confidence : 0,
+                        onPrivateProperty: onPrivateProperty,
+                        title: title,
+                        description: description
+                    };
+                    
+                    updatePayload.severity_score = calculateSeverityScore(
+                        reportMetadata.predictedClass,
+                        reportMetadata.confidence,
+                        reportMetadata.onPrivateProperty
+                    );
+                    
+                    updatePayload.urgency_score = calculateUrgencyScore(
+                        reportMetadata.predictedClass,
+                        reportMetadata.onPrivateProperty,
+                        reportMetadata.description
+                    );
+                    
+                    updatePayload.ra9003_category = calculateRA9003Category(
+                        reportMetadata.predictedClass,
+                        reportMetadata.title,
+                        reportMetadata.description
+                    );
                 }
 
                 const { error: dbError } = await supabase
