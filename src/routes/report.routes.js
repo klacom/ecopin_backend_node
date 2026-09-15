@@ -16,15 +16,13 @@ import {
     uploadReportPhoto,
     beforeAfterUpload,
     deleteReportPhoto,
-    updateLifecycleStage,
-    acknowledgeComplaint,
-    logAgencyResponse,
-    fetchAgencyResponses,
     updatePropertyOwnerConsent,
     lguResolveReport,
     citizenCloseReport,
     getSatisfactionAnalytics,
-    createReportFromRejected
+    createReportFromRejected,
+    updateLifecycleStage,
+    fetchAgencyResponses
 } from '../controllers/report.controller.js';
 import { authenticate, authorize } from '../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
@@ -52,9 +50,7 @@ router.use(authorize(ROLE_GROUPS.REPORT_MGMT));
 router.get('/analytics/satisfaction', getSatisfactionAnalytics);
 router.patch('/:id/status', updateReportStatus);
 router.patch('/:id/validation', updateReportValidation);
-router.patch('/:id/lifecycle-stage', updateLifecycleStage);
-router.post('/:id/acknowledge', acknowledgeComplaint);
-router.post('/:id/agency-response', logAgencyResponse);
+router.patch('/:id/lifecycle', updateLifecycleStage);
 router.get('/:id/agency-responses', fetchAgencyResponses);
 router.post('/:id/notes', addReportNote);
 router.delete('/:id/photo', deleteReportPhoto);

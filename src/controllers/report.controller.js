@@ -409,20 +409,30 @@ export const getReportEvidence = async (req, res, next) => {
         const prefix = `report_evidence/${reportId}`;
 
         // Fetch both image and video resources
-        const [imageResources, videoResources] = await Promise.all([
-            cloudinary.api.resources({
-                type: 'upload',
-                prefix: prefix,
-                max_results: 100,
-                resource_type: 'image'
-            }),
-            cloudinary.api.resources({
-                type: 'upload',
-                prefix: prefix,
-                max_results: 100,
-                resource_type: 'video'
-            })
-        ]);
+        let imageResources, videoResources;
+        try {
+            [imageResources, videoResources] = await Promise.all([
+                cloudinary.api.resources({
+                    type: 'upload',
+                    prefix: prefix,
+                    max_results: 100,
+                    resource_type: 'image'
+                }),
+                cloudinary.api.resources({
+                    type: 'upload',
+                    prefix: prefix,
+                    max_results: 100,
+                    resource_type: 'video'
+                })
+            ]);
+        } catch (cloudinaryError) {
+            console.error('Cloudinary API error:', cloudinaryError.message);
+            console.error('Cloudinary error details:', JSON.stringify(cloudinaryError, null, 2));
+            return res.status(500).json({
+                message: 'Failed to fetch evidence from Cloudinary',
+                error: cloudinaryError.message
+            });
+        }
 
         const allResources = [...(imageResources.resources || []), ...(videoResources.resources || [])];
 
@@ -897,7 +907,7 @@ export const updateReportStatus = async (req, res, next) => {
 
 export const updateReportValidation = async (req, res, next) => {
     const { id } = req.params;
-    const { validation_status, rejection_reason } = req.body;
+    const { validation_status } = req.body;
     const user_id = req.user.id;
 
     try {
@@ -912,16 +922,6 @@ export const updateReportValidation = async (req, res, next) => {
             validation_status,
             updated_at: new Date().toISOString()
         };
-
-        // Set rejection reason and timestamp if rejecting
-        if (validation_status === 'rejected') {
-            updateData.rejection_reason = rejection_reason || null;
-            updateData.rejected_at = new Date().toISOString();
-        } else {
-            // Clear rejection fields if not rejected
-            updateData.rejection_reason = null;
-            updateData.rejected_at = null;
-        }
 
         const { data, error } = await supabase
             .from('reports')
@@ -944,9 +944,7 @@ export const updateReportValidation = async (req, res, next) => {
                 id,
                 'rejected',
                 'Report Rejected',
-                rejection_reason
-                    ? `Your report has been rejected: ${rejection_reason}`
-                    : 'Your report has been rejected.'
+                'Your report has been rejected.'
             );
         }
 
