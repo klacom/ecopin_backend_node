@@ -36,7 +36,7 @@ router.get('/audit-logs', authorize(['admin']), getAuditLogs);
 // System statistics (accessible by admin and officer)
 router.get('/stats', authorize(ROLE_GROUPS.STATS_VIEWERS), getSystemStats);
 
-// Session Timeout Minutes (Accessible by All)
-router.get('/timeout', authorize(ROLE_GROUPS.DESK_OPS), getTimeoutMinutes)
+// Session Timeout Minutes (Accessible by All Authenticated Users)
+router.get('/timeout', getTimeoutMinutes)
 
 export default router;
