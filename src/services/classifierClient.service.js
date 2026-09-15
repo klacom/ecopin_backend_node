@@ -1,7 +1,9 @@
 import { CLASSIFIER_SERVICE_URL, VALIDATION_STATUS } from '../config/index.js';
 
-const HIGH_CONFIDENCE_THRESHOLD = parseFloat(process.env.CLASSIFIER_HIGH_CONFIDENCE || '0.70');
-const ENVIRONMENTAL_CLASSES = ['flooding', 'pollution', 'waste'];
+// MANUAL_REVIEW confidence band — mirrors Exp 3.2 inference service config
+const REVIEW_LO = parseFloat(process.env.EXP32_REVIEW_LO || '0.35');
+const REVIEW_HI = parseFloat(process.env.EXP32_REVIEW_HI || '0.65');
+const THRESHOLD  = parseFloat(process.env.EXP32_THRESHOLD  || '0.50');
 
 export const classifyImage = async (imageBuffer, originalName = 'image.jpg', mimeType = 'image/jpeg') => {
     if (!CLASSIFIER_SERVICE_URL) {
@@ -35,6 +37,9 @@ export const classifyImage = async (imageBuffer, originalName = 'image.jpg', mim
             predicted_class: result.predicted_class,
             confidence: result.confidence,
             probabilities: result.probabilities,
+            // Exp 3.2 fields
+            decision: result.decision,
+            in_review_zone: result.in_review_zone,
         };
     } catch (err) {
         clearTimeout(timeout);
@@ -45,6 +50,15 @@ export const classifyImage = async (imageBuffer, originalName = 'image.jpg', mim
     }
 };
 
+/**
+ * Maps an Experiment 3.2 classifier result (VALID/INVALID + decision field)
+ * to a VALIDATION_STATUS used by the EcoPin backend.
+ *
+ * The inference service already encodes the full decision logic including
+ * the manual-review confidence zone, so we prefer its `decision` field.
+ * A fallback using confidence + threshold is applied if the `decision` field
+ * is absent (e.g. a legacy response).
+ */
 export const mapClassifierToValidation = (classifierResult) => {
     if (!classifierResult || !classifierResult.ok) {
         return {
@@ -54,26 +68,58 @@ export const mapClassifierToValidation = (classifierResult) => {
         };
     }
 
-    const { predicted_class, confidence } = classifierResult;
-    const isEnvironmental = ENVIRONMENTAL_CLASSES.includes(predicted_class);
-    const isHighConfidence = confidence >= HIGH_CONFIDENCE_THRESHOLD;
+    const { predicted_class, confidence, decision } = classifierResult;
 
-    if (isEnvironmental && isHighConfidence) {
+    // --- Exp 3.2 path: use the decision field emitted by the inference service ---
+    if (decision) {
+        if (decision === 'APPROVED') {
+            return {
+                status: VALIDATION_STATUS.APPROVED,
+                rejection_reason: null,
+                auto_classification: predicted_class,
+            };
+        }
+        if (decision === 'REJECTED') {
+            return {
+                status: VALIDATION_STATUS.REJECTED,
+                rejection_reason: 'Image classified as INVALID by automated validation (Exp 3.2).',
+                auto_classification: predicted_class,
+            };
+        }
+        // 'MANUAL_REVIEW' or any unexpected value → manual review
         return {
-            status: VALIDATION_STATUS.APPROVED,
+            status: VALIDATION_STATUS.MANUAL_REVIEW,
             rejection_reason: null,
             auto_classification: predicted_class,
         };
     }
 
-    if (predicted_class === 'non_environmental' && isHighConfidence) {
+    // --- Fallback path: binary VALID/INVALID without explicit decision field ---
+    if (predicted_class === 'VALID' || predicted_class === 'INVALID') {
+        const probValid = predicted_class === 'VALID' ? confidence : 1.0 - confidence;
+        const inReviewZone = probValid >= REVIEW_LO && probValid <= REVIEW_HI;
+        if (inReviewZone) {
+            return {
+                status: VALIDATION_STATUS.MANUAL_REVIEW,
+                rejection_reason: null,
+                auto_classification: predicted_class,
+            };
+        }
+        if (probValid >= THRESHOLD) {
+            return {
+                status: VALIDATION_STATUS.APPROVED,
+                rejection_reason: null,
+                auto_classification: predicted_class,
+            };
+        }
         return {
             status: VALIDATION_STATUS.REJECTED,
-            rejection_reason: 'Image classified as non-environmental by automated validation.',
+            rejection_reason: 'Image classified as INVALID by automated validation.',
             auto_classification: predicted_class,
         };
     }
 
+    // Unknown class
     return {
         status: VALIDATION_STATUS.MANUAL_REVIEW,
         rejection_reason: null,
