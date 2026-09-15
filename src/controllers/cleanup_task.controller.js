@@ -302,10 +302,17 @@ export const getAllCleanupTasks = async (req, res, next) => {
         const { data, error } = await query;
 
         if (error) {
+            console.error('Error fetching cleanup tasks:', error);
             return res.status(400).json({
                 message: 'Failed to fetch cleanup tasks',
                 error: error.message
             });
+        }
+
+        console.log('Fetched cleanup tasks:', data.length, 'tasks');
+        if (assigned_to_me === 'true') {
+            console.log('User ID:', userId);
+            console.log('Tasks with assigned_crew_ids:', data.map(t => ({ id: t.id, assigned_crew_ids: t.assigned_crew_ids })));
         }
 
         res.status(200).json(data);
