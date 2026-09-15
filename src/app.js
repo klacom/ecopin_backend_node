@@ -10,6 +10,7 @@ import { FRONTEND_URL } from './config/index.js';
 import authRoutes from './routes/auth.routes.js';
 import reportRoutes from './routes/report.routes.js';
 import { clusterRoutes } from './modules/clustering/index.js';
+import { spatialRoutes } from './modules/spatial_forecast/index.js';
 import profileRoutes from './routes/profile.routes.js';
 import cleanupTaskRoutes from './routes/cleanup_task.routes.js';
 import adminRoutes from './routes/admin.routes.js';
@@ -45,6 +46,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/clusters', clusterRoutes);
+app.use('/api/spatial-forecast', spatialRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/cleanup-tasks', cleanupTaskRoutes);
 app.use('/api/admin', adminRoutes);
