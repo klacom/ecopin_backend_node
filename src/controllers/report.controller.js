@@ -6,9 +6,27 @@ import { classifyImage, mapClassifierToValidation } from '../services/classifier
 import { extractVideoFrames } from '../services/videoFrameExtractor.service.js';
 import { classifyVideoFrames } from '../services/videoFrameClassifier.service.js';
 import { aggregateVideoValidation } from '../services/videoFrameAggregator.service.js';
-import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, VALID_VIDEO_MIME_TYPES, VALID_VIDEO_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE, REPORT_VIDEO_FILE_SIZE, REPORT_PHOTOS_STORAGE_PATH, BEFORE_AFTER_PHOTO_FILE_SIZE } from '../config/index.js';
+import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, VALID_VIDEO_MIME_TYPES, VALID_VIDEO_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE, REPORT_VIDEO_FILE_SIZE, REPORT_PHOTOS_STORAGE_PATH, BEFORE_AFTER_PHOTO_FILE_SIZE, CLASSIFIER_SERVICE_URL } from '../config/index.js';
 import { clusterReports } from '../modules/clustering/index.js';
 import { uploadFromBuffer, deleteFromCloudinary, uploadVideoFromBuffer } from '../services/cloudinary.service.js';
+
+// Helper function to determine issue type from text
+const determineIssueTypeFromText = (title, description) => {
+    const lowerTitle = (title || '').toLowerCase();
+    const lowerDesc = (description || '').toLowerCase();
+    
+    if (lowerTitle.includes('flood') || lowerDesc.includes('flood') || 
+        lowerTitle.includes('water') || lowerDesc.includes('water') ||
+        lowerTitle.includes('submerged') || lowerDesc.includes('submerged')) {
+        return 'flooding';
+    } else if (lowerTitle.includes('pollution') || lowerDesc.includes('pollution') ||
+               lowerTitle.includes('smoke') || lowerDesc.includes('smoke') ||
+               lowerTitle.includes('smog') || lowerDesc.includes('smog')) {
+        return 'pollution';
+    } else {
+        return 'waste'; // Default to waste
+    }
+};
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -403,9 +421,37 @@ export const uploadEvidence = async (req, res, next) => {
 
 export const getReportEvidence = async (req, res, next) => {
     const { reportId } = req.params;
+    const user_id = req.user.id;
+    const user_role = req.user.role || 'citizen';
 
     try {
         console.log('Fetching evidence for report:', reportId);
+        
+        // Security: Check if user has access to this report
+        const { data: report, error: reportError } = await supabase
+            .from('reports_view')
+            .select('user_id, validation_status')
+            .eq('id', reportId)
+            .single();
+
+        if (reportError || !report) {
+            return res.status(404).json({
+                message: 'Report not found',
+                error: reportError?.message || 'Report does not exist'
+            });
+        }
+
+        // Security: Ownership check - users can only access evidence for their own reports or approved public reports
+        const isOwner = report.user_id === user_id;
+        const isApprovedPublic = report.validation_status === 'approved';
+        const isOfficerOrAdmin = ['admin', 'officer', 'field_crew'].includes(user_role);
+
+        if (!isOwner && !isApprovedPublic && !isOfficerOrAdmin) {
+            return res.status(403).json({
+                message: 'Access denied: You can only access evidence for your own reports or approved public reports'
+            });
+        }
+
         const prefix = `report_evidence/${reportId}`;
 
         // Fetch both image and video resources
@@ -465,7 +511,7 @@ export const createReport = async (req, res, next) => {
         description,
         latitude,
         longitude,
-        on_private_property
+        on_private_property,
     } = req.body;
     const user_id = req.user.id;
     
@@ -516,13 +562,17 @@ export const createReport = async (req, res, next) => {
         // Determine property owner consent status
         const propertyOwnerConsentStatus = onPrivateProperty ? 'pending' : 'not_required';
 
+        // Determine initial issue type from text to avoid pending state
+        const initialIssueType = determineIssueTypeFromText(title, description);
+
         const { data: report, error } = await supabase
             .from('reports')
             .insert({
                 user_id,
                 title,
                 description,
-                issue_type: 'pending', // Will be updated by AI validation
+                // Set initial issue type based on text analysis, will be updated by AI validation
+                issue_type: initialIssueType,
                 location: point,
                 on_private_property: onPrivateProperty,
                 property_owner_consent_status: propertyOwnerConsentStatus,
@@ -559,7 +609,7 @@ export const createReport = async (req, res, next) => {
             try {
                 let finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
                 let finalRejectionReason = null;
-                let finalIssueType = null;
+                let finalIssueType = null; // Will be set from AI classification
 
                 // Upload media to Cloudinary FIRST (independent of AI validation)
                 console.log(`[Evidence] Starting media upload for report ${report.id}`);
@@ -644,6 +694,16 @@ export const createReport = async (req, res, next) => {
                             finalRejectionReason = aggregated.rejection_reason;
                             if (aggregated.dominant_class) {
                                 finalIssueType = aggregated.dominant_class;
+                            } else {
+                                // Fallback if video classification didn't provide a class
+                                finalIssueType = determineIssueTypeFromText(title, description);
+                                console.log(`[VIDEO-PIPELINE] Using fallback issue_type: ${finalIssueType}`);
+                            }
+                        } else {
+                            // For combined reports, still use video dominant class if available
+                            if (aggregated.dominant_class && !finalIssueType) {
+                                finalIssueType = aggregated.dominant_class;
+                                console.log(`[VIDEO-PIPELINE] Using video dominant_class for combined report: ${finalIssueType}`);
                             }
                         }
                         
@@ -654,16 +714,32 @@ export const createReport = async (req, res, next) => {
                         if (imageFiles.length === 0) {
                             finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
                             finalRejectionReason = `Video processing failed: ${videoError.message}`;
+                            // Ensure we still have an issue type even if video processing failed
+                            if (!finalIssueType) {
+                                finalIssueType = determineIssueTypeFromText(title, description);
+                                console.log(`[VIDEO-PIPELINE] Fallback issue_type after video processing failure: ${finalIssueType}`);
+                            }
                         }
                     }
                 }
 
                 // Run EfficientNet classifier on all images in background if images are present
                 if (imageFiles.length > 0) {
-                    console.log(`[Classifier] Processing ${imageFiles.length} images for report ${report.id}`);
+                    console.log(`[Classifier] ══════════════════════════════════════════`);
+                    console.log(`[Classifier] Starting classification for report ${report.id}`);
+                    console.log(`[Classifier]   images to classify : ${imageFiles.length}`);
+                    console.log(`[Classifier]   target             : ${CLASSIFIER_SERVICE_URL}/classify`);
+                    console.log(`[Classifier] ══════════════════════════════════════════`);
                     
                     const imageResults = [];
-                    for (const imageFile of imageFiles) {
+                    for (let i = 0; i < imageFiles.length; i++) {
+                        const imageFile = imageFiles[i];
+                        const sizeKB = (imageFile.buffer.byteLength / 1024).toFixed(1);
+                        console.log(`[Classifier] ──────────────────────────────────────`);
+                        console.log(`[Classifier] → SEND image [${i + 1}/${imageFiles.length}]`);
+                        console.log(`[Classifier]   file   : ${imageFile.originalname}`);
+                        console.log(`[Classifier]   mime   : ${imageFile.mimetype}`);
+                        console.log(`[Classifier]   size   : ${sizeKB} KB`);
                         try {
                             const classifierResult = await classifyImage(
                                 imageFile.buffer,
@@ -672,12 +748,18 @@ export const createReport = async (req, res, next) => {
                             );
                             if (classifierResult.ok) {
                                 imageResults.push(classifierResult);
-                                console.log(`[Classifier] Image ${imageFile.originalname} classified successfully`);
+                                console.log(`[Classifier] ← RECEIVED image [${i + 1}/${imageFiles.length}] OK`);
+                                console.log(`[Classifier]   predicted_class    : ${classifierResult.predicted_class}`);
+                                console.log(`[Classifier]   confidence         : ${classifierResult.confidence}`);
+                                console.log(`[Classifier]   decision           : ${classifierResult.decision}`);
+                                console.log(`[Classifier]   in_review_zone     : ${classifierResult.in_review_zone}`);
+                                console.log(`[Classifier]   predicted_category : ${classifierResult.predicted_category ?? '(null)'}`);
                             } else {
-                                console.error(`[Classifier] Inference failed for ${imageFile.originalname}:`, classifierResult.error);
+                                console.error(`[Classifier] ← RECEIVED image [${i + 1}/${imageFiles.length}] FAILED`);
+                                console.error(`[Classifier]   error : ${classifierResult.error}`);
                             }
                         } catch (classifierErr) {
-                            console.error(`[Classifier] Exception for ${imageFile.originalname}:`, classifierErr);
+                            console.error(`[Classifier] ← EXCEPTION image [${i + 1}/${imageFiles.length}]`, classifierErr);
                         }
                     }
 
@@ -689,11 +771,20 @@ export const createReport = async (req, res, next) => {
                             manual_review: 0
                         };
 
+                        // Tally category votes from non-rejected images.
+                        const categoryCounts = {};
+
                         for (const result of imageResults) {
                             const mapped = mapClassifierToValidation(result);
                             if (mapped.status === VALIDATION_STATUS.APPROVED) statusCounts.approved++;
                             else if (mapped.status === VALIDATION_STATUS.REJECTED) statusCounts.rejected++;
                             else statusCounts.manual_review++;
+
+                            // Accumulate category votes (null means image was rejected — skip).
+                            if (mapped.predicted_category) {
+                                categoryCounts[mapped.predicted_category] =
+                                    (categoryCounts[mapped.predicted_category] || 0) + 1;
+                            }
                         }
 
                         console.log(`[Classifier] Image results: ${JSON.stringify(statusCounts)}`);
@@ -709,6 +800,37 @@ export const createReport = async (req, res, next) => {
                             finalRejectionReason = 'Mixed or unclear image validation results.';
                         }
 
+                        // Pick the majority-voted category (only when not fully rejected).
+                        if (finalValidationStatus !== VALIDATION_STATUS.REJECTED) {
+                            const categoryEntries = Object.entries(categoryCounts);
+                            if (categoryEntries.length > 0) {
+                                categoryEntries.sort((a, b) => b[1] - a[1]);
+                                finalIssueType = categoryEntries[0][0];
+                                console.log(`[Classifier] Majority category: ${finalIssueType} (counts: ${JSON.stringify(categoryCounts)})`);
+                            } else {
+                                console.log(`[Classifier] No category votes collected — trying fallback`);
+                                // If no category votes but validation succeeded, try to use the first image's category
+                                if (imageResults.length > 0 && imageResults[0].predicted_category) {
+                                    finalIssueType = imageResults[0].predicted_category;
+                                    console.log(`[Classifier] Using first image's category as fallback: ${finalIssueType}`);
+                                } else {
+                                    console.log(`[Classifier] No AI category available, will use text-based fallback`);
+                                }
+                            }
+                        } else {
+                            console.log(`[Classifier] Report rejected — skipping category assignment`);
+                        }
+
+                        console.log(`[Classifier] ══════════════════════════════════════════`);
+                        console.log(`[Classifier] AGGREGATION RESULT for report ${report.id}`);
+                        console.log(`[Classifier]   images submitted  : ${imageFiles.length}`);
+                        console.log(`[Classifier]   images classified : ${imageResults.length}`);
+                        console.log(`[Classifier]   status counts     : ${JSON.stringify(statusCounts)}`);
+                        console.log(`[Classifier]   category counts   : ${JSON.stringify(categoryCounts)}`);
+                        console.log(`[Classifier]   final status      : ${finalValidationStatus}`);
+                        console.log(`[Classifier]   final issue_type  : ${finalIssueType ?? '(none — keeping pending)'}`);
+                        console.log(`[Classifier] ══════════════════════════════════════════`);
+
                         // Use image validation as primary if no video, or for combined reports
                         if (!videoFile) {
                             finalValidationStatus = finalValidationStatus;
@@ -718,6 +840,12 @@ export const createReport = async (req, res, next) => {
                         // All classifications failed, fall back to manual review
                         finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
                         finalRejectionReason = 'All image classifications failed.';
+                        console.error(`[Classifier] All ${imageFiles.length} image(s) failed classification for report ${report.id} — falling back to MANUAL_REVIEW`);
+                        // Ensure we still have an issue type even if classification failed
+                        if (!finalIssueType) {
+                            finalIssueType = determineIssueTypeFromText(title, description);
+                            console.log(`[Classifier] Fallback issue_type after classification failure: ${finalIssueType}`);
+                        }
                     }
                 }
 
@@ -728,9 +856,39 @@ export const createReport = async (req, res, next) => {
                     validation_status: finalValidationStatus,
                     updated_at: new Date().toISOString(),
                 };
-                if (finalIssueType) {
+                
+                // Always set issue_type - use AI category if available, otherwise fallback
+                if (finalIssueType && finalIssueType !== 'pending') {
                     updatePayload.issue_type = finalIssueType;
+                    console.log(`[DATABASE-UPDATE] Using AI-determined issue_type: ${finalIssueType}`);
+                } else {
+                    // Fallback: try to determine issue type from title/description if AI failed
+                    console.log(`[DATABASE-UPDATE] No valid AI category determined, using fallback for issue_type`);
+                    updatePayload.issue_type = determineIssueTypeFromText(title, description);
+                    console.log(`[DATABASE-UPDATE] Fallback issue_type: ${updatePayload.issue_type}`);
                 }
+                
+                // Record the rejection timestamp when the AI rejects the report.
+                if (finalValidationStatus === VALIDATION_STATUS.REJECTED) {
+                    updatePayload.rejected_at = new Date().toISOString();
+                    if (finalRejectionReason) {
+                        updatePayload.rejection_reason = finalRejectionReason;
+                    }
+                }
+                
+                // Ensure we never leave it in pending_ai_validation state
+                if (updatePayload.validation_status === VALIDATION_STATUS.PENDING_AI_VALIDATION) {
+                    console.log(`[DATABASE-UPDATE] WARNING: Still in pending_ai_validation, forcing to manual_review`);
+                    updatePayload.validation_status = VALIDATION_STATUS.MANUAL_REVIEW;
+                }
+                
+                // Final safety check: ensure issue_type is never null/undefined/pending
+                if (!updatePayload.issue_type || updatePayload.issue_type === 'pending') {
+                    console.log(`[DATABASE-UPDATE] CRITICAL: issue_type is still null/pending, forcing to 'waste'`);
+                    updatePayload.issue_type = 'waste';
+                }
+                
+                console.log(`[DATABASE-UPDATE] Final payload: ${JSON.stringify(updatePayload)}`);
 
                 const { error: dbError } = await supabase
                     .from('reports')
@@ -831,6 +989,8 @@ export const getPublicReports = async (req, res, next) => {
 
 export const getReportById = async (req, res, next) => {
     const { id } = req.params;
+    const user_id = req.user.id;
+    const user_role = req.user.role || 'citizen';
 
     try {
         const { data: report, error: reportError } = await supabase
@@ -843,6 +1003,17 @@ export const getReportById = async (req, res, next) => {
             return res.status(404).json({
                 message: 'Report not found',
                 error: reportError.message
+            });
+        }
+
+        // Security: Ownership check - users can only access their own reports or approved public reports
+        const isOwner = report.user_id === user_id;
+        const isApprovedPublic = report.validation_status === 'approved';
+        const isOfficerOrAdmin = ['admin', 'officer', 'field_crew'].includes(user_role);
+
+        if (!isOwner && !isApprovedPublic && !isOfficerOrAdmin) {
+            return res.status(403).json({
+                message: 'Access denied: You can only access your own reports or approved public reports'
             });
         }
 
@@ -922,6 +1093,11 @@ export const updateReportValidation = async (req, res, next) => {
             validation_status,
             updated_at: new Date().toISOString()
         };
+
+        // Record the rejection timestamp when an officer manually rejects a report.
+        if (validation_status === 'rejected') {
+            updateData.rejected_at = new Date().toISOString();
+        }
 
         const { data, error } = await supabase
             .from('reports')
@@ -1492,7 +1668,7 @@ export const createReportFromRejected = async (req, res, next) => {
                 on_private_property: originalReport.on_private_property,
                 property_owner_consent_status: originalReport.on_private_property ? 'pending' : 'not_required',
                 status: originalReport.on_private_property ? 'pending_owner_consent' : 'unresolved',
-                validation_status: VALIDATION_STATUS.PENDING
+                validation_status: VALIDATION_STATUS.PENDING_AI_VALIDATION
             })
             .select()
             .single();

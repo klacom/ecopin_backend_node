@@ -24,7 +24,7 @@ import {
     updateLifecycleStage,
     fetchAgencyResponses
 } from '../controllers/report.controller.js';
-import { authenticate, authorize } from '../middleware/auth.middleware.js';
+import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 
 const router = Router();
@@ -34,6 +34,9 @@ router.get('/public', getPublicReports);
 
 // All other report routes require authentication
 router.use(authenticate);
+
+// Add suspension check for protected routes
+router.use(checkUserSuspension);
 
 // Routes that don't need LGU/admin role first
 router.post('/', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), createReport);

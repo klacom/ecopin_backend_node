@@ -12,13 +12,16 @@ import {
     getAvailableCrew,
     upload
 } from '../controllers/cleanup_task.controller.js';
-import { authenticate, authorize } from '../middleware/auth.middleware.js';
+import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 
 const router = Router();
 
 // All cleanup task routes require authentication
 router.use(authenticate);
+
+// Add suspension check for protected routes
+router.use(checkUserSuspension);
 
 // Public endpoint (no auth required for cluster tasks)
 router.get('/cluster/:clusterId', getTasksByClusterId);

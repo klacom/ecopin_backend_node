@@ -5,7 +5,7 @@ import {
     uploadAvatar,
     updateDataConsent
 } from '../controllers/profile.controller.js';
-import { authenticate } from '../middleware/auth.middleware.js';
+import { authenticate, checkUserSuspension } from '../middleware/auth.middleware.js';
 import multer from 'multer';
 import { PROFILE_FILE_SIZE } from '../config/index.js';
 
@@ -29,6 +29,9 @@ const upload = multer({
 
 // All profile routes require authentication
 router.use(authenticate);
+
+// Add suspension check for protected routes
+router.use(checkUserSuspension);
 
 router.get('/', getProfile);
 router.put('/', updateProfile);

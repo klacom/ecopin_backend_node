@@ -39,11 +39,21 @@ export const authenticate = async (req, res, next) => {
         // Attach user and role to request object
         req.user = user;
 
-        // 3. Check for suspension and expire old strikes
+        next();
+    } catch (error) {
+        console.error('Authentication error:', error);
+        return res.status(401).json({ error: 'Authentication failed' });
+    }
+};
+
+// Middleware to check suspension (can be used separately)
+export const checkUserSuspension = async (req, res, next) => {
+    try {
         await expireOldStrikes(req, res, () => {});
         await checkSuspension(req, res, next);
     } catch (error) {
-        return res.status(401).json({ error: 'Authentication failed' });
+        console.error('Error in suspension check:', error);
+        return next(); // Continue even if suspension check fails
     }
 };
 

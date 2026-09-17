@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, authorize } from '../middleware/auth.middleware.js';
+import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 import {
     getAllUsers,
@@ -19,6 +19,12 @@ const router = Router();
 // All admin routes require authentication
 router.use(authenticate);
 
+// Add suspension check for protected routes
+router.use(checkUserSuspension);
+
+// Session Timeout Minutes (Accessible by All Authenticated Users)
+router.get('/timeout', getTimeoutMinutes);
+
 // User management (admin only)
 router.post('/users', authorize(['admin']), createUser);
 router.get('/users', authorize(['admin']), getAllUsers);
@@ -35,8 +41,5 @@ router.get('/audit-logs', authorize(['admin']), getAuditLogs);
 
 // System statistics (accessible by admin and officer)
 router.get('/stats', authorize(ROLE_GROUPS.STATS_VIEWERS), getSystemStats);
-
-// Session Timeout Minutes (Accessible by All Authenticated Users)
-router.get('/timeout', getTimeoutMinutes)
 
 export default router;

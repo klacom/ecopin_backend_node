@@ -1,12 +1,15 @@
 import { Router } from 'express';
 import { triggerClustering, getAllClusters, getCluster, updateCluster } from '../controllers/cluster.controller.js';
-import { authenticate, authorize } from '../../../middleware/auth.middleware.js';
+import { authenticate, checkUserSuspension, authorize } from '../../../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../../../constants/roles.js';
 
 const router = Router();
 
 // All cluster routes require authentication
 router.use(authenticate);
+
+// Add suspension check for protected routes
+router.use(checkUserSuspension);
 
 // Trigger clustering requires desk ops (admin/officer only)
 router.post('/trigger', authorize(ROLE_GROUPS.DESK_OPS), triggerClustering);
