@@ -9,6 +9,7 @@ import { aggregateVideoValidation } from '../services/videoFrameAggregator.servi
 import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, VALID_VIDEO_MIME_TYPES, VALID_VIDEO_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE, REPORT_VIDEO_FILE_SIZE, REPORT_PHOTOS_STORAGE_PATH, BEFORE_AFTER_PHOTO_FILE_SIZE, CLASSIFIER_SERVICE_URL } from '../config/index.js';
 import { clusterReports } from '../modules/clustering/index.js';
 import { uploadFromBuffer, deleteFromCloudinary, uploadVideoFromBuffer } from '../services/cloudinary.service.js';
+import { calculateSeverity } from '../services/severity.service.js';
 
 // Helper function to determine issue type from text
 const determineIssueTypeFromText = (title, description) => {
@@ -505,6 +506,8 @@ export const createReport = async (req, res, next) => {
         latitude,
         longitude,
         on_private_property,
+        scale_level,
+        obstruction_level,
     } = req.body;
     const user_id = req.user.id;
     
@@ -570,7 +573,9 @@ export const createReport = async (req, res, next) => {
                 on_private_property: onPrivateProperty,
                 property_owner_consent_status: propertyOwnerConsentStatus,
                 status: onPrivateProperty ? 'pending_owner_consent' : 'unresolved',
-                validation_status: validationStatus
+                validation_status: validationStatus,
+                scale_level: scale_level || 'medium',
+                obstruction_level: obstruction_level || 'none'
             })
             .select()
             .single();
@@ -859,6 +864,20 @@ export const createReport = async (req, res, next) => {
                     console.log(`[DATABASE-UPDATE] No valid AI category determined, using fallback for issue_type`);
                     updatePayload.issue_type = determineIssueTypeFromText(title, description);
                     console.log(`[DATABASE-UPDATE] Fallback issue_type: ${updatePayload.issue_type}`);
+                }
+
+                // Severity calculation for approved reports
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
+                    try {
+                        const reportForSeverity = { ...report, issue_type: updatePayload.issue_type };
+                        const severityResult = await calculateSeverity(reportForSeverity);
+                        updatePayload.severity_score = severityResult.severityScore;
+                        updatePayload.severity_level = severityResult.severityLevel;
+                        updatePayload.severity_factors = severityResult.severityFactors;
+                        console.log(`[DATABASE-UPDATE] Calculated severity: Score=${updatePayload.severity_score}, Level=${updatePayload.severity_level}`);
+                    } catch (severityErr) {
+                        console.error(`[DATABASE-UPDATE] FAILED to calculate severity:`, severityErr);
+                    }
                 }
                 
                 // Record the rejection timestamp when the AI rejects the report.
