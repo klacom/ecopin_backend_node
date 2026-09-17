@@ -4,7 +4,11 @@ import express, { json, urlencoded } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { FRONTEND_URL } from './config/index.js';
+
+const execFileAsync = promisify(execFile);
 
 // Import routes
 import authRoutes from './routes/auth.routes.js';
@@ -38,8 +42,73 @@ app.use(morgan('combined')); // Logging
 app.use(rateLimiter);
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-    res.json({ status: 'OK', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+    const { supabase } = await import('./config/supabase.config.js');
+    const { CLASSIFIER_SERVICE_URL } = await import('./config/index.js');
+    
+    const healthCheck = {
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        environment: process.env.NODE_ENV || 'development',
+        dependencies: {
+            database: 'unknown',
+            ffmpeg: 'unknown',
+            classifier: 'unknown'
+        }
+    };
+
+    // Check ffmpeg availability
+    try {
+        await execFileAsync('ffmpeg', ['-version']);
+        healthCheck.dependencies.ffmpeg = 'available';
+    } catch (error) {
+        healthCheck.dependencies.ffmpeg = 'unavailable';
+        healthCheck.status = 'DEGRADED';
+    }
+
+    // Check classifier service availability
+    try {
+        if (CLASSIFIER_SERVICE_URL) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 5000);
+            
+            const response = await fetch(`${CLASSIFIER_SERVICE_URL}/health`, {
+                signal: controller.signal
+            }).catch(() => null);
+            
+            clearTimeout(timeout);
+            
+            if (response && response.ok) {
+                healthCheck.dependencies.classifier = 'available';
+            } else {
+                healthCheck.dependencies.classifier = 'unavailable';
+                healthCheck.status = 'DEGRADED';
+            }
+        } else {
+            healthCheck.dependencies.classifier = 'not_configured';
+        }
+    } catch (error) {
+        healthCheck.dependencies.classifier = 'error';
+        healthCheck.status = 'DEGRADED';
+    }
+
+    // Check database connectivity
+    try {
+        const { error } = await supabase.from('profiles').select('id').limit(1);
+        if (!error) {
+            healthCheck.dependencies.database = 'available';
+        } else {
+            healthCheck.dependencies.database = 'error';
+            healthCheck.status = 'DEGRADED';
+        }
+    } catch (error) {
+        healthCheck.dependencies.database = 'error';
+        healthCheck.status = 'DEGRADED';
+    }
+
+    const statusCode = healthCheck.status === 'OK' ? 200 : 503;
+    res.status(statusCode).json(healthCheck);
 });
 
 // Routes

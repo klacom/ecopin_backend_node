@@ -7,8 +7,8 @@ const DOMINANT_CLASS_RATIO_APPROVE = 0.50;
 const AVG_CONFIDENCE_APPROVE = 0.60;
 const ENVIRONMENTAL_RATIO_REJECT = 0.40;
 
-// Environmental classes
-const ENVIRONMENTAL_CLASSES = ['waste', 'pollution', 'flooding'];
+// Environmental classes — includes Exp 3.2 binary 'VALID' and legacy 4-class names
+const ENVIRONMENTAL_CLASSES = ['VALID', 'waste', 'pollution', 'flooding'];
 
 /**
  * Aggregates 5 frame classification results into a single video validation result

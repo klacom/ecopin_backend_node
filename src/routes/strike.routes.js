@@ -8,7 +8,7 @@ import {
     getUserSuspensionStatus,
     liftSuspension
 } from '../controllers/strike.controller.js';
-import { authenticate, authorize } from '../middleware/auth.middleware.js';
+import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 
 const router = Router();
@@ -16,12 +16,15 @@ const router = Router();
 // All strike routes require authentication
 router.use(authenticate);
 
-// Routes for users to view their own strikes
+// Routes for users to view their own strikes (skip suspension check)
 router.get('/my', getUserStrikes);
 router.get('/my/suspension-status', (req, res, next) => {
     req.params.userId = req.user.id;
     getUserSuspensionStatus(req, res, next);
 });
+
+// Add suspension check for other protected routes
+router.use(checkUserSuspension);
 
 // Routes for admins to manage strikes
 router.use(authorize(ROLE_GROUPS.DESK_OPS));
