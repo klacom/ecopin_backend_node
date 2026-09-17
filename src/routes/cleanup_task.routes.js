@@ -23,7 +23,7 @@ router.use(authenticate);
 // Add suspension check for protected routes
 router.use(checkUserSuspension);
 
-// Public endpoint (no auth required for cluster tasks)
+// Cluster tasks endpoint (accessible to any authenticated user, placed before role gate)
 router.get('/cluster/:clusterId', getTasksByClusterId);
 
 // Routes requiring field ops role (officer, field crew, admin)

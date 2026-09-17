@@ -330,13 +330,6 @@ export const uploadEvidence = async (req, res, next) => {
 
     // For images, proceed with existing upload logic
     try {
-        // List buckets to verify the correct bucket name
-        const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
-        if (bucketsError) {
-            console.error('Error listing buckets:', bucketsError);
-        } else {
-            console.log('Available buckets:', buckets.map(b => b.name));
-        }
         // Extract EXIF metadata from image
         let imageMetadata = {
             latitude: null,
