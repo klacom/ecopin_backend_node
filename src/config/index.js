@@ -19,6 +19,14 @@ export const RATE_LIMIT_WINDOW_MS = process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 
 export const RATE_LIMIT_MAX_REQUESTS = process.env.RATE_LIMIT_MAX_REQUESTS || 100;
 export const MIN_PASSWORD_LENGTH = 8;
 
+export const SMTP_HOST = process.env.SMTP_HOST;
+export const SMTP_PORT = process.env.SMTP_PORT || 587;
+export const SMTP_USER = process.env.SMTP_USER;
+export const SMTP_PASS = process.env.SMTP_PASS;
+export const SMTP_FROM_NAME = process.env.SMTP_FROM_NAME || 'EcoPin';
+export const EMAIL_VERIFICATION_EXPIRY_HOURS = 24;
+export const APP_BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3000';
+
 export const VALIDATION_STATUS = {
     PENDING_AI_VALIDATION: 'pending_ai_validation',
     APPROVED: 'approved',

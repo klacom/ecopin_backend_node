@@ -167,9 +167,9 @@ export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
       return forecast;
     }
     
-    // Check if cached predictions have the correct grid cell size (25m)
+    // Check if cached predictions have the correct grid cell size (100m)
     // If not, regenerate to ensure consistency
-    const hasCorrectGridSize = data.some(r => r.region_radius_meters === 25);
+    const hasCorrectGridSize = data.some(r => r.region_radius_meters === 100);
     if (!hasCorrectGridSize) {
       console.log(`[SpatialForecast] Cached predictions have old grid size, regenerating...`);
       const forecast = await generateForecast(timeHorizon);
@@ -180,8 +180,8 @@ export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
     const region_analyses = {};
     const features = [];
     
-    // Use current grid cell size from config (25m) instead of stored value
-    const CURRENT_GRID_CELL_SIZE = 25; // Should match Python config GRID_CELL_SIZE_METERS
+    // Use current grid cell size from config (100m) instead of stored value
+    const CURRENT_GRID_CELL_SIZE = 100; // Should match Python config GRID_CELL_SIZE_METERS
     
     for (const record of data) {
       region_analyses[record.region_id] = {
@@ -234,13 +234,26 @@ export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
     }
     
     const hotspot_count = data.filter(r => r.risk_score > 0).length;
+
+    // Fetch the real total reports for this time horizon directly from the reports table
+    const timeHorizonDays = { 'daily': 1, 'weekly': 7, 'monthly': 30 };
+    const days = timeHorizonDays[timeHorizon] || 7;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    
+    const { count } = await supabaseAdmin
+      .from('reports')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', startDate.toISOString());
+      
+    const total_reports = count || 0;
     
     return {
       time_horizon: timeHorizon,
       prediction_date: today,
       total_regions: data.length,
       hotspot_count: hotspot_count,
-      total_reports: data.reduce((sum, r) => sum + r.report_count, 0),
+      total_reports: total_reports,
       region_analyses: region_analyses,
       geojson: {
         type: 'FeatureCollection',
