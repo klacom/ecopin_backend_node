@@ -1,4 +1,5 @@
-import { CLASSIFIER_SERVICE_URL, VALIDATION_STATUS } from '../config/index.js';
+import { CLASSIFIER_SERVICE_URL, USE_AWS_CLASSIFIER, AWS_CLASSIFIER_URL, VALIDATION_STATUS } from '../config/index.js';
+import sharp from 'sharp';
 
 // MANUAL_REVIEW confidence band — mirrors Exp 3.2 inference service config
 const REVIEW_LO = parseFloat(process.env.EXP32_REVIEW_LO || '0.35');
@@ -12,17 +13,54 @@ const _warn = (...a) => console.warn (_tag, ...a);
 const _err  = (...a) => console.error(_tag, ...a);
 
 export const classifyImage = async (imageBuffer, originalName = 'image.jpg', mimeType = 'image/jpeg') => {
-    if (!CLASSIFIER_SERVICE_URL) {
-        _err('CLASSIFIER_SERVICE_URL is not configured — cannot classify image');
-        throw new Error('CLASSIFIER_SERVICE_URL is not configured');
+    let endpoint;
+    let fetchOptions;
+
+    if (USE_AWS_CLASSIFIER) {
+        if (!AWS_CLASSIFIER_URL) {
+            _err('AWS_CLASSIFIER_URL is not configured — cannot classify image');
+            throw new Error('AWS_CLASSIFIER_URL is not configured');
+        }
+        endpoint = AWS_CLASSIFIER_URL;
+        
+        // Compress image to avoid AWS Lambda 6MB payload limit
+        let processedBuffer = imageBuffer;
+        try {
+            processedBuffer = await sharp(imageBuffer)
+                .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
+                .jpeg({ quality: 85 })
+                .toBuffer();
+            _log(`  [AWS] Compressed payload from ${(imageBuffer.byteLength / 1024).toFixed(1)} KB to ${(processedBuffer.byteLength / 1024).toFixed(1)} KB`);
+        } catch (e) {
+            _warn('  [AWS] Failed to compress image with sharp, using original buffer', e.message);
+        }
+
+        fetchOptions = {
+            method: 'POST',
+            body: JSON.stringify({ image: processedBuffer.toString('base64') }),
+            headers: { 'Content-Type': 'application/json' }
+        };
+    } else {
+        if (!CLASSIFIER_SERVICE_URL) {
+            _err('CLASSIFIER_SERVICE_URL is not configured — cannot classify image');
+            throw new Error('CLASSIFIER_SERVICE_URL is not configured');
+        }
+        endpoint = `${CLASSIFIER_SERVICE_URL}/classify`;
+        fetchOptions = {
+            method: 'POST',
+            body: imageBuffer,
+            headers: {
+                'Content-Type': mimeType,
+                'X-Filename': encodeURIComponent(originalName),
+            }
+        };
     }
 
-    const endpoint = `${CLASSIFIER_SERVICE_URL}/classify`;
     const sizeKB   = (imageBuffer.byteLength / 1024).toFixed(1);
 
     // ── REQUEST ──────────────────────────────────────────────────────────────
     _log('──────────────────────────────────────────────');
-    _log('→ REQUEST  POST', endpoint);
+    _log(`→ REQUEST  POST (${USE_AWS_CLASSIFIER ? 'AWS' : 'LOCAL'})`, endpoint);
     _log('  file    :', originalName);
     _log('  mime    :', mimeType);
     _log('  size    :', `${sizeKB} KB  (${imageBuffer.byteLength} bytes)`);
@@ -33,15 +71,8 @@ export const classifyImage = async (imageBuffer, originalName = 'image.jpg', mim
     const timeout    = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            body: imageBuffer,
-            headers: {
-                'Content-Type': mimeType,
-                'X-Filename': encodeURIComponent(originalName),
-            },
-            signal: controller.signal,
-        });
+        fetchOptions.signal = controller.signal;
+        const response = await fetch(endpoint, fetchOptions);
         clearTimeout(timeout);
 
         const elapsedMs = Date.now() - t0;

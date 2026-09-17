@@ -8,6 +8,8 @@ export const NODE_ENV = process.env.NODE_ENV || 'development';
 export const PORT = process.env.PORT || 3000;
 export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3001';
 export const CLASSIFIER_SERVICE_URL = process.env.CLASSIFIER_SERVICE_URL || 'http://127.0.0.1:8000';
+export const USE_AWS_CLASSIFIER = process.env.USE_AWS_CLASSIFIER === 'true';
+export const AWS_CLASSIFIER_URL = process.env.AWS_CLASSIFIER_URL;
 export const MOBILE_REDIRECT_URL = process.env.MOBILE_REDIRECT_URL || 'ecopin://auth/callback';
 export const NEXT_PUBLIC_SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 export const SUPABASE_SERVICE_ROLE_KEY = process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY;

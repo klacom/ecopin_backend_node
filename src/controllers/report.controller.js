@@ -916,7 +916,7 @@ export const createReport = async (req, res, next) => {
                     createNotification(
                         user_id,
                         report.id,
-                        'manual_review',
+                        'pending_validation',
                         'Report Under Review',
                         'Your report has been flagged for manual review.'
                     ).catch(err => console.error('Failed to send manual review notification:', err));
