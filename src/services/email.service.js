@@ -35,7 +35,9 @@ export const generateVerificationToken = async (userId) => {
  * @param {string} token - The verification token
  */
 export const sendVerificationEmail = async (toEmail, token) => {
+    console.log(`[Email Service] Preparing to send email to ${toEmail}`);
     const verificationUrl = `${APP_BASE_URL}/api/auth/verify-email?token=${token}`;
+    console.log(`[Email Service] Verification URL created: ${verificationUrl}`);
     
     // EcoPin Branded HTML Email Template
     const htmlContent = `
@@ -135,6 +137,7 @@ export const sendVerificationEmail = async (toEmail, token) => {
         </html>
     `;
 
+    console.log(`[Email Service] Configuring mailOptions with SMTP_USER: ${SMTP_USER} and SMTP_FROM_NAME: ${SMTP_FROM_NAME}`);
     const mailOptions = {
         from: `"${SMTP_FROM_NAME}" <${SMTP_USER}>`,
         to: toEmail,
@@ -144,10 +147,11 @@ export const sendVerificationEmail = async (toEmail, token) => {
     };
 
     try {
+        console.log(`[Email Service] Calling transporter.sendMail() via SMTP...`);
         const info = await transporter.sendMail(mailOptions);
-        console.log('Verification email sent: %s', info.messageId);
+        console.log(`[Email Service] ✅ Verification email sent successfully! MessageId: ${info.messageId}`);
     } catch (error) {
-        console.error('Error sending verification email:', error);
-        throw new Error('Failed to send verification email');
+        console.error('[Email Service] ❌ Error caught inside sendVerificationEmail:', error);
+        throw new Error(`Failed to send verification email via SMTP: ${error.message}`);
     }
 };

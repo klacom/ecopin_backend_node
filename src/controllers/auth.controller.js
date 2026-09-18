@@ -68,10 +68,19 @@ export const register = async (req, res, next) => {
 
         // Generate and send verification email
         try {
+            console.log(`[Email Flow] Starting verification email process for ${email}...`);
+            
+            console.log(`[Email Flow] Generating token for user ID: ${data.user.id}`);
             const token = await generateVerificationToken(data.user.id);
+            console.log(`[Email Flow] Token generated successfully: ${token.substring(0, 10)}...`);
+            
+            console.log(`[Email Flow] Invoking sendVerificationEmail to SMTP transporter...`);
             await sendVerificationEmail(email, token);
+            console.log(`[Email Flow] sendVerificationEmail completed successfully!`);
+            
         } catch (emailError) {
-            console.error('Failed to send verification email:', emailError);
+            console.error('[Email Flow] FAILED to send verification email. Error details:', emailError);
+            if (emailError.stack) console.error('[Email Flow] Stack trace:', emailError.stack);
             // We don't fail the registration, but they won't be able to log in. 
             // They can use resend later.
         }
