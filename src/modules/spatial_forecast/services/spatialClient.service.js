@@ -57,7 +57,18 @@ export const generateForecast = async (timeHorizon = 'weekly', boundingBox = nul
  */
 const storePredictions = async (forecastResult) => {
   try {
-    const { region_analyses, time_horizon, prediction_date } = forecastResult;
+    const { region_analyses, geojson, time_horizon, prediction_date } = forecastResult;
+    
+    // Build a lookup from region_id → geojson Feature for polygon preservation
+    const polygonByRegionId = {};
+    if (geojson && geojson.features) {
+      for (const feature of geojson.features) {
+        const regionId = feature.properties?.region_id;
+        if (regionId) {
+          polygonByRegionId[regionId] = feature.geometry;
+        }
+      }
+    }
     
     const predictionsToInsert = [];
     
@@ -65,7 +76,7 @@ const storePredictions = async (forecastResult) => {
       predictionsToInsert.push({
         region_id: regionId,
         time_horizon: time_horizon,
-        prediction_date: prediction_date.split('T')[0],
+        prediction_date: prediction_date ? prediction_date.split('T')[0] : new Date().toISOString().split('T')[0],
         risk_score: analysis.risk_score,
         report_count: analysis.report_count,
         gi_statistic: analysis.gi_star,
@@ -74,7 +85,13 @@ const storePredictions = async (forecastResult) => {
         risk_level: analysis.risk_level,
         region_center_lat: analysis.region_center_lat,
         region_center_lng: analysis.region_center_lng,
-        region_radius_meters: analysis.region_radius_meters
+        region_radius_meters: analysis.region_radius_meters,
+        // Store the actual computed polygon so cache can restore real shapes
+        geojson_polygon: polygonByRegionId[regionId] ? JSON.stringify(polygonByRegionId[regionId]) : null,
+        // DBSCAN-specific metadata
+        top_issue_type: analysis.top_issue_type || null,
+        issue_breakdown: analysis.issue_breakdown ? JSON.stringify(analysis.issue_breakdown) : null,
+        rank: analysis.rank || null,
       });
     }
     
@@ -145,6 +162,30 @@ export const getPredictions = async (filters = {}) => {
 };
 
 /**
+ * Fetch available prediction dates from database
+ */
+export const getAvailableDates = async () => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('hotspot_predictions')
+      .select('prediction_date');
+      
+    if (error) throw error;
+    
+    // Extract unique dates in YYYY-MM-DD format
+    const uniqueDates = [...new Set(data.map(d => {
+      const date = new Date(d.prediction_date);
+      return date.toISOString().split('T')[0];
+    }))];
+    
+    return uniqueDates;
+  } catch (error) {
+    console.error('[SpatialForecast] Error fetching available dates:', error);
+    throw error;
+  }
+};
+
+/**
  * Get current predictions for a specific time horizon
  */
 export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
@@ -166,26 +207,36 @@ export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
       const forecast = await generateForecast(timeHorizon);
       return forecast;
     }
-    
-    // Check if cached predictions have the correct grid cell size (100m)
-    // If not, regenerate to ensure consistency
-    const hasCorrectGridSize = data.some(r => r.region_radius_meters === 100);
-    if (!hasCorrectGridSize) {
-      console.log(`[SpatialForecast] Cached predictions have old grid size, regenerating...`);
+
+    // Detect stale pre-DBSCAN predictions:
+    // Old grid-cell records have no geojson_polygon. If none of today's records
+    // have geojson_polygon set, these are from the old system — regenerate.
+    const hasDbscanData = data.some(r => r.geojson_polygon != null);
+    if (!hasDbscanData) {
+      console.log(`[SpatialForecast] Stale pre-DBSCAN predictions detected, regenerating...`);
       const forecast = await generateForecast(timeHorizon);
       return forecast;
     }
     
-    // Transform database data to match forecast structure
+    // Transform database records back to forecast structure
+    // Uses stored geojson_polygon to preserve real cluster shapes (not reconstructed squares)
     const region_analyses = {};
     const features = [];
     
-    // Use current grid cell size from config (100m) instead of stored value
-    const CURRENT_GRID_CELL_SIZE = 100; // Should match Python config GRID_CELL_SIZE_METERS
-    
     for (const record of data) {
+      // Parse issue breakdown if available
+      let issueBreakdown = {};
+      if (record.issue_breakdown) {
+        try {
+          issueBreakdown = typeof record.issue_breakdown === 'string'
+            ? JSON.parse(record.issue_breakdown)
+            : record.issue_breakdown;
+        } catch (e) { /* ignore parse errors */ }
+      }
+
       region_analyses[record.region_id] = {
         region_id: record.region_id,
+        rank: record.rank || null,
         risk_score: record.risk_score,
         risk_level: record.risk_level,
         is_hotspot: record.risk_score > 0,
@@ -195,39 +246,53 @@ export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
         is_significant: record.is_significant,
         region_center_lat: record.region_center_lat,
         region_center_lng: record.region_center_lng,
-        region_radius_meters: CURRENT_GRID_CELL_SIZE
+        region_radius_meters: record.region_radius_meters,
+        top_issue_type: record.top_issue_type || null,
+        issue_breakdown: issueBreakdown,
       };
       
-      // Add GeoJSON feature for grid cells
       if (record.risk_score > 0) {
-        const radius_deg = CURRENT_GRID_CELL_SIZE / 111000.0;
-        const polygon_coords = [
-          [
-            [record.region_center_lng - radius_deg, record.region_center_lat - radius_deg],
-            [record.region_center_lng + radius_deg, record.region_center_lat - radius_deg],
-            [record.region_center_lng + radius_deg, record.region_center_lat + radius_deg],
-            [record.region_center_lng - radius_deg, record.region_center_lat + radius_deg],
-            [record.region_center_lng - radius_deg, record.region_center_lat - radius_deg]
-          ]
-        ];
-        
+        // Restore the actual polygon geometry if available
+        let geometry;
+        if (record.geojson_polygon) {
+          try {
+            geometry = typeof record.geojson_polygon === 'string'
+              ? JSON.parse(record.geojson_polygon)
+              : record.geojson_polygon;
+          } catch (e) {
+            geometry = null;
+          }
+        }
+
+        // Fall back to a circle approximation if polygon not stored
+        if (!geometry) {
+          const radiusDeg = (record.region_radius_meters || 100) / 111000.0;
+          const numPts = 32;
+          const ring = [];
+          for (let i = 0; i < numPts; i++) {
+            const angle = (i / numPts) * 2 * Math.PI;
+            ring.push([
+              record.region_center_lng + radiusDeg * Math.cos(angle),
+              record.region_center_lat + radiusDeg * Math.sin(angle),
+            ]);
+          }
+          ring.push(ring[0]);
+          geometry = { type: 'Polygon', coordinates: [ring] };
+        }
+
         features.push({
           type: 'Feature',
-          geometry: {
-            type: 'Polygon',
-            coordinates: polygon_coords
-          },
+          geometry,
           properties: {
             region_id: record.region_id,
+            rank: record.rank || null,
             risk_score: record.risk_score,
             risk_level: record.risk_level,
             report_count: record.report_count,
-            gi_star: record.gi_statistic,
-            p_value: record.p_value,
+            top_issue_type: record.top_issue_type || null,
+            issue_breakdown: issueBreakdown,
             center_lat: record.region_center_lat,
             center_lng: record.region_center_lng,
-            fillColor: record.risk_level === 'high' ? '#ff0000' : record.risk_level === 'medium' ? '#ffff00' : '#00ff00',
-            fillOpacity: 0.5
           }
         });
       }
@@ -252,14 +317,14 @@ export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
       time_horizon: timeHorizon,
       prediction_date: today,
       total_regions: data.length,
-      hotspot_count: hotspot_count,
-      total_reports: total_reports,
-      region_analyses: region_analyses,
+      hotspot_count,
+      total_reports,
+      region_analyses,
       geojson: {
         type: 'FeatureCollection',
-        features: features
+        features,
       },
-      heatmap_geojson: null // Heatmap not available from database cache
+      heatmap_geojson: null, // Heatmap not cached in DB — regenerate to get it
     };
     
   } catch (error) {

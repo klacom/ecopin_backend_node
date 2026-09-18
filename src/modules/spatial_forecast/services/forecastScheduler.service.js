@@ -27,7 +27,7 @@ export const scheduleDailyForecast = () => {
         console.error('[ForecastScheduler] Daily forecast failed:', error);
       }
     },
-    { timezone: 'UTC' }
+    { timezone: 'Asia/Manila' }
   );
   
   scheduledTasks.set('daily', task);
@@ -54,7 +54,7 @@ export const scheduleWeeklyForecast = () => {
         console.error('[ForecastScheduler] Weekly forecast failed:', error);
       }
     },
-    { timezone: 'UTC' }
+    { timezone: 'Asia/Manila' }
   );
   
   scheduledTasks.set('weekly', task);
@@ -81,7 +81,7 @@ export const scheduleMonthlyForecast = () => {
         console.error('[ForecastScheduler] Monthly forecast failed:', error);
       }
     },
-    { timezone: 'UTC' }
+    { timezone: 'Asia/Manila' }
   );
   
   scheduledTasks.set('monthly', task);

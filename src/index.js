@@ -2,6 +2,7 @@
 
 import app from './app.js';
 import { PORT as _PORT, NODE_ENV, NEXT_PUBLIC_SUPABASE_URL } from './config/index.js';
+import { startAllSchedules } from './modules/spatial_forecast/services/forecastScheduler.service.js';
 
 const PORT = _PORT || 3000;
 
@@ -18,6 +19,9 @@ server.on('error', (error) => {
     console.error('Server error:', error);
     process.exit(1);
 });
+
+// Start background cron jobs
+startAllSchedules();
 
 // Graceful shutdown
 process.on('SIGTERM', () => {

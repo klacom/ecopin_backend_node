@@ -5,7 +5,8 @@ import {
   generateForecast, 
   getPredictions, 
   getCurrentPredictions,
-  getAccuracyMetrics 
+  getAccuracyMetrics,
+  getAvailableDates 
 } from '../services/spatialClient.service.js';
 
 /**
@@ -84,6 +85,22 @@ export const fetchAccuracyMetrics = async (req, res, next) => {
     res.status(200).json({
       message: 'Accuracy metrics fetched successfully',
       data: metrics
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get available prediction dates
+ */
+export const fetchAvailableDates = async (req, res, next) => {
+  try {
+    const dates = await getAvailableDates();
+    
+    res.status(200).json({
+      message: 'Available dates fetched successfully',
+      data: dates
     });
   } catch (error) {
     next(error);

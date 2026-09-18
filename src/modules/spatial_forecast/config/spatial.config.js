@@ -40,5 +40,5 @@ export const SPATIAL_FORECAST_CONFIG = {
   },
   
   // Request timeout
-  timeout: 30000 // 30 seconds
+  timeout: 60000 // 60 seconds
 };
