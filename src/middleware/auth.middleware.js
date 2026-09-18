@@ -46,6 +46,35 @@ export const authenticate = async (req, res, next) => {
     }
 };
 
+export const optionalAuthenticate = async (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return next();
+    }
+    const token = authHeader.split(' ')[1];
+    try {
+        const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+        if (authError || !user) return next();
+        
+        const { data: profile, error: profileError } = await supabaseAdmin
+            .from('profiles')
+            .select('role, full_name')
+            .eq('id', user.id)
+            .single();
+
+        if (profileError) {
+            user.role = 'citizen';
+        } else {
+            user.role = profile.role;
+            user.full_name = profile.full_name;
+        }
+        req.user = user;
+        next();
+    } catch (error) {
+        next();
+    }
+};
+
 // Middleware to check suspension (can be used separately)
 export const checkUserSuspension = async (req, res, next) => {
     try {

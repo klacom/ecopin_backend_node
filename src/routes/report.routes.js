@@ -24,13 +24,16 @@ import {
     updateLifecycleStage,
     fetchAgencyResponses
 } from '../controllers/report.controller.js';
-import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
+import { authenticate, optionalAuthenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 
 const router = Router();
 
 // Public routes don't require authentication
 router.get('/public', getPublicReports);
+
+// Optionally authenticated routes
+router.get('/:reportId/evidence', optionalAuthenticate, getReportEvidence);
 
 // All other report routes require authentication
 router.use(authenticate);
@@ -43,7 +46,6 @@ router.post('/', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'vi
 router.get('/my', getMyReports);
 router.get('/:id', getReportById);
 router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), uploadEvidence);
-router.get('/:reportId/evidence', getReportEvidence);
 router.patch('/:id/close', citizenCloseReport); // Citizen can close their own report
 router.post('/:id/create-new', createReportFromRejected); // Create new report from rejected
 router.get('/cluster/:clusterId', getReportsByClusterId);

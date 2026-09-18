@@ -415,8 +415,8 @@ export const uploadEvidence = async (req, res, next) => {
 
 export const getReportEvidence = async (req, res, next) => {
     const { reportId } = req.params;
-    const user_id = req.user.id;
-    const user_role = req.user.role || 'citizen';
+    const user_id = req.user?.id;
+    const user_role = req.user?.role || 'public';
 
     try {
         console.log('Fetching evidence for report:', reportId);
@@ -435,14 +435,14 @@ export const getReportEvidence = async (req, res, next) => {
             });
         }
 
-        // Security: Ownership check - users can only access evidence for their own reports or approved public reports
-        const isOwner = report.user_id === user_id;
-        const isApprovedPublic = report.validation_status === 'approved';
+        // Security: Ownership check - users can only access evidence for their own reports or validated public reports
+        const isOwner = user_id && report.user_id === user_id;
+        const isApprovedPublic = ['approved', 'validated', 'automatically_valid'].includes(report.validation_status);
         const isOfficerOrAdmin = ['admin', 'officer', 'field_crew'].includes(user_role);
 
         if (!isOwner && !isApprovedPublic && !isOfficerOrAdmin) {
             return res.status(403).json({
-                message: 'Access denied: You can only access evidence for your own reports or approved public reports'
+                message: 'Access denied: You can only access evidence for your own reports or validated public reports'
             });
         }
 
