@@ -28,16 +28,27 @@ export const register = async (req, res, next) => {
     const { email, password } = req.body;
 
     try {
+        console.log(`Attempting to register user: ${email}`);
         const { data, error } = await supabaseAdmin.auth.signUp({
             email,
             password
         });
+        
+        console.log(`Supabase signUp response - data.user: ${data?.user ? 'exists' : 'null'}, error: ${error ? error.message : 'none'}`);
 
         if (error) {
+            console.error('Supabase signUp error:', error);
             return res.status(400).json({
                 message: 'Registration failed',
                 error: error.message
             });
+        }
+
+        if (!data?.user) {
+             console.error('Supabase signUp succeeded but data.user is null (User likely already exists)');
+             return res.status(400).json({
+                 message: 'Registration failed: User may already exist'
+             });
         }
 
         // Ensure profile is created in 'profiles' table with default role and unverified email

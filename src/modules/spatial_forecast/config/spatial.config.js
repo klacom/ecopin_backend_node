@@ -2,21 +2,21 @@
 
 export const SPATIAL_FORECAST_CONFIG = {
   // Python service URL
-  serviceUrl: process.env.SPATIAL_FORECAST_SERVICE_URL || 'http://127.0.0.1:8001',
-  
+  serviceUrl: process.env.SPATIAL_FORECAST_SERVICE_URL || 'http://127.0.0.1:8002',
+
   // Time horizons in days
   timeHorizons: {
     daily: 1,
     weekly: 7,
     monthly: 30
   },
-  
+
   // Hotspot thresholds
   riskScore: {
     high: 0.7,
     medium: 0.4
   },
-  
+
   // Scheduling configuration
   scheduling: {
     daily: {
@@ -32,13 +32,13 @@ export const SPATIAL_FORECAST_CONFIG = {
       enabled: true
     }
   },
-  
+
   // Cache settings
   cache: {
     enabled: true,
     ttl: 3600000 // 1 hour in milliseconds
   },
-  
+
   // Request timeout
   timeout: 60000 // 60 seconds
 };

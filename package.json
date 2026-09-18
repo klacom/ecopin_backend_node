@@ -23,6 +23,7 @@
     "@tensorflow-models/coco-ssd": "^2.2.3",
     "@tensorflow-models/mobilenet": "^2.1.1",
     "@tensorflow/tfjs": "^4.22.0",
+    "autocannon": "^8.0.0",
     "bcrypt": "^6.0.0",
     "canvas": "^3.2.3",
     "cloudinary": "^2.10.0",
@@ -38,9 +39,11 @@
     "morgan": "^1.10.1",
     "multer": "^2.1.1",
     "node-cron": "^3.0.3",
+    "pidusage": "^4.0.1",
     "resend": "^6.28.1",
     "sharp": "^0.35.3",
-    "uuid": "^14.0.2"
+    "uuid": "^14.0.2",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "jest": "^30.4.2",

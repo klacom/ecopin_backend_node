@@ -3,7 +3,7 @@ import { supabaseAdmin } from '../config/supabase.config.js';
 import { Resend } from 'resend';
 import { EMAIL_FROM_NAME, APP_BASE_URL, EMAIL_VERIFICATION_EXPIRY_HOURS, RESEND_API_KEY } from '../config/index.js';
 
-const resend = new Resend(RESEND_API_KEY);
+const resend = new Resend(RESEND_API_KEY || 're_123');
 
 /**
  * Generates a verification token and stores it in the database
