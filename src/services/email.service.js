@@ -138,13 +138,19 @@ export const sendVerificationEmail = async (toEmail, token) => {
     `;
 
     try {
-        const data = await resend.emails.send({
+        const { data, error } = await resend.emails.send({
             from: `${EMAIL_FROM_NAME} <onboarding@resend.dev>`,
             to: toEmail,
             subject: 'Verify your EcoPin account',
             html: htmlContent,
         });
-        console.log('Verification email sent:', data.id);
+
+        if (error) {
+            console.error('Resend API Error:', error);
+            throw new Error('Failed to send verification email');
+        }
+
+        console.log('Verification email sent:', data?.id);
     } catch (error) {
         console.error('Error sending verification email:', error);
         throw new Error('Failed to send verification email');
