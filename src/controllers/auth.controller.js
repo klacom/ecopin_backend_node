@@ -29,9 +29,10 @@ export const register = async (req, res, next) => {
 
     try {
         console.log(`Attempting to register user: ${email}`);
-        const { data, error } = await supabaseAdmin.auth.signUp({
+        const { data, error } = await supabaseAdmin.auth.admin.createUser({
             email,
-            password
+            password,
+            email_confirm: false
         });
         
         console.log(`Supabase signUp response - data.user: ${data?.user ? 'exists' : 'null'}, error: ${error ? error.message : 'none'}`);
