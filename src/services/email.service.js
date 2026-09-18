@@ -1,9 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { supabaseAdmin } from '../config/supabase.config.js';
-import { Resend } from 'resend';
-import { EMAIL_FROM_NAME, APP_BASE_URL, EMAIL_VERIFICATION_EXPIRY_HOURS, RESEND_API_KEY } from '../config/index.js';
-
-const resend = new Resend(RESEND_API_KEY);
+import { transporter } from '../config/email.config.js';
+import { SMTP_FROM_NAME, SMTP_USER, APP_BASE_URL, EMAIL_VERIFICATION_EXPIRY_HOURS } from '../config/index.js';
 
 /**
  * Generates a verification token and stores it in the database
@@ -137,14 +135,17 @@ export const sendVerificationEmail = async (toEmail, token) => {
         </html>
     `;
 
+    const mailOptions = {
+        from: `"${SMTP_FROM_NAME}" <${SMTP_USER}>`,
+        to: toEmail,
+        subject: 'Verify your EcoPin account',
+        text: `Welcome to EcoPin! Verify your email address by clicking this link: ${verificationUrl}`,
+        html: htmlContent,
+    };
+
     try {
-        const data = await resend.emails.send({
-            from: `${EMAIL_FROM_NAME} <onboarding@resend.dev>`,
-            to: toEmail,
-            subject: 'Verify your EcoPin account',
-            html: htmlContent,
-        });
-        console.log('Verification email sent:', data.id);
+        const info = await transporter.sendMail(mailOptions);
+        console.log('Verification email sent: %s', info.messageId);
     } catch (error) {
         console.error('Error sending verification email:', error);
         throw new Error('Failed to send verification email');
