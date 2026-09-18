@@ -31,7 +31,15 @@ const app = express();
 // Global middleware
 app.use(helmet()); // Security headers
 app.use(cors({
-    origin: [FRONTEND_URL, 'http://localhost:3001', 'https://ecopin-web.onrender.com'],
+    origin: function (origin, callback) {
+        const allowedOrigins = [FRONTEND_URL, 'http://localhost:3001', 'https://ecopin-web.onrender.com'];
+        // Allow if no origin (e.g. mobile apps, curl), or if in allowed list, or if it's a Vercel preview URL
+        if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true,
 }));
 app.use(json({ limit: '10mb' }));
