@@ -21,6 +21,7 @@ import adminRoutes from './routes/admin.routes.js';
 import responseLogRoutes from './routes/response_log.routes.js';
 import strikeRoutes from './routes/strike.routes.js';
 import manualReviewRoutes from './routes/manualReview.routes.js';
+import conflictRoutes from './routes/conflict.routes.js';
 
 // Import middleware
 import { errorHandler } from './middleware/errorHandler.middleware.js';
@@ -130,6 +131,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/response-logs', responseLogRoutes);
 app.use('/api/strikes', strikeRoutes);
 app.use('/api/manual-review', manualReviewRoutes);
+app.use('/api/sync/conflicts', conflictRoutes);
 
 // 404 handler
 app.use((req, res) => {

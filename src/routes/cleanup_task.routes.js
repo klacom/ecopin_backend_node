@@ -12,6 +12,7 @@ import {
     getAvailableCrew,
     upload
 } from '../controllers/cleanup_task.controller.js';
+import { batchSyncTaskUpdates } from '../controllers/sync.controller.js';
 import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 
@@ -29,6 +30,7 @@ router.get('/cluster/:clusterId', getTasksByClusterId);
 // Routes requiring field ops role (officer, field crew, admin)
 router.use(authorize(ROLE_GROUPS.FIELD_OPS));
 
+router.post('/sync/batch', batchSyncTaskUpdates);
 router.post('/', createCleanupTask);
 router.post('/custom', createCustomCleanupTask);
 router.get('/', getAllCleanupTasks);

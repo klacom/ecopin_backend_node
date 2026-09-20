@@ -1700,3 +1700,266 @@ export const createReportFromRejected = async (req, res, next) => {
         next(error);
     }
 };
+
+
+export const syncReportMedia = async (req, res, next) => {
+    const { idempotency_key } = req.params;
+    const user_id = req.user.id;
+
+    console.log(`[SYNC-MEDIA] Starting media sync for idempotency_key: ${idempotency_key}`);
+
+    // Check for media files (image or video)
+    const imageFiles = req.files && req.files['image'] ? req.files['image'] : [];
+    const videoFile = req.files && req.files['video'] ? req.files['video'][0] : null;
+
+    if (imageFiles.length === 0 && !videoFile) {
+        return res.status(400).json({ 
+            message: 'Please provide either an image or a video.' 
+        });
+    }
+
+    try {
+        // Validate file formats
+        for (const imageFile of imageFiles) {
+            const fileExt = imageFile.originalname.split('.').pop()?.toLowerCase();
+            if (!fileExt || !VALID_IMAGE_EXTENSIONS.includes(fileExt)) {
+                return res.status(400).json({
+                    message: 'Invalid file extension. Only JPEG, JPG, PNG, and WEBP are allowed.'
+                });
+            }
+        }
+        
+        if (videoFile) {
+            const fileExt = videoFile.originalname.split('.').pop()?.toLowerCase();
+            if (!fileExt || !VALID_VIDEO_EXTENSIONS.includes(fileExt)) {
+                return res.status(400).json({
+                    message: 'Invalid file extension. Only MP4, MOV, and WEBM are allowed.'
+                });
+            }
+        }
+
+        // Fetch the report using idempotency_key
+        const { data: report, error: fetchError } = await supabase
+            .from('reports')
+            .select('*')
+            .eq('idempotency_key', idempotency_key)
+            .single();
+
+        if (fetchError || !report) {
+            return res.status(404).json({
+                message: 'Report not found',
+                error: fetchError?.message
+            });
+        }
+
+        // Verify ownership
+        if (report.user_id !== user_id) {
+            return res.status(403).json({
+                message: 'You can only upload media to your own reports'
+            });
+        }
+
+        // Check if media is already validated to avoid re-running AI
+        if (report.validation_status !== VALIDATION_STATUS.PENDING_AI_VALIDATION) {
+            return res.status(400).json({
+                message: 'Report has already been validated'
+            });
+        }
+
+        // Send response immediately to unblock client
+        res.status(202).json({
+            message: 'Media received. AI validation is in progress.'
+        });
+
+        // Trigger background tasks
+        (async () => {
+            try {
+                let finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
+                let finalRejectionReason = null;
+                let finalIssueType = null;
+
+                console.log(`[Evidence] Starting media upload for synced report ${report.id}`);
+                
+                // Upload video
+                if (videoFile) {
+                    try {
+                        const timestamp = Date.now();
+                        await uploadVideoFromBuffer(
+                            videoFile.buffer, 
+                            `report_evidence/${report.id}`, 
+                            `${timestamp}_${report.id}_video`
+                        );
+                    } catch (videoUploadError) {
+                        console.error(`[Video] Upload failed:`, videoUploadError);
+                    }
+                }
+
+                // Upload images
+                for (const imageFile of imageFiles) {
+                    try {
+                        const timestamp = Date.now();
+                        const filename = `${timestamp}_${imageFile.originalname.replace(/\.[^/.]+$/, '')}`;
+                        await uploadFromBuffer(imageFile.buffer, `report_evidence/${report.id}`, filename);
+                    } catch (imageUploadError) {
+                        console.error(`[Image] Upload failed:`, imageUploadError);
+                    }
+                }
+
+                console.log(`[Evidence] Media upload completed for synced report ${report.id}`);
+
+                // Video Validation Pipeline
+                if (videoFile) {
+                    try {
+                        const frames = await extractVideoFrames(videoFile.buffer, videoFile.originalname);
+                        const frameResults = await classifyVideoFrames(frames);
+                        const aggregated = aggregateVideoValidation(frameResults);
+                        
+                        if (imageFiles.length === 0) {
+                            finalValidationStatus = aggregated.validation_status;
+                            finalRejectionReason = aggregated.rejection_reason;
+                            if (aggregated.dominant_class) {
+                                finalIssueType = aggregated.dominant_class;
+                            } else {
+                                finalIssueType = determineIssueTypeFromText(report.title, report.description);
+                            }
+                        } else {
+                            if (aggregated.dominant_class && !finalIssueType) {
+                                finalIssueType = aggregated.dominant_class;
+                            }
+                        }
+                    } catch (videoError) {
+                        console.error(`[VIDEO-PIPELINE] FAILED`, videoError);
+                        if (imageFiles.length === 0) {
+                            finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
+                            finalRejectionReason = `Video processing failed: ${videoError.message}`;
+                            finalIssueType = determineIssueTypeFromText(report.title, report.description);
+                        }
+                    }
+                }
+
+                // Image Validation Pipeline
+                if (imageFiles.length > 0) {
+                    const imageResults = [];
+                    for (let i = 0; i < imageFiles.length; i++) {
+                        const imageFile = imageFiles[i];
+                        try {
+                            const classifierResult = await classifyImage(
+                                imageFile.buffer,
+                                imageFile.originalname,
+                                imageFile.mimetype
+                            );
+                            if (classifierResult.ok) {
+                                imageResults.push(classifierResult);
+                            }
+                        } catch (err) {
+                            console.error(`[Classifier] EXCEPTION`, err);
+                        }
+                    }
+
+                    if (imageResults.length > 0) {
+                        const statusCounts = { approved: 0, rejected: 0, manual_review: 0 };
+                        const categoryCounts = {};
+
+                        for (const result of imageResults) {
+                            const mapped = mapClassifierToValidation(result);
+                            if (mapped.status === VALIDATION_STATUS.APPROVED) statusCounts.approved++;
+                            else if (mapped.status === VALIDATION_STATUS.REJECTED) statusCounts.rejected++;
+                            else statusCounts.manual_review++;
+
+                            if (mapped.predicted_category) {
+                                categoryCounts[mapped.predicted_category] = (categoryCounts[mapped.predicted_category] || 0) + 1;
+                            }
+                        }
+
+                        if (statusCounts.rejected > statusCounts.approved && statusCounts.rejected > statusCounts.manual_review) {
+                            finalValidationStatus = VALIDATION_STATUS.REJECTED;
+                            finalRejectionReason = 'Majority of images were rejected.';
+                        } else if (statusCounts.approved > statusCounts.rejected && statusCounts.approved > statusCounts.manual_review) {
+                            finalValidationStatus = VALIDATION_STATUS.APPROVED;
+                        } else {
+                            finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
+                            finalRejectionReason = 'Mixed or unclear image validation results.';
+                        }
+
+                        if (finalValidationStatus !== VALIDATION_STATUS.REJECTED) {
+                            const categoryEntries = Object.entries(categoryCounts);
+                            if (categoryEntries.length > 0) {
+                                categoryEntries.sort((a, b) => b[1] - a[1]);
+                                finalIssueType = categoryEntries[0][0];
+                            } else if (imageResults.length > 0 && imageResults[0].predicted_category) {
+                                finalIssueType = imageResults[0].predicted_category;
+                            }
+                        }
+
+                        if (!videoFile) {
+                            finalValidationStatus = finalValidationStatus;
+                            finalRejectionReason = finalRejectionReason;
+                        }
+                    } else {
+                        finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
+                        finalRejectionReason = 'All image classifications failed.';
+                        if (!finalIssueType) {
+                            finalIssueType = determineIssueTypeFromText(report.title, report.description);
+                        }
+                    }
+                }
+
+                // DB Update
+                const updatePayload = {
+                    validation_status: finalValidationStatus,
+                    updated_at: new Date().toISOString(),
+                };
+                
+                if (finalIssueType && finalIssueType !== 'pending') {
+                    updatePayload.issue_type = finalIssueType;
+                } else {
+                    updatePayload.issue_type = determineIssueTypeFromText(report.title, report.description);
+                }
+
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
+                    try {
+                        const reportForSeverity = { ...report, issue_type: updatePayload.issue_type };
+                        const severityResult = await calculateSeverity(reportForSeverity);
+                        updatePayload.severity_score = severityResult.severityScore;
+                        updatePayload.severity_level = severityResult.severityLevel;
+                        updatePayload.severity_factors = severityResult.severityFactors;
+                    } catch (severityErr) {
+                        console.error(`[DATABASE-UPDATE] FAILED to calculate severity:`, severityErr);
+                    }
+                }
+                
+                if (finalValidationStatus === VALIDATION_STATUS.REJECTED) {
+                    updatePayload.rejected_at = new Date().toISOString();
+                    if (finalRejectionReason) {
+                        updatePayload.rejection_reason = finalRejectionReason;
+                    }
+                }
+                
+                if (updatePayload.validation_status === VALIDATION_STATUS.PENDING_AI_VALIDATION) {
+                    updatePayload.validation_status = VALIDATION_STATUS.MANUAL_REVIEW;
+                }
+                
+                if (!updatePayload.issue_type || updatePayload.issue_type === 'pending') {
+                    updatePayload.issue_type = 'waste';
+                }
+
+                await supabase.from('reports').update(updatePayload).eq('id', report.id);
+
+                // Notifications
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
+                    createNotification(user_id, report.id, 'approved', 'Report Approved', 'Your report has been approved.').catch(console.error);
+                } else if (finalValidationStatus === VALIDATION_STATUS.REJECTED) {
+                    createNotification(user_id, report.id, 'rejected', 'Report Rejected', finalRejectionReason || 'Your report violated our policy.').catch(console.error);
+                } else if (finalValidationStatus === VALIDATION_STATUS.MANUAL_REVIEW) {
+                    createNotification(user_id, report.id, 'pending_validation', 'Report Under Review', 'Your report has been flagged for manual review.').catch(console.error);
+                }
+
+                await clusterReports();
+            } catch (err) {
+                console.error('Error in background tasks:', err);
+            }
+        })();
+    } catch (error) {
+        next(error);
+    }
+};

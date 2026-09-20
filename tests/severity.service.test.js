@@ -1,5 +1,4 @@
 import { jest } from '@jest/globals';
-import { calculateSeverity } from '../src/services/severity.service.js';
 import { SEVERITY_CONFIG } from '../src/config/severity.config.js';
 
 // Mock supabaseAdmin
@@ -8,6 +7,8 @@ jest.unstable_mockModule('../src/config/supabase.config.js', () => ({
     rpc: jest.fn().mockResolvedValue({ data: 1, error: null })
   }
 }));
+
+const { calculateSeverity } = await import('../src/services/severity.service.js');
 
 describe('Environmental Severity Metric Service', () => {
     beforeEach(() => {

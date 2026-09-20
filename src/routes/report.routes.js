@@ -22,8 +22,10 @@ import {
     getSatisfactionAnalytics,
     createReportFromRejected,
     updateLifecycleStage,
-    fetchAgencyResponses
+    fetchAgencyResponses,
+    syncReportMedia
 } from '../controllers/report.controller.js';
+import { batchSyncReports } from '../controllers/sync.controller.js';
 import { authenticate, optionalAuthenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 
@@ -42,6 +44,8 @@ router.use(authenticate);
 router.use(checkUserSuspension);
 
 // Routes that don't need LGU/admin role first
+router.post('/sync/batch', batchSyncReports);
+router.post('/sync/media/:idempotency_key', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), syncReportMedia);
 router.post('/', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), createReport);
 router.get('/my', getMyReports);
 router.get('/:id', getReportById);
