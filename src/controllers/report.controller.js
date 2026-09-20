@@ -1929,9 +1929,10 @@ export const syncReportMedia = async (req, res, next) => {
                 }
                 
                 if (finalValidationStatus === VALIDATION_STATUS.REJECTED) {
-                    updatePayload.rejected_at = new Date().toISOString();
+                    // updatePayload.rejected_at = new Date().toISOString();
                     if (finalRejectionReason) {
-                        updatePayload.rejection_reason = finalRejectionReason;
+                        // updatePayload.rejection_reason = finalRejectionReason;
+                        updatePayload.notes = finalRejectionReason; // Add to notes instead
                     }
                 }
                 
