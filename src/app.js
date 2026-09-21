@@ -15,6 +15,7 @@ import authRoutes from './routes/auth.routes.js';
 import reportRoutes from './routes/report.routes.js';
 import { clusterRoutes } from './modules/clustering/index.js';
 import { spatialRoutes } from './modules/spatial_forecast/index.js';
+import { optimizationRoutes } from './modules/optimization/index.js';
 import profileRoutes from './routes/profile.routes.js';
 import cleanupTaskRoutes from './routes/cleanup_task.routes.js';
 import adminRoutes from './routes/admin.routes.js';
@@ -130,6 +131,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/response-logs', responseLogRoutes);
 app.use('/api/strikes', strikeRoutes);
 app.use('/api/manual-review', manualReviewRoutes);
+app.use('/api/optimization', optimizationRoutes);
 
 // 404 handler
 app.use((req, res) => {
