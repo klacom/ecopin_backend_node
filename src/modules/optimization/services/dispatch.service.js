@@ -31,11 +31,12 @@ export async function dispatchClusters(clusterIds, userId) {
   const { data: settingData } = await supabase.from('optimization_settings').select('value').eq('key', 'dispatch_consolidation_radius').single();
   const radiusThreshold = parseInt(settingData?.value || '200', 10);
 
-  // 2. Fetch full cluster details
+  // 2. Fetch full cluster details, ensuring we only grab clusters that haven't been scheduled yet
   const { data: clusters } = await supabase
     .from('clusters')
     .select('id, center, issue_type, recommended_task_type, estimated_effort_minutes, reports(id)')
-    .in('id', clusterIds);
+    .in('id', clusterIds)
+    .in('status', ['unresolved', 'prioritized', 'monitoring']);
 
   if (!clusters || clusters.length === 0) return [];
 
