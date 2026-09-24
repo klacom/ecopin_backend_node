@@ -1,15 +1,5 @@
 import { getTaskLocation } from './crewAssigner.service.js';
-
-// Haversine distance in meters
-function haversineDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371000;
-  const phi1 = lat1 * Math.PI / 180;
-  const phi2 = lat2 * Math.PI / 180;
-  const deltaPhi = (lat2 - lat1) * Math.PI / 180;
-  const deltaLam = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(deltaPhi/2)**2 + Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLam/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-}
+import { getDistanceAndDuration } from '../providers/distance.provider.js';
 
 /**
  * Generate route waypoints for a crew's assigned tasks
@@ -39,9 +29,10 @@ export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provid
     const taskId = orderedTaskIds[i];
     const taskLocation = await getTaskLocation(taskId);
     
-    // Default straight-line distance (MVP)
-    const distance = haversineDistance(prevLat, prevLng, taskLocation.lat, taskLocation.lng);
-    const time = distance / 833; // ~50 km/h (833 m/min)
+    // Use distance provider abstraction
+    const { distance_meters: distance, duration_min: time } = await getDistanceAndDuration(
+      prevLat, prevLng, taskLocation.lat, taskLocation.lng, provider === 'none' ? 'haversine' : provider
+    );
 
     waypoints.push({
       sequence_order: i + 1,

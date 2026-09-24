@@ -1,15 +1,5 @@
 import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
-
-// Haversine distance in meters
-function haversineDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371000;
-  const phi1 = lat1 * Math.PI / 180;
-  const phi2 = lat2 * Math.PI / 180;
-  const deltaPhi = (lat2 - lat1) * Math.PI / 180;
-  const deltaLam = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(deltaPhi/2)**2 + Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLam/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-}
+import { getDistanceAndDuration } from '../providers/distance.provider.js';
 
 /**
  * Extracts lat/lng from a WKB hex string (used for cluster center_point)
@@ -71,35 +61,54 @@ export async function assignTasksToCrews(tasks, crews, depot) {
   const sortedTasks = [...tasks].sort((a, b) => b.priority_score - a.priority_score);
   
   // 2. Initialize crew buckets
-  const crewAssignments = crews.map(c => ({
-    crew_id: c.id,
-    crew: c,
-    tasks: [], // Store full task object temporarily
-    max_tasks: c.max_tasks_per_shift || 10
-  }));
+  const crewAssignments = crews.map(c => {
+    // Calculate available minutes based on shift, default 8 hours
+    const sH = c.shift_start ? parseInt(c.shift_start.split(':')[0]) : 8;
+    const sM = c.shift_start ? parseInt(c.shift_start.split(':')[1]) : 0;
+    const eH = c.shift_end ? parseInt(c.shift_end.split(':')[0]) : 17;
+    const eM = c.shift_end ? parseInt(c.shift_end.split(':')[1]) : 0;
+    let totalMin = (eH * 60 + eM) - (sH * 60 + sM);
+    if (totalMin < 0) totalMin += 24 * 60;
+    
+    return {
+      crew_id: c.id,
+      crew: c,
+      tasks: [],
+      assigned_minutes: 0,
+      capacity_minutes: totalMin || 480
+    };
+  });
   
-  // 3. Alternating assignment based on priority
+  // 3. Alternating assignment based on workload (estimated duration)
   for (let i = 0; i < sortedTasks.length; i++) {
     const task = sortedTasks[i];
+    const estimatedTime = task.estimated_duration_min || 60;
     
-    // Find crew with fewest tasks that hasn't hit its max limit
+    // Find crew with lowest workload that can fit this task
     let bestCrew = null;
-    let minTasks = Infinity;
+    let minAssignedMinutes = Infinity;
     
-    // To ensure alternating pattern for identical task counts (Crew A gets 1st, Crew B gets 2nd)
     for (let j = 0; j < crewAssignments.length; j++) {
       const ca = crewAssignments[j];
-      if (ca.tasks.length < ca.max_tasks && ca.tasks.length < minTasks) {
-        minTasks = ca.tasks.length;
+      if (ca.assigned_minutes + estimatedTime <= ca.capacity_minutes && ca.assigned_minutes < minAssignedMinutes) {
+        minAssignedMinutes = ca.assigned_minutes;
         bestCrew = ca;
       }
     }
     
     if (bestCrew) {
       bestCrew.tasks.push(task);
+      bestCrew.assigned_minutes += estimatedTime;
     } else {
-      // All crews hit max tasks, stop assigning
-      break;
+      // If it exceeds strict capacity but must be assigned, give it to the crew with the least work
+      let fallbackCrew = crewAssignments[0];
+      for (let j = 1; j < crewAssignments.length; j++) {
+        if (crewAssignments[j].assigned_minutes < fallbackCrew.assigned_minutes) {
+          fallbackCrew = crewAssignments[j];
+        }
+      }
+      fallbackCrew.tasks.push(task);
+      fallbackCrew.assigned_minutes += estimatedTime;
     }
   }
   
@@ -134,7 +143,7 @@ export async function assignTasksToCrews(tasks, crews, depot) {
       for (let i = 0; i < remainingTasks.length; i++) {
         const t = remainingTasks[i];
         const loc = taskLocations[t.id];
-        const dist = haversineDistance(currentLat, currentLng, loc.lat, loc.lng);
+        const { distance_meters: dist } = await getDistanceAndDuration(currentLat, currentLng, loc.lat, loc.lng);
         
         if (dist < minDistance) {
           minDistance = dist;

@@ -33,7 +33,7 @@ const app = express();
 app.use(helmet()); // Security headers
 app.use(cors({
     origin: function (origin, callback) {
-        const allowedOrigins = [FRONTEND_URL, 'http://localhost:3001', 'https://ecopin-web.onrender.com'];
+        const allowedOrigins = [FRONTEND_URL, 'http://localhost:4001', 'https://ecopin-web.onrender.com'];
         // Allow if no origin (e.g. mobile apps, curl), or if in allowed list, or if it's a Vercel preview URL
         if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
             callback(null, true);
@@ -54,7 +54,7 @@ app.use(rateLimiter);
 app.get('/health', async (req, res) => {
     const { supabase } = await import('./config/supabase.config.js');
     const { CLASSIFIER_SERVICE_URL } = await import('./config/index.js');
-    
+
     const healthCheck = {
         status: 'OK',
         timestamp: new Date().toISOString(),
@@ -81,13 +81,13 @@ app.get('/health', async (req, res) => {
         if (CLASSIFIER_SERVICE_URL) {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 5000);
-            
+
             const response = await fetch(`${CLASSIFIER_SERVICE_URL}/health`, {
                 signal: controller.signal
             }).catch(() => null);
-            
+
             clearTimeout(timeout);
-            
+
             if (response && response.ok) {
                 healthCheck.dependencies.classifier = 'available';
             } else {

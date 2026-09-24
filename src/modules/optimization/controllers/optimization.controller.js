@@ -6,6 +6,10 @@ import { assignTasksToCrews } from '../services/crewAssigner.service.js';
 import { generateRouteForCrew } from '../services/routeGenerator.service.js';
 import { applyWeatherSimulation } from '../services/weatherSimulator.service.js';
 import { applyTrafficSimulation } from '../services/trafficSimulator.service.js';
+import { prioritizeBacklog, getWorkQueue } from '../services/workQueue.service.js';
+import { dispatchClusters } from '../services/dispatch.service.js';
+import { generateDispatchPlan } from '../services/dispatchPlanner.service.js';
+import { processTaskFeedback } from '../services/taskFeedback.service.js';
 
 async function loadWeights() {
   const { data } = await supabase.from('optimization_settings').select('value').eq('key', 'mcda_weights').single();
@@ -27,62 +31,240 @@ async function loadFieldCrews() {
   return data || [];
 }
 
-// Phase 8 + 9 implementation
+// Phase 2: Work Queue Endpoints
+export const prioritizeQueue = async (req, res, next) => {
+  try {
+    const updated = await prioritizeBacklog(req.body.weather_condition);
+    res.status(200).json({ message: `Prioritized ${updated.length} clusters`, clusters: updated });
+  } catch (error) { next(error); }
+};
+
+export const fetchWorkQueue = async (req, res, next) => {
+  try {
+    const queue = await getWorkQueue(parseInt(req.query.limit) || 100);
+    res.status(200).json(queue);
+  } catch (error) { next(error); }
+};
+
+export const explicitDispatch = async (req, res, next) => {
+  try {
+    const { cluster_ids } = req.body;
+    if (!cluster_ids || !Array.isArray(cluster_ids)) {
+      return res.status(400).json({ message: 'cluster_ids array is required' });
+    }
+    const tasks = await dispatchClusters(cluster_ids, req.user.id);
+    res.status(201).json({ message: `Dispatched ${tasks.length} tasks from ${cluster_ids.length} clusters`, tasks });
+  } catch (error) { next(error); }
+};
+
+// Phase 3: Capacity-Aware Planning Endpoints
+export const generatePlan = async (req, res, next) => {
+  try {
+    const result = await generateDispatchPlan(req.user.id);
+    res.status(201).json({ message: 'Dispatch plan generated successfully', ...result });
+  } catch (error) { next(error); }
+};
+
+export const getPlanItems = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { data, error } = await supabase
+      .from('dispatch_plan_items')
+      .select('*, clusters(issue_type, priority_score, recommended_task_type)')
+      .eq('dispatch_plan_id', id)
+      .order('is_selected', { ascending: false });
+
+    if (error) return res.status(400).json({ message: 'Failed to fetch plan items', error: error.message });
+    res.status(200).json(data);
+  } catch (error) { next(error); }
+};
+
+export const commitPlan = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { weather_condition = 'normal', traffic_condition = 'low' } = req.body;
+    
+    console.log(`[Optimization] Committing plan ${id}...`);
+    // 1. Fetch the plan
+    console.log(`[Optimization] Step 1: Fetching draft plan...`);
+    const { data: plan, error: planError } = await supabase.from('dispatch_plans').select('status').eq('id', id).single();
+    if (planError || !plan) return res.status(404).json({ message: 'Plan not found' });
+    if (plan.status !== 'draft') return res.status(400).json({ message: 'Only draft plans can be committed' });
+
+    // 2. Fetch selected items
+    console.log(`[Optimization] Step 2: Fetching selected items...`);
+    const { data: selectedItems } = await supabase
+      .from('dispatch_plan_items')
+      .select('cluster_id')
+      .eq('dispatch_plan_id', id)
+      .eq('is_selected', true);
+      
+    const clusterIds = (selectedItems || []).map(i => i.cluster_id);
+    
+    // 3. Dispatch the clusters
+    console.log(`[Optimization] Step 3: Dispatching ${clusterIds.length} clusters...`);
+    let tasks = [];
+    let assignments = [];
+    let optimization_run = null;
+    if (clusterIds.length > 0) {
+      tasks = await dispatchClusters(clusterIds, req.user.id);
+      
+      // 3.1 Load crews and assign intelligently
+      console.log(`[Optimization] Step 3.1: Loading field crews and assigning ${tasks.length} tasks...`);
+      const crews = await loadFieldCrews();
+      const depot = await getDepot();
+      assignments = await assignTasksToCrews(tasks, crews, depot);
+      
+      // 3.2 Apply assignments directly to the tasks
+      console.log(`[Optimization] Step 3.2: Applying assignments...`);
+      for (const assignment of assignments) {
+        const crew = crews.find(c => c.id === assignment.crew_id);
+        const memberIds = crew ? (crew.member_profile_ids || []) : [];
+        
+        if (assignment.task_ids_ordered.length > 0) {
+          await supabase
+            .from('cleanup_tasks')
+            .update({
+              assigned_crew_ids: memberIds,
+              assigned_at: new Date().toISOString(),
+              assigned_by: req.user.id,
+              last_assigned_at: new Date().toISOString()
+            })
+            .in('id', assignment.task_ids_ordered);
+        }
+      }
+
+      // 3.3 Create Optimization Run (for frontend route rendering)
+      console.log(`[Optimization] Step 3.3: Creating Optimization Run...`);
+      const { data: run, error: runError } = await supabase
+        .from('optimization_runs')
+        .insert({
+          triggered_by: req.user.id,
+          status: 'approved',
+          approved_by: req.user.id,
+          approved_at: new Date().toISOString(),
+          criteria: {},
+          num_tasks_optimized: tasks.length,
+          num_crews: crews.length,
+          weather_condition,
+          traffic_condition
+        })
+        .select()
+        .single();
+        
+      if (runError) throw runError;
+      optimization_run = run;
+
+      // 3.4 Generate and Save Routes
+      console.log(`[Optimization] Step 3.4: Generating routes for ${assignments.length} crews...`);
+      for (const assignment of assignments) {
+        if (assignment.task_ids_ordered.length === 0) continue;
+        
+        const rawRoute = await generateRouteForCrew(
+          assignment.crew_id,
+          assignment.task_ids_ordered,
+          depot,
+          'none' // Defers to distance.provider.js default (haversine)
+        );
+        
+        const { data: crewRoute, error: crewRouteError } = await supabase
+          .from('crew_routes')
+          .insert({
+            optimization_run_id: run.id,
+            crew_id: assignment.crew_id,
+            start_depot: `POINT(${depot.longitude} ${depot.latitude})`,
+            end_depot: `POINT(${depot.longitude} ${depot.latitude})`,
+            total_distance_meters: rawRoute.totalDistance,
+            total_duration_min: rawRoute.totalTime,
+            task_count: assignment.task_ids_ordered.length
+          })
+          .select()
+          .single();
+          
+        if (crewRouteError) throw crewRouteError;
+        
+        if (rawRoute.waypoints.length > 0) {
+          const waypointsData = rawRoute.waypoints.map(wp => ({
+            ...wp,
+            crew_route_id: crewRoute.id
+          }));
+          await supabase.from('route_waypoints').insert(waypointsData);
+        }
+        
+        for (let i = 0; i < assignment.task_ids_ordered.length; i++) {
+          await supabase
+            .from('cleanup_tasks')
+            .update({
+              crew_route_id: crewRoute.id,
+              sequence_in_route: i + 1,
+              // Update duration to include accurate routing travel time
+              estimated_duration_min: rawRoute.waypoints.find(w => w.cleanup_task_id === assignment.task_ids_ordered[i])?.estimated_time_from_previous_min
+            })
+            .eq('id', assignment.task_ids_ordered[i]);
+        }
+      }
+    }
+
+    // 4. Update plan status
+    console.log(`[Optimization] Plan committed successfully!`);
+    await supabase.from('dispatch_plans').update({ status: 'approved' }).eq('id', id);
+
+    res.status(200).json({ message: `Committed plan, created and assigned ${tasks.length} task(s)`, tasks, assignments, optimization_run });
+  } catch (error) { next(error); }
+};
+
+// Phase 8 + 9 implementation - Now upgraded to Phase 1-6 Capacity Aware Pipeline seamlessly!
 export const runOptimization = async (req, res, next) => {
   const { weather_condition = 'normal', traffic_condition = 'low' } = req.body;
 
   try {
-    // 1. Load MCDA weights and depot
-    console.log(`[Optimization] Run initiated by user ${req.user.id}`);
+    console.log(`[Optimization] Run initiated by user ${req.user?.id || 'admin'}`);
     console.log(`[Optimization] Conditions: Weather=${weather_condition}, Traffic=${traffic_condition}`);
-    const weights = await loadWeights();
+    
     const depot = await getDepot();
 
-    // 2. Find eligible clusters
-    console.log(`[Optimization] Scanning for unresolved clusters...`);
-    const eligibleClusters = await findEligibleClusters();
-    console.log(`[Optimization] Found ${eligibleClusters.length} eligible cluster(s).`);
+    // 1. Prioritize backlog (Phase 1 & 2)
+    console.log(`[Optimization] Prioritizing backlog...`);
+    await prioritizeBacklog();
 
-    if (eligibleClusters.length === 0) {
-      console.log(`[Optimization] Aborting: No clusters require optimization.`);
-      return res.status(200).json({ message: 'No clusters require optimization', tasks: [] });
-    }
-
-    // 3. Calculate priorities
-    console.log(`[Optimization] Calculating MCDA priority scores for clusters...`);
-    const prioritizedClusters = await calculateClusterPriorities(
-      eligibleClusters.map(c => c.id), weather_condition, weights
-    );
-    console.log(`[Optimization] Prioritization complete.`);
-
-    // 4. Create/identify cleanup tasks (Limit to top 50 to prevent timeouts)
-    console.log(`[Optimization] Mapping top clusters to cleanup tasks...`);
-    const tasks = await mapClustersToTasks(prioritizedClusters.slice(0, 50));
-    console.log(`[Optimization] Generated ${tasks.length} cleanup task(s).`);
+    // 2. Capacity-Aware Auto-Planner (Phase 3)
+    console.log(`[Optimization] Generating capacity-aware dispatch plan...`);
+    const { plan, selectedCount } = await generateDispatchPlan(req.user?.id || null);
     
-    if (tasks.length === 0) {
-      console.log(`[Optimization] Aborting: No new tasks needed optimization.`);
+    if (selectedCount === 0) {
+      console.log(`[Optimization] Aborting: No capacity or no tasks available.`);
       return res.status(200).json({ message: 'No new tasks needed optimization', tasks: [] });
     }
 
-    // 5. Load field crews
+    // Extract selected clusters from the plan
+    const { data: items } = await supabase
+      .from('dispatch_plan_items')
+      .select('cluster_id')
+      .eq('dispatch_plan_id', plan.id)
+      .eq('is_selected', true);
+      
+    const clusterIds = items.map(i => i.cluster_id);
+
+    // 3. Dispatch Clusters to Tasks (Phase 4)
+    console.log(`[Optimization] Generating tasks for ${clusterIds.length} selected clusters...`);
+    const tasks = await dispatchClusters(clusterIds, req.user?.id || null);
+
+    // 4. Load field crews
     console.log(`[Optimization] Finding available field crews...`);
     const crews = await loadFieldCrews();
-    console.log(`[Optimization] Found ${crews.length} available crew(s).`);
 
-    // 6. Assign tasks to crews
-    console.log(`[Optimization] Executing greedy assignment algorithm...`);
+    // 5. Assign tasks to crews
+    console.log(`[Optimization] Executing capacity-aware greedy assignment...`);
     const assignments = await assignTasksToCrews(tasks, crews, depot);
-    console.log(`[Optimization] Task assignment complete.`);
 
-    // 7. Create optimization_run record
+    // 6. Create optimization_run record (so UI can read it)
     console.log(`[Optimization] Saving optimization proposal...`);
     const { data: run, error } = await supabase
       .from('optimization_runs')
       .insert({
-        triggered_by: req.user.id,
+        triggered_by: req.user?.id,
         status: 'proposed',
-        criteria: weights,
+        criteria: { info: 'Generated via Capacity-Aware Pipeline' },
         weather_condition,
         traffic_condition,
         num_tasks_optimized: tasks.length,
@@ -92,70 +274,56 @@ export const runOptimization = async (req, res, next) => {
       .single();
 
     if (error) throw error;
-    console.log(`[Optimization] Proposal saved with ID: ${run.id}`);
 
-    // 8. Generate routes and save to DB
-    console.log(`[Optimization] Generating simulated routes and calculating ETA...`);
+    // 7. Generate routes and save to DB (Phase 5)
+    console.log(`[Optimization] Generating simulated routes...`);
     for (const assignment of assignments) {
+      if (assignment.task_ids_ordered.length === 0) continue;
+
       const rawRoute = await generateRouteForCrew(
         assignment.crew_id,
         assignment.task_ids_ordered,
         depot,
-        'none' // default direction provider
+        'none' // distance.provider.js default
       );
 
-      // Apply traffic simulation
-      const { adjustedWaypoints, simulation: trafficSim } = applyTrafficSimulation(rawRoute.waypoints, traffic_condition);
-      
-      const totalTime = adjustedWaypoints.reduce((sum, w) => sum + (w.estimated_time_from_previous_min || 0), 0);
-
-      // Store crew_route
       const { data: crewRoute, error: crewRouteError } = await supabase
         .from('crew_routes')
         .insert({
           optimization_run_id: run.id,
           crew_id: assignment.crew_id,
-          start_depot: depot,
-          end_depot: depot,
+          start_depot: `POINT(${depot.longitude} ${depot.latitude})`,
+          end_depot: `POINT(${depot.longitude} ${depot.latitude})`,
           total_distance_meters: rawRoute.totalDistance,
-          total_duration_min: totalTime,
-          task_count: assignment.task_ids_ordered.length,
-          weather_snapshot: applyWeatherSimulation([], weather_condition).simulation,
-          traffic_snapshot: trafficSim
+          total_duration_min: rawRoute.totalTime,
+          task_count: assignment.task_ids_ordered.length
         })
         .select()
         .single();
         
       if (crewRouteError) throw crewRouteError;
 
-      // Store waypoints
-      if (adjustedWaypoints.length > 0) {
-        const waypointsData = adjustedWaypoints.map(wp => ({
+      if (rawRoute.waypoints.length > 0) {
+        const waypointsData = rawRoute.waypoints.map(wp => ({
           ...wp,
           crew_route_id: crewRoute.id
         }));
         await supabase.from('route_waypoints').insert(waypointsData);
       }
 
-      // Update tasks with route references
       for (let i = 0; i < assignment.task_ids_ordered.length; i++) {
         await supabase
           .from('cleanup_tasks')
           .update({
             crew_route_id: crewRoute.id,
             sequence_in_route: i + 1,
-            estimated_duration_min: adjustedWaypoints.find(w => w.cleanup_task_id === assignment.task_ids_ordered[i])?.estimated_time_from_previous_min
+            estimated_duration_min: rawRoute.waypoints.find(w => w.cleanup_task_id === assignment.task_ids_ordered[i])?.estimated_time_from_previous_min
           })
           .eq('id', assignment.task_ids_ordered[i]);
       }
     }
 
-    const { simulation: weatherSim } = applyWeatherSimulation([], weather_condition);
-    const { simulation: trafficSim } = applyTrafficSimulation([], traffic_condition);
-
-    console.log(`[Optimization] Optimization pipeline completed successfully in ${Date.now() - (req._startTime || Date.now())}ms`);
-
-    res.status(201).json({
+    return res.status(200).json({
       message: 'Optimization proposal generated',
       optimization_run: run,
       assignments,
@@ -296,6 +464,19 @@ export const getOptimizationRunById = async (req, res, next) => {
       .select('*, field_crews(name)')
       .eq('optimization_run_id', id);
 
+    if (routes && routes.length > 0) {
+      const routeIds = routes.map(r => r.id);
+      const { data: waypoints } = await supabase
+        .from('route_waypoints')
+        .select('*')
+        .in('crew_route_id', routeIds)
+        .order('sequence_order', { ascending: true });
+        
+      for (const route of routes) {
+        route.waypoints = (waypoints || []).filter(w => w.crew_route_id === route.id);
+      }
+    }
+
     res.json({ ...run, routes: routes || [] });
   } catch (error) { next(error); }
 };
@@ -426,6 +607,24 @@ export const updateFieldCrew = async (req, res, next) => {
 
     if (error) return res.status(400).json({ message: 'Failed to update crew', error: error.message });
     res.json(data);
+  } catch (error) { next(error); }
+};
+
+// Phase 6: Field Feedback Loop
+export const completeTask = async (req, res, next) => {
+  const { id } = req.params;
+  const { outcome, notes } = req.body;
+  
+  if (!outcome) {
+    return res.status(400).json({ message: 'Outcome is required' });
+  }
+
+  try {
+    const updatedTask = await processTaskFeedback(id, outcome, notes, req.user?.id);
+    res.status(200).json({ 
+      message: 'Task completed and clusters updated successfully', 
+      task: updatedTask 
+    });
   } catch (error) { next(error); }
 };
 
