@@ -1,4 +1,5 @@
 import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
+import { OPTIMIZATION_CONFIG } from '../config/optimization.config.js';
 
 import { calculateClusterPriorities } from '../services/mcdaPrioritizer.service.js';
 import { mapClustersToTasks } from '../services/clusterTaskMapper.service.js';
@@ -10,6 +11,7 @@ import { prioritizeBacklog, getWorkQueue } from '../services/workQueue.service.j
 import { dispatchClusters } from '../services/dispatch.service.js';
 import { generateDispatchPlan } from '../services/dispatchPlanner.service.js';
 import { processTaskFeedback } from '../services/taskFeedback.service.js';
+import { getLiveWeatherCondition } from '../services/weather.service.js';
 
 async function loadWeights() {
   const { data } = await supabase.from('optimization_settings').select('value').eq('key', 'mcda_weights').single();
@@ -82,7 +84,10 @@ export const getPlanItems = async (req, res, next) => {
 export const commitPlan = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { weather_condition = 'normal', traffic_condition = 'low' } = req.body;
+    const { traffic_condition = 'low' } = req.body;
+    
+    // Fetch live weather
+    const weather_condition = await getLiveWeatherCondition();
     
     console.log(`[Optimization] Committing plan ${id}...`);
     // 1. Fetch the plan
@@ -164,7 +169,7 @@ export const commitPlan = async (req, res, next) => {
           assignment.crew_id,
           assignment.task_ids_ordered,
           depot,
-          'none' // Defers to distance.provider.js default (haversine)
+          OPTIMIZATION_CONFIG.directions.provider
         );
         
         const { data: crewRoute, error: crewRouteError } = await supabase
@@ -215,9 +220,10 @@ export const commitPlan = async (req, res, next) => {
 
 // Phase 8 + 9 implementation - Now upgraded to Phase 1-6 Capacity Aware Pipeline seamlessly!
 export const runOptimization = async (req, res, next) => {
-  const { weather_condition = 'normal', traffic_condition = 'low' } = req.body;
+  const { traffic_condition = 'low' } = req.body;
 
   try {
+    const weather_condition = await getLiveWeatherCondition();
     console.log(`[Optimization] Run initiated by user ${req.user?.id || 'admin'}`);
     console.log(`[Optimization] Conditions: Weather=${weather_condition}, Traffic=${traffic_condition}`);
     
@@ -284,7 +290,7 @@ export const runOptimization = async (req, res, next) => {
         assignment.crew_id,
         assignment.task_ids_ordered,
         depot,
-        'none' // distance.provider.js default
+        OPTIMIZATION_CONFIG.directions.provider
       );
 
       const { data: crewRoute, error: crewRouteError } = await supabase

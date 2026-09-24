@@ -5,6 +5,7 @@
  * Currently defaults to a Greedy Nearest-Neighbor Haversine heuristic to preserve speed,
  * but can easily be swapped with Google Maps, Mapbox, or OSRM implementations.
  */
+import fetch from 'node-fetch';
 
 // Haversine distance in meters
 function haversineDistance(lat1, lon1, lat2, lon2) {
@@ -36,6 +37,40 @@ export async function getDistanceAndDuration(lat1, lon1, lat2, lon2, provider = 
       distance_meters,
       duration_min
     };
+  }
+
+  if (provider === 'tomtom') {
+    const apiKey = process.env.TOMTOM_API_KEY;
+    if (!apiKey) {
+      console.warn('[Optimization] TOMTOM_API_KEY missing, falling back to haversine');
+      return getDistanceAndDuration(lat1, lon1, lat2, lon2, 'haversine');
+    }
+    
+    try {
+      // TomTom Routing API (sync, with live traffic)
+      // Note: TomTom expects longitude,latitude pairs!
+      const url = `https://api.tomtom.com/routing/1/calculateRoute/${lat1},${lon1}:${lat2},${lon2}/json?key=${apiKey}&traffic=true`;
+      
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`TomTom API Error: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      const route = data.routes?.[0]?.summary;
+      
+      if (!route) {
+        throw new Error('No route found from TomTom');
+      }
+
+      return {
+        distance_meters: route.lengthInMeters,
+        duration_min: Math.round((route.travelTimeInSeconds / 60) * 10) / 10
+      };
+    } catch (err) {
+      console.error('[Optimization] TomTom Routing Failed:', err.message, '- falling back to haversine');
+      return getDistanceAndDuration(lat1, lon1, lat2, lon2, 'haversine');
+    }
   }
 
   // Future implementations (e.g., Google Maps Distance Matrix API) can be added here

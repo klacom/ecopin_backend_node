@@ -1,5 +1,7 @@
 import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
 import { getDistanceAndDuration } from '../providers/distance.provider.js';
+import { getTomTomDistanceMatrix } from '../providers/tomtom.provider.js';
+import { solveVRPWithOrTools } from './ortools.service.js';
 
 /**
  * Extracts lat/lng from a WKB hex string (used for cluster center_point)
@@ -56,115 +58,76 @@ export async function getTaskLocation(taskId) {
  */
 export async function assignTasksToCrews(tasks, crews, depot) {
   if (tasks.length === 0 || crews.length === 0) return [];
+
+  // Phase 2 Upgrade: Google OR-Tools VRP Integration
+  // 1. Gather all coordinates (Depot is index 0)
+  const coordinates = [{ lat: depot.latitude, lng: depot.longitude }];
+  const taskMapping = []; // Maps index (1 to N) back to task object
   
-  // 1. Sort tasks by priority descending
-  const sortedTasks = [...tasks].sort((a, b) => b.priority_score - a.priority_score);
-  
-  // 2. Initialize crew buckets
-  const crewAssignments = crews.map(c => {
-    // Calculate available minutes based on shift, default 8 hours
-    const sH = c.shift_start ? parseInt(c.shift_start.split(':')[0]) : 8;
-    const sM = c.shift_start ? parseInt(c.shift_start.split(':')[1]) : 0;
-    const eH = c.shift_end ? parseInt(c.shift_end.split(':')[0]) : 17;
-    const eM = c.shift_end ? parseInt(c.shift_end.split(':')[1]) : 0;
-    let totalMin = (eH * 60 + eM) - (sH * 60 + sM);
-    if (totalMin < 0) totalMin += 24 * 60;
-    
-    return {
-      crew_id: c.id,
-      crew: c,
-      tasks: [],
-      assigned_minutes: 0,
-      capacity_minutes: totalMin || 480
-    };
-  });
-  
-  // 3. Alternating assignment based on workload (estimated duration)
-  for (let i = 0; i < sortedTasks.length; i++) {
-    const task = sortedTasks[i];
-    const estimatedTime = task.estimated_duration_min || 60;
-    
-    // Find crew with lowest workload that can fit this task
-    let bestCrew = null;
-    let minAssignedMinutes = Infinity;
-    
-    for (let j = 0; j < crewAssignments.length; j++) {
-      const ca = crewAssignments[j];
-      if (ca.assigned_minutes + estimatedTime <= ca.capacity_minutes && ca.assigned_minutes < minAssignedMinutes) {
-        minAssignedMinutes = ca.assigned_minutes;
-        bestCrew = ca;
+  for (const task of tasks) {
+    const loc = await getTaskLocation(task.id);
+    coordinates.push(loc);
+    taskMapping.push(task);
+  }
+
+  // 2. Fetch Distance Matrix from TomTom
+  let distanceMatrix = [];
+  try {
+    console.log(`[Optimization] Fetching TomTom Matrix for ${coordinates.length} points...`);
+    distanceMatrix = await getTomTomDistanceMatrix(coordinates);
+  } catch (err) {
+    console.error('[Optimization] TomTom Matrix failed, falling back to Haversine Matrix:', err.message);
+    // Fallback: manually build haversine matrix
+    distanceMatrix = [];
+    for (let i = 0; i < coordinates.length; i++) {
+      const row = [];
+      for (let j = 0; j < coordinates.length; j++) {
+        const { duration_min } = await getDistanceAndDuration(
+          coordinates[i].lat, coordinates[i].lng,
+          coordinates[j].lat, coordinates[j].lng,
+          'haversine'
+        );
+        // OR-Tools works best with integers, convert minutes to seconds
+        row.push(Math.round(duration_min * 60));
       }
-    }
-    
-    if (bestCrew) {
-      bestCrew.tasks.push(task);
-      bestCrew.assigned_minutes += estimatedTime;
-    } else {
-      // If it exceeds strict capacity but must be assigned, give it to the crew with the least work
-      let fallbackCrew = crewAssignments[0];
-      for (let j = 1; j < crewAssignments.length; j++) {
-        if (crewAssignments[j].assigned_minutes < fallbackCrew.assigned_minutes) {
-          fallbackCrew = crewAssignments[j];
-        }
-      }
-      fallbackCrew.tasks.push(task);
-      fallbackCrew.assigned_minutes += estimatedTime;
+      distanceMatrix.push(row);
     }
   }
-  
-  // 4. Order tasks within each crew by nearest neighbor
+
+  // 3. Solve VRP with OR-Tools
+  let routes = [];
+  try {
+    console.log(`[Optimization] Solving VRP for ${crews.length} vehicles...`);
+    routes = await solveVRPWithOrTools(distanceMatrix, crews.length);
+  } catch (err) {
+    console.error('[Optimization] OR-Tools failed, falling back to old Greedy Algorithm:', err.message);
+    // We should implement a fallback here or throw
+    throw err;
+  }
+
+  // 4. Map routes back to crews and tasks
   const results = [];
-  
-  for (const ca of crewAssignments) {
-    if (ca.tasks.length === 0) {
-      results.push({
-        crew_id: ca.crew_id,
-        task_ids_ordered: [],
-        total_estimated_tasks: 0
-      });
-      continue;
-    }
+  for (let i = 0; i < crews.length; i++) {
+    const crew = crews[i];
+    const routeIndices = routes[i] || [];
     
     const orderedTasks = [];
-    let currentLat = depot.latitude;
-    let currentLng = depot.longitude;
-    const remainingTasks = [...ca.tasks];
-    
-    // Pre-fetch locations for all tasks assigned to this crew
-    const taskLocations = {};
-    for (const t of remainingTasks) {
-      taskLocations[t.id] = await getTaskLocation(t.id);
-    }
-    
-    while (remainingTasks.length > 0) {
-      let nearestIdx = 0;
-      let minDistance = Infinity;
-      
-      for (let i = 0; i < remainingTasks.length; i++) {
-        const t = remainingTasks[i];
-        const loc = taskLocations[t.id];
-        const { distance_meters: dist } = await getDistanceAndDuration(currentLat, currentLng, loc.lat, loc.lng);
-        
-        if (dist < minDistance) {
-          minDistance = dist;
-          nearestIdx = i;
-        }
+    // Skip depot (index 0) if it's in the route
+    for (const nodeIndex of routeIndices) {
+      if (nodeIndex === 0) continue;
+      // nodeIndex - 1 maps to the task in taskMapping
+      const task = taskMapping[nodeIndex - 1];
+      if (task) {
+        orderedTasks.push(task.id);
       }
-      
-      const nearestTask = remainingTasks.splice(nearestIdx, 1)[0];
-      orderedTasks.push(nearestTask.id);
-      
-      const nextLoc = taskLocations[nearestTask.id];
-      currentLat = nextLoc.lat;
-      currentLng = nextLoc.lng;
     }
-    
+
     results.push({
-      crew_id: ca.crew_id,
+      crew_id: crew.id,
       task_ids_ordered: orderedTasks,
       total_estimated_tasks: orderedTasks.length
     });
   }
-  
+
   return results;
 }

@@ -45,8 +45,7 @@ export const OPTIMIZATION_CONFIG = {
   // Directions provider
   directions: {
     // 'none' = Haversine straight-line (default MVP)
-    // 'ors' = OpenRouteService free tier
-    // 'google' = Google Directions API
-    provider: process.env.OPTIMIZATION_DIRECTIONS_PROVIDER || 'none',
+    // 'tomtom' = TomTom Routing API
+    provider: process.env.OPTIMIZATION_DIRECTIONS_PROVIDER || 'tomtom',
   },
 };
