@@ -57,15 +57,18 @@ export async function getDistanceAndDuration(lat1, lon1, lat2, lon2, provider = 
       }
       
       const data = await response.json();
-      const route = data.routes?.[0]?.summary;
+      const route = data.routes?.[0];
+      const summary = route?.summary;
+      const polyline = route?.legs?.[0]?.points; // Array of {latitude, longitude}
       
-      if (!route) {
+      if (!summary) {
         throw new Error('No route found from TomTom');
       }
 
       return {
-        distance_meters: route.lengthInMeters,
-        duration_min: Math.round((route.travelTimeInSeconds / 60) * 10) / 10
+        distance_meters: summary.lengthInMeters,
+        duration_min: Math.round((summary.travelTimeInSeconds / 60) * 10) / 10,
+        polyline: polyline || []
       };
     } catch (err) {
       console.error('[Optimization] TomTom Routing Failed:', err.message, '- falling back to haversine');

@@ -30,7 +30,7 @@ export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provid
     const taskLocation = await getTaskLocation(taskId);
     
     // Use distance provider abstraction
-    const { distance_meters: distance, duration_min: time } = await getDistanceAndDuration(
+    const { distance_meters: distance, duration_min: time, polyline } = await getDistanceAndDuration(
       prevLat, prevLng, taskLocation.lat, taskLocation.lng, provider === 'none' ? 'haversine' : provider
     );
 
@@ -42,6 +42,7 @@ export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provid
       waypoint_type: 'task',
       distance_from_previous_meters: Math.round(distance),
       estimated_time_from_previous_min: Math.round(time * 10) / 10,
+      polyline: polyline || null
     });
 
     prevLat = taskLocation.lat;
