@@ -495,6 +495,7 @@ export const getActiveRoutes = async (req, res, next) => {
       .from('optimization_runs')
       .select('id')
       .eq('status', 'approved')
+      .not('approved_at', 'is', null)
       .order('approved_at', { ascending: false })
       .limit(1)
       .single();

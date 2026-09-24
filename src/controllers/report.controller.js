@@ -1402,6 +1402,46 @@ export const logAgencyResponse = async (req, res, next) => {
     }
 };
 
+export const updateReportDetails = async (req, res, next) => {
+    const { id } = req.params;
+    const { description, issue_type, severity, street, landmark, city, district } = req.body;
+    const user_id = req.user.id;
+
+    try {
+        const updateData = { updated_at: new Date().toISOString() };
+        if (description !== undefined) updateData.description = description;
+        if (issue_type !== undefined) updateData.issue_type = issue_type;
+        if (severity !== undefined) updateData.severity = severity;
+        if (street !== undefined) updateData.street = street;
+        if (landmark !== undefined) updateData.landmark = landmark;
+        if (city !== undefined) updateData.city = city;
+        if (district !== undefined) updateData.district = district;
+
+        const { data, error } = await supabase
+            .from('reports')
+            .update(updateData)
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to update report details',
+                error: error.message
+            });
+        }
+
+        await logAuditAction(id, user_id, 'update_details', 'Field Crew/Officer updated report details');
+
+        res.status(200).json({
+            message: 'Report details updated successfully',
+            report: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // Fetch agency responses for a report
 export const fetchAgencyResponses = async (req, res, next) => {
     const { id } = req.params;

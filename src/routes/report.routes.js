@@ -22,7 +22,8 @@ import {
     getSatisfactionAnalytics,
     createReportFromRejected,
     updateLifecycleStage,
-    fetchAgencyResponses
+    fetchAgencyResponses,
+    updateReportDetails
 } from '../controllers/report.controller.js';
 import { authenticate, optionalAuthenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
@@ -56,6 +57,7 @@ router.get('/analytics/satisfaction', getSatisfactionAnalytics);
 router.patch('/:id/status', updateReportStatus);
 router.patch('/:id/validation', updateReportValidation);
 router.patch('/:id/lifecycle', updateLifecycleStage);
+router.patch('/:id/details', updateReportDetails);
 router.get('/:id/agency-responses', fetchAgencyResponses);
 router.post('/:id/notes', addReportNote);
 router.delete('/:id/photo', deleteReportPhoto);
