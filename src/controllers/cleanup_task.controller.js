@@ -517,13 +517,18 @@ export const markTaskComplete = async (req, res, next) => {
         }
 
         // 2. Verify current user is assigned to this task
-        if (task.assigned_crew_ids && task.assigned_crew_ids.length > 0) {
-            if (!task.assigned_crew_ids.includes(userId)) {
-                return res.status(403).json({
-                    message: 'You are not assigned to this task',
-                    error: 'Only assigned crew members can complete this task'
-                });
-            }
+        if (!task.assigned_crew_ids || task.assigned_crew_ids.length === 0) {
+            return res.status(403).json({
+                message: 'Task is not assigned',
+                error: 'Unassigned tasks must be claimed or assigned before they can be marked complete.'
+            });
+        }
+
+        if (!task.assigned_crew_ids.includes(userId)) {
+            return res.status(403).json({
+                message: 'You are not assigned to this task',
+                error: 'Only assigned crew members can complete this task'
+            });
         }
 
         // 3. Mark the task as complete

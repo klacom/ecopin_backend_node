@@ -43,6 +43,7 @@ export const prioritizeQueue = async (req, res, next) => {
 
 export const fetchWorkQueue = async (req, res, next) => {
   try {
+    await prioritizeBacklog();
     const queue = await getWorkQueue(parseInt(req.query.limit) || 100);
     res.status(200).json(queue);
   } catch (error) { next(error); }
