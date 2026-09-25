@@ -23,7 +23,7 @@ import {
     createReportFromRejected,
     updateLifecycleStage,
     fetchAgencyResponses,
-    syncReportMedia
+    updateReportDetails
 } from '../controllers/report.controller.js';
 import { batchSyncReports } from '../controllers/sync.controller.js';
 import { authenticate, optionalAuthenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
@@ -60,6 +60,7 @@ router.get('/analytics/satisfaction', getSatisfactionAnalytics);
 router.patch('/:id/status', updateReportStatus);
 router.patch('/:id/validation', updateReportValidation);
 router.patch('/:id/lifecycle', updateLifecycleStage);
+router.patch('/:id/details', updateReportDetails);
 router.get('/:id/agency-responses', fetchAgencyResponses);
 router.post('/:id/notes', addReportNote);
 router.delete('/:id/photo', deleteReportPhoto);

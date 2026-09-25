@@ -21,13 +21,8 @@ export const createCleanupTask = async (req, res, next) => {
     const { cluster_id, title, description, assigned_crew_ids } = req.body;
     const user_id = req.user.id;
 
-    // Validate required fields
-    if (!assigned_crew_ids || !Array.isArray(assigned_crew_ids) || assigned_crew_ids.length === 0) {
-        return res.status(400).json({
-            message: 'Field crew assignment is required',
-            error: 'Please assign at least one field crew member to this task'
-        });
-    }
+    // Allow tasks without crew assignment (they remain 'pending' for later optimization)
+    const hasCrewAssignment = assigned_crew_ids && Array.isArray(assigned_crew_ids) && assigned_crew_ids.length > 0;
 
     try {
         // Check if reports in this cluster have manual review status
@@ -81,7 +76,20 @@ export const createCleanupTask = async (req, res, next) => {
             created_by: user_id
         };
 
-        if (assigned_crew_ids && assigned_crew_ids.length > 0) {
+        // Inherit cluster priority if available
+        if (cluster_id) {
+            const { data: cluster } = await supabase
+                .from('clusters')
+                .select('priority, priority_score')
+                .eq('id', cluster_id)
+                .single();
+            if (cluster) {
+                taskData.priority = cluster.priority;
+                taskData.priority_score = cluster.priority_score;
+            }
+        }
+
+        if (hasCrewAssignment) {
             taskData.assigned_crew_ids = assigned_crew_ids;
             taskData.assigned_at = new Date().toISOString();
             taskData.assigned_by = user_id;
@@ -158,13 +166,8 @@ export const createCustomCleanupTask = async (req, res, next) => {
         });
     }
 
-    // Validate required fields
-    if (!assigned_crew_ids || !Array.isArray(assigned_crew_ids) || assigned_crew_ids.length === 0) {
-        return res.status(400).json({
-            message: 'Field crew assignment is required',
-            error: 'Please assign at least one field crew member to this task'
-        });
-    }
+    // Allow tasks without crew assignment (they remain 'pending' for later optimization)
+    const hasCrewAssignment = assigned_crew_ids && Array.isArray(assigned_crew_ids) && assigned_crew_ids.length > 0;
 
     try {
         // Check if any of the selected reports have manual review status
@@ -219,7 +222,7 @@ export const createCustomCleanupTask = async (req, res, next) => {
             report_ids: report_ids
         };
 
-        if (assigned_crew_ids && assigned_crew_ids.length > 0) {
+        if (hasCrewAssignment) {
             taskData.assigned_crew_ids = assigned_crew_ids;
             taskData.assigned_at = new Date().toISOString();
             taskData.assigned_by = user_id;
@@ -291,7 +294,7 @@ export const getAllCleanupTasks = async (req, res, next) => {
 
         let query = supabase
             .from('cleanup_tasks')
-            .select('*, clusters(*)')
+            .select('*, clusters(*), reports(id, title, description, issue_type, location, status)')
             .order('created_at', { ascending: false });
 
         // Filter for tasks assigned to current user if requested
@@ -327,7 +330,7 @@ export const getCleanupTaskById = async (req, res, next) => {
     try {
         const { data, error } = await supabase
             .from('cleanup_tasks')
-            .select('*, clusters(*)')
+            .select('*, clusters(*), reports(id, title, description, issue_type, location, status)')
             .eq('id', id)
             .single();
 
@@ -514,13 +517,18 @@ export const markTaskComplete = async (req, res, next) => {
         }
 
         // 2. Verify current user is assigned to this task
-        if (task.assigned_crew_ids && task.assigned_crew_ids.length > 0) {
-            if (!task.assigned_crew_ids.includes(userId)) {
-                return res.status(403).json({
-                    message: 'You are not assigned to this task',
-                    error: 'Only assigned crew members can complete this task'
-                });
-            }
+        if (!task.assigned_crew_ids || task.assigned_crew_ids.length === 0) {
+            return res.status(403).json({
+                message: 'Task is not assigned',
+                error: 'Unassigned tasks must be claimed or assigned before they can be marked complete.'
+            });
+        }
+
+        if (!task.assigned_crew_ids.includes(userId)) {
+            return res.status(403).json({
+                message: 'You are not assigned to this task',
+                error: 'Only assigned crew members can complete this task'
+            });
         }
 
         // 3. Mark the task as complete

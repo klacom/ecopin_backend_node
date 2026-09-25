@@ -6,7 +6,7 @@ dotenv.config();
 
 export const NODE_ENV = process.env.NODE_ENV || 'development';
 export const PORT = process.env.PORT || 3000;
-export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3001';
+export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4001';
 export const CLASSIFIER_SERVICE_URL = process.env.CLASSIFIER_SERVICE_URL || 'http://127.0.0.1:8000';
 export const USE_AWS_CLASSIFIER = process.env.USE_AWS_CLASSIFIER === 'true';
 export const AWS_CLASSIFIER_URL = process.env.AWS_CLASSIFIER_URL;
