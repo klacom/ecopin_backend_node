@@ -294,7 +294,7 @@ export const getAllCleanupTasks = async (req, res, next) => {
 
         let query = supabase
             .from('cleanup_tasks')
-            .select('*, clusters(*)')
+            .select('*, clusters(*), reports(id, title, description, issue_type, location, status)')
             .order('created_at', { ascending: false });
 
         // Filter for tasks assigned to current user if requested
@@ -330,7 +330,7 @@ export const getCleanupTaskById = async (req, res, next) => {
     try {
         const { data, error } = await supabase
             .from('cleanup_tasks')
-            .select('*, clusters(*)')
+            .select('*, clusters(*), reports(id, title, description, issue_type, location, status)')
             .eq('id', id)
             .single();
 

@@ -19,9 +19,62 @@ function getTaskContext(type) {
     case 'Emergency Response': return { action: 'Respond immediately to contain and resolve a high-severity environmental incident.', resources: 'Emergency kit, PPE, specialized machinery' };
     case 'Reinspection': return { action: 'Verify the outcome and quality of previously completed cleanup work.', resources: 'Previous records, camera' };
     case 'Monitoring': return { action: 'Observe and record the situation without immediate physical intervention.', resources: 'Tablet, sensors if applicable' };
+    case 'Scouting': return { action: 'Visit unverified reports to scout, validate, and document the severity before dispatching heavy cleanup crews.', resources: 'Motorcycle/Light vehicle, inspection tablet, camera' };
+    case 'Mixed': return { action: 'Perform both validation of pending reports and cleanup of verified issues in this clustered area.', resources: 'Cleaning tools, transport vehicle, camera' };
     case 'Escalation': return { action: 'Gather detailed information and evidence required for higher institutional action.', resources: 'Detailed reporting tools, camera' };
     default: return { action: 'Perform general operation at the specified location.', resources: 'Standard field tools' };
   }
+}
+
+function parseWkbPoint(wkbHex) {
+  if (!wkbHex) return null;
+  try {
+    const buf = Buffer.from(wkbHex, 'hex');
+    const lng = buf.readDoubleLE(9);
+    const lat = buf.readDoubleLE(17);
+    return { lat, lng };
+  } catch (e) {
+    return null;
+  }
+}
+
+function calculateMicroRouteTSP(startLat, startLng, reports) {
+  if (!reports || reports.length === 0) return [];
+  if (reports.length === 1) return [reports[0].id];
+
+  const unvisited = reports.map(r => {
+    const loc = parseWkbPoint(r.location);
+    return {
+      id: r.id,
+      lat: loc ? loc.lat : startLat,
+      lng: loc ? loc.lng : startLng
+    };
+  });
+
+  const sequence = [];
+  let currentLat = startLat;
+  let currentLng = startLng;
+
+  while (unvisited.length > 0) {
+    let nearestIdx = 0;
+    let minDistance = Infinity;
+
+    for (let i = 0; i < unvisited.length; i++) {
+      const dist = haversineDistance(currentLat, currentLng, unvisited[i].lat, unvisited[i].lng);
+      if (dist < minDistance) {
+        minDistance = dist;
+        nearestIdx = i;
+      }
+    }
+
+    const nearest = unvisited[nearestIdx];
+    sequence.push(nearest.id);
+    currentLat = nearest.lat;
+    currentLng = nearest.lng;
+    unvisited.splice(nearestIdx, 1);
+  }
+
+  return sequence;
 }
 
 export async function dispatchClusters(clusterIds, userId) {
@@ -34,7 +87,7 @@ export async function dispatchClusters(clusterIds, userId) {
   // 2. Fetch full cluster details, ensuring we only grab clusters that haven't been scheduled yet
   const { data: clusters } = await supabase
     .from('clusters')
-    .select('id, center, issue_type, recommended_task_type, estimated_effort_minutes, reports(id)')
+    .select('id, center, issue_type, recommended_task_type, estimated_effort_minutes, reports(id, location)')
     .in('id', clusterIds)
     .in('status', ['unresolved', 'prioritized', 'monitoring']);
 
@@ -77,8 +130,6 @@ export async function dispatchClusters(clusterIds, userId) {
   const createdTasks = [];
   
   for (const group of consolidatedTasks) {
-    const taskType = group[0].recommended_task_type || 'Cleanup';
-    const totalEffort = group.reduce((sum, c) => sum + (c.estimated_effort_minutes || 60), 0);
     const allClusterIds = group.map(c => c.id);
     
     // Aggregate reports across all grouped clusters
@@ -89,6 +140,24 @@ export async function dispatchClusters(clusterIds, userId) {
       }
     });
     
+    // Dynamically determine taskType based on report validation statuses (Hybrid Routing Plan)
+    const totalReports = allReports.length;
+    const pendingCount = allReports.filter(r => r.validation_status === 'pending').length;
+    
+    let taskType = 'Cleanup';
+    if (totalReports > 0) {
+      if (pendingCount === totalReports) {
+        taskType = 'Scouting';
+      } else if (pendingCount > 0 && pendingCount < totalReports) {
+        taskType = 'Mixed';
+      } else {
+        taskType = 'Cleanup';
+      }
+    } else {
+      taskType = group[0].recommended_task_type || 'Cleanup';
+    }
+
+    const totalEffort = group.reduce((sum, c) => sum + (c.estimated_effort_minutes || 60), 0);
     const title = `${taskType} Operation - ${allClusterIds.length > 1 ? 'Consolidated Clusters' : 'Cluster ' + allClusterIds[0].substring(0, 8)}`;
     
     const { action, resources } = getTaskContext(taskType);
@@ -108,6 +177,8 @@ ${action}
 **Required Resources**
 ${resources}`;
     
+    const reportSequence = calculateMicroRouteTSP(group[0].center.coordinates[1], group[0].center.coordinates[0], allReports);
+    
     const { data: newTask, error } = await supabase
       .from('cleanup_tasks')
       .insert({
@@ -121,7 +192,8 @@ ${resources}`;
         expected_action: action,
         required_resources: resources,
         scheduled_date: scheduledDate,
-        created_by: userId
+        created_by: userId,
+        report_sequence: reportSequence
       })
       .select()
       .single();
@@ -133,10 +205,14 @@ ${resources}`;
 
     // Update reports to point to this task
     if (allReports.length > 0) {
-      await supabase
+      const { error: reportsUpdateError } = await supabase
         .from('reports')
         .update({ cleanup_task_id: newTask.id })
         .in('id', allReports.map(r => r.id));
+        
+      if (reportsUpdateError) {
+        console.error('Failed to link reports to dispatched task:', reportsUpdateError);
+      }
     }
     
     // Update cluster statuses to 'scheduled'

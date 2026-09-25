@@ -197,15 +197,25 @@ export const commitPlan = async (req, res, next) => {
         }
         
         for (let i = 0; i < assignment.task_ids_ordered.length; i++) {
-          await supabase
+          const taskId = assignment.task_ids_ordered[i];
+          const wp = rawRoute.waypoints.find(w => w.cleanup_task_id === taskId);
+          const updatePayload = {
+            crew_route_id: crewRoute.id,
+            sequence_in_route: i + 1
+          };
+          
+          if (wp && wp.estimated_time_from_previous_min !== undefined) {
+            updatePayload.estimated_duration_min = wp.estimated_time_from_previous_min;
+          }
+
+          const { error: updateError } = await supabase
             .from('cleanup_tasks')
-            .update({
-              crew_route_id: crewRoute.id,
-              sequence_in_route: i + 1,
-              // Update duration to include accurate routing travel time
-              estimated_duration_min: rawRoute.waypoints.find(w => w.cleanup_task_id === assignment.task_ids_ordered[i])?.estimated_time_from_previous_min
-            })
-            .eq('id', assignment.task_ids_ordered[i]);
+            .update(updatePayload)
+            .eq('id', taskId);
+            
+          if (updateError) {
+            console.error(`[Optimization] Failed to update cleanup task ${taskId}:`, updateError);
+          }
         }
       }
     }
@@ -470,13 +480,13 @@ export const getOptimizationRunById = async (req, res, next) => {
       .select('*, field_crews(name)')
       .eq('optimization_run_id', id);
 
-    if (routes && routes.length > 0) {
-      const routeIds = routes.map(r => r.id);
-      const { data: waypoints } = await supabase
-        .from('route_waypoints')
-        .select('*')
-        .in('crew_route_id', routeIds)
-        .order('sequence_order', { ascending: true });
+      if (routes && routes.length > 0) {
+        const routeIds = routes.map(r => r.id);
+        const { data: waypoints } = await supabase
+          .from('route_waypoints')
+          .select('*, cleanup_tasks(id, task_type)')
+          .in('crew_route_id', routeIds)
+          .order('sequence_order', { ascending: true });
         
       for (const route of routes) {
         route.waypoints = (waypoints || []).filter(w => w.crew_route_id === route.id);
@@ -510,7 +520,7 @@ export const getActiveRoutes = async (req, res, next) => {
     for (const route of (routes || [])) {
       const { data: waypoints } = await supabase
         .from('route_waypoints')
-        .select('*')
+        .select('*, cleanup_tasks(id, task_type)')
         .eq('crew_route_id', route.id)
         .order('sequence_order');
       route.waypoints = waypoints || [];
