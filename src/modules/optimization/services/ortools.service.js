@@ -14,7 +14,9 @@ export async function solveVRPWithOrTools(distanceMatrix, numVehicles) {
       depot: 0
     };
 
-    const vrpUrl = process.env.VRP_SERVICE_URL || 'http://127.0.0.1:8003/solve_vrp';
+    const vrpUrl = process.env.USE_AWS_VRP === 'true'
+      ? process.env.AWS_VRP_SERVICE_URL
+      : (process.env.LOCAL_VRP_SERVICE_URL || 'http://127.0.0.1:8003/solve_vrp');
     const response = await fetch(vrpUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

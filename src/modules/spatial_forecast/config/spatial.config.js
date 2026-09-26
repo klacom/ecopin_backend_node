@@ -2,7 +2,9 @@
 
 export const SPATIAL_FORECAST_CONFIG = {
   // Python service URL
-  serviceUrl: process.env.SPATIAL_FORECAST_SERVICE_URL || 'http://127.0.0.1:8002',
+  serviceUrl: process.env.USE_AWS_SPATIAL_FORECAST === 'true' 
+    ? process.env.AWS_SPATIAL_FORECAST_SERVICE_URL 
+    : (process.env.LOCAL_SPATIAL_FORECAST_SERVICE_URL || 'http://127.0.0.1:8002'),
 
   // Time horizons in days
   timeHorizons: {

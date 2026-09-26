@@ -23,7 +23,8 @@ import {
     createReportFromRejected,
     updateLifecycleStage,
     fetchAgencyResponses,
-    updateReportDetails
+    updateReportDetails,
+    syncReportMedia
 } from '../controllers/report.controller.js';
 import { batchSyncReports } from '../controllers/sync.controller.js';
 import { authenticate, optionalAuthenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
