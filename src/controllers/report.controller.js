@@ -10,6 +10,7 @@ import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, VALI
 import { clusterReports } from '../modules/clustering/index.js';
 import { uploadFromBuffer, deleteFromCloudinary, uploadVideoFromBuffer } from '../services/cloudinary.service.js';
 import { calculateSeverity } from '../services/severity.service.js';
+import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
 
 // Helper function to determine issue type from text
 const determineIssueTypeFromText = (title, description) => {
@@ -115,6 +116,27 @@ export const uploadReportPhoto = async (req, res, next) => {
     }
 
     try {
+        // ── Phase 5: server-side photo deduplication ────────────────────────
+        // Compute SHA-256 of the incoming buffer before touching Cloudinary.
+        // If an identical file was already uploaded for this slot, return the
+        // existing URL immediately without re-uploading.
+        const incomingHash = hashBuffer(req.file.buffer);
+        const { isDuplicate, existingUrl } = await checkPhotoDuplicate(
+            'reports', id, photo_type, incomingHash
+        );
+
+        if (isDuplicate) {
+            console.log(`[uploadReportPhoto] duplicate photo detected for report ${id} (${photo_type})`);
+            const { data: currentReport } = await supabase
+                .from('reports').select('*').eq('id', id).single();
+            return res.status(200).json({
+                message: 'Photo already uploaded (duplicate)',
+                duplicate: true,
+                report: currentReport,
+            });
+        }
+        // ── End dedup check ─────────────────────────────────────────────────
+
         const timestamp = Date.now();
         const filename = `${timestamp}_${req.file.originalname}`;
         const filePath = `${id}/${photo_type}/${filename}`;
@@ -138,12 +160,10 @@ export const uploadReportPhoto = async (req, res, next) => {
         const secureUrl = uploadResult.secure_url;
         console.log('Upload successful:', uploadResult);
 
-        // Get public URL (already provided by Cloudinary)
         const urlData = { publicUrl: secureUrl };
 
         console.log('Public URL:', urlData.publicUrl);
 
-        // Update the report with the photo URL
         const updateData = photo_type === 'before'
             ? { before_photo_url: urlData.publicUrl }
             : { after_photo_url: urlData.publicUrl };
@@ -164,6 +184,9 @@ export const uploadReportPhoto = async (req, res, next) => {
                 error: reportError.message
             });
         }
+
+        // Persist hash for future dedup checks.
+        await storePhotoHash('reports', id, photo_type, incomingHash);
 
         console.log('Report updated successfully:', reportData);
 

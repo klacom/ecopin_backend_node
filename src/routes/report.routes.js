@@ -23,6 +23,7 @@ import {
     createReportFromRejected,
     updateLifecycleStage,
     fetchAgencyResponses,
+    logAgencyResponse,
     updateReportDetails,
     syncReportMedia
 } from '../controllers/report.controller.js';
@@ -63,6 +64,7 @@ router.patch('/:id/validation', updateReportValidation);
 router.patch('/:id/lifecycle', updateLifecycleStage);
 router.patch('/:id/details', updateReportDetails);
 router.get('/:id/agency-responses', fetchAgencyResponses);
+router.post('/:id/agency-responses', logAgencyResponse);
 router.post('/:id/notes', addReportNote);
 router.delete('/:id/photo', deleteReportPhoto);
 

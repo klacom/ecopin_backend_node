@@ -2,6 +2,7 @@ import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import { CLEANUP_TASK_PHOTOS_STORAGE_PATH } from "../config/index.js";
 import multer from 'multer';
 import { BEFORE_AFTER_PHOTO_FILE_SIZE } from "../config/index.js";
+import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -357,6 +358,24 @@ export const uploadCleanupPhoto = async (req, res, next) => {
     }
 
     try {
+        // ── Phase 5: server-side photo deduplication ────────────────────────
+        const incomingHash = hashBuffer(req.file.buffer);
+        const { isDuplicate, existingUrl } = await checkPhotoDuplicate(
+            'cleanup_tasks', taskId, photo_type, incomingHash
+        );
+
+        if (isDuplicate) {
+            console.log(`[uploadCleanupPhoto] duplicate photo for task ${taskId} (${photo_type})`);
+            const { data: currentTask } = await supabase
+                .from('cleanup_tasks').select('*').eq('id', taskId).single();
+            return res.status(200).json({
+                message: 'Photo already uploaded (duplicate)',
+                duplicate: true,
+                task: currentTask,
+            });
+        }
+        // ── End dedup check ─────────────────────────────────────────────────
+
         const timestamp = Date.now();
         const filename = `${timestamp}_${req.file.originalname}`;
         const filePath = `${taskId}/${photo_type}/${filename}`;
@@ -401,6 +420,9 @@ export const uploadCleanupPhoto = async (req, res, next) => {
                 error: taskError.message
             });
         }
+
+        // Persist hash for future dedup checks.
+        await storePhotoHash('cleanup_tasks', taskId, photo_type, incomingHash);
 
         res.status(200).json({
             message: 'Photo uploaded successfully',
