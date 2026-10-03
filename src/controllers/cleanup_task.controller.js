@@ -3,6 +3,7 @@ import { CLEANUP_TASK_PHOTOS_STORAGE_PATH } from "../config/index.js";
 import multer from 'multer';
 import { BEFORE_AFTER_PHOTO_FILE_SIZE } from "../config/index.js";
 import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
+import { reverseGeocode } from '../services/geocoding.service.js';
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -81,12 +82,16 @@ export const createCleanupTask = async (req, res, next) => {
         if (cluster_id) {
             const { data: cluster } = await supabase
                 .from('clusters')
-                .select('priority, priority_score')
+                .select('priority, priority_score, center')
                 .eq('id', cluster_id)
                 .single();
             if (cluster) {
                 taskData.priority = cluster.priority;
                 taskData.priority_score = cluster.priority_score;
+                if (cluster.center) {
+                    taskData.location = cluster.center;
+                    taskData.street_address = await reverseGeocode(cluster.center);
+                }
             }
         }
 
@@ -222,6 +227,18 @@ export const createCustomCleanupTask = async (req, res, next) => {
             is_custom: true,
             report_ids: report_ids
         };
+
+        // Geocode based on the first report's location
+        const { data: firstReport } = await supabase
+            .from('reports')
+            .select('location')
+            .eq('id', report_ids[0])
+            .single();
+            
+        if (firstReport && firstReport.location) {
+            taskData.location = firstReport.location;
+            taskData.street_address = await reverseGeocode(firstReport.location);
+        }
 
         if (hasCrewAssignment) {
             taskData.assigned_crew_ids = assigned_crew_ids;

@@ -76,9 +76,12 @@ export async function checkPhotoDuplicate(table, entityId, photoType, incomingHa
  */
 export async function storePhotoHash(table, entityId, photoType, hash) {
   const hashCol = `${photoType}_photo_hash`;
-  await supabase
+  const { error } = await supabase
     .from(table)
     .update({ [hashCol]: hash })
-    .eq('id', entityId)
-    .catch(e => console.error(`[photo_dedup] storePhotoHash failed for ${entityId}:`, e.message));
+    .eq('id', entityId);
+
+  if (error) {
+    console.error(`[photo_dedup] storePhotoHash failed for ${entityId}:`, error.message);
+  }
 }
