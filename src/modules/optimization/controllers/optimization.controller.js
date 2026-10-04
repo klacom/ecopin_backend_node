@@ -112,8 +112,22 @@ export const commitPlan = async (req, res, next) => {
     let tasks = [];
     let assignments = [];
     let optimization_run = null;
-    if (clusterIds.length > 0) {
-      tasks = await dispatchClusters(clusterIds, req.user.id);
+    
+    // Fetch existing uncompleted tasks to re-route them
+    const { data: existingTasks } = await supabase
+      .from('cleanup_tasks')
+      .select('*')
+      .in('status', ['created', 'pending']);
+      
+    const uncompletedTasks = existingTasks || [];
+    
+    if (clusterIds.length > 0 || uncompletedTasks.length > 0) {
+      if (clusterIds.length > 0) {
+        tasks = await dispatchClusters(clusterIds, req.user.id);
+      }
+      
+      // Merge new tasks and existing uncompleted tasks
+      tasks = [...tasks, ...uncompletedTasks];
       
       // 3.1 Load crews and assign intelligently
       console.log(`[Optimization] Step 3.1: Loading field crews and assigning ${tasks.length} tasks...`);

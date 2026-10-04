@@ -38,6 +38,19 @@ export async function generateDispatchPlan(userId) {
     totalCapacityMinutes += mins;
   }
 
+  // Subtract capacity for existing uncompleted tasks that will be re-routed
+  const { data: existingTasks } = await supabase
+    .from('cleanup_tasks')
+    .select('id, estimated_duration_min')
+    .in('status', ['created', 'pending']);
+    
+  let existingTasksEffort = 0;
+  if (existingTasks) {
+    for (const t of existingTasks) {
+      existingTasksEffort += (t.estimated_duration_min || 60) + 20; // adding 20 travel time approx
+    }
+  }
+
   // 2. Fetch Backlog (we fetch top 200 to ensure we have enough to fill capacity and store 100 omitted)
   const { data: backlog } = await supabase
     .from('clusters')
@@ -51,7 +64,7 @@ export async function generateDispatchPlan(userId) {
   }
 
   // 3. Selection Logic
-  let remainingCapacity = totalCapacityMinutes;
+  let remainingCapacity = totalCapacityMinutes - existingTasksEffort;
   const selectedItems = [];
   const omittedItems = [];
   const TRAVEL_ESTIMATE_MIN = 20; // Heuristic: average 20 mins travel between operations

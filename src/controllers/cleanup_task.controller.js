@@ -74,7 +74,7 @@ export const createCleanupTask = async (req, res, next) => {
             cluster_id,
             title,
             description,
-            status: 'pending',
+            status: hasCrewAssignment ? 'pending' : 'created',
             created_by: user_id
         };
 
@@ -222,7 +222,7 @@ export const createCustomCleanupTask = async (req, res, next) => {
         const taskData = {
             title,
             description,
-            status: 'pending',
+            status: hasCrewAssignment ? 'pending' : 'created',
             created_by: user_id,
             is_custom: true,
             report_ids: report_ids
@@ -424,6 +424,10 @@ export const uploadCleanupPhoto = async (req, res, next) => {
             ? { before_photo_url: urlData.publicUrl }
             : { after_photo_url: urlData.publicUrl };
 
+        if (photo_type === 'before') {
+            updateData.status = 'in_progress';
+        }
+
         const { data: taskData, error: taskError } = await supabase
             .from('cleanup_tasks')
             .update(updateData)
@@ -506,7 +510,7 @@ export const deleteCleanupPhoto = async (req, res, next) => {
 
         // Update the task to remove the photo URL
         const updateData = photo_type === 'before'
-            ? { before_photo_url: null }
+            ? { before_photo_url: null, status: 'pending' }
             : { after_photo_url: null };
 
         const { data: taskData, error: taskError } = await supabase
@@ -683,8 +687,18 @@ export const assignCleanupTask = async (req, res, next) => {
                 updateData.assigned_at = new Date().toISOString();
             }
             updateData.assigned_by = userId;
+
+            // Update status if it was unassigned
+            if (currentTask.status === 'created') {
+                updateData.status = 'pending';
+            }
         } else {
             updateData.assigned_crew_ids = null;
+
+            // Revert status if it was assigned but not yet in progress
+            if (currentTask.status === 'pending') {
+                updateData.status = 'created';
+            }
         }
 
         const { data: taskData, error: updateError } = await supabase

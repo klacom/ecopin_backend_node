@@ -59,7 +59,7 @@ export const clusterReports = async () => {
 
       // Compute centroid & insert cluster row via SQL so PostGIS handles geometry
       const { data: newCluster, error: insertError } = await supabaseAdmin.rpc(
-        'upsert_cluster_for_reports',
+        'upsert_cluster_for_reports_v2',
         {
           p_report_ids: group.ids,
           p_issue_type: dominantType,
