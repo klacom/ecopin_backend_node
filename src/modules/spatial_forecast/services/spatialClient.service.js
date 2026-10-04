@@ -178,6 +178,9 @@ export const getAvailableDates = async () => {
       return date.toISOString().split('T')[0];
     }))];
     
+    // Sort dates chronologically (oldest to newest)
+    uniqueDates.sort((a, b) => new Date(a) - new Date(b));
+    
     return uniqueDates;
   } catch (error) {
     console.error('[SpatialForecast] Error fetching available dates:', error);

@@ -61,28 +61,40 @@ export const createUser = async (req, res, next) => {
     }
 };
 
-// Get all users with pagination and filtering
 export const getAllUsers = async (req, res, next) => {
     const { page = 1, limit = 20, search = '', role = '' } = req.query;
     const offset = (page - 1) * limit;
 
-    console.log('getAllUsers called with:', { page, limit, search, role });
-
     try {
-        // First, fetch all profiles (without search/email filter first)
         let query = supabase
             .from('profiles')
-            .select('*', { count: 'exact' })
-            .order('created_at', { ascending: false });
+            .select('*', { count: 'exact' });
 
-        // Apply role filter (this can be done in Supabase)
         if (role) {
-            console.log('Applying role filter:', role);
             query = query.eq('role', role);
         }
 
-        // First get all matching profiles (without search)
-        const { data: allProfiles, error: profilesError } = await query;
+        // Optimize search: if searching, we need to match full_name OR email
+        if (search) {
+            // Bulk fetch auth users to find matching emails in one call
+            const { data: authData } = await supabase.auth.admin.listUsers();
+            const matchingAuthIds = (authData?.users || [])
+                .filter(u => u.email && u.email.toLowerCase().includes(search.toLowerCase()))
+                .map(u => u.id);
+
+            if (matchingAuthIds.length > 0) {
+                query = query.or(`full_name.ilike.%${search}%,id.in.(${matchingAuthIds.join(',')})`);
+            } else {
+                query = query.ilike('full_name', `%${search}%`);
+            }
+        }
+
+        // Apply DB pagination
+        query = query
+            .range(offset, offset + limit - 1)
+            .order('created_at', { ascending: false });
+
+        const { data: profiles, count, error: profilesError } = await query;
 
         if (profilesError) {
             return res.status(400).json({
@@ -91,41 +103,25 @@ export const getAllUsers = async (req, res, next) => {
             });
         }
 
-        // Now fetch all emails from auth.users for these profiles
-        const usersWithEmails = await Promise.all(allProfiles.map(async (user) => {
-            try {
-                const { data: authUser } = await supabase.auth.admin.getUserById(user.id);
-                if (authUser?.user?.email) {
-                    return { ...user, email: authUser.user.email };
-                }
-                return { ...user, email: 'N/A' };
-            } catch (authError) {
-                console.error('Failed to fetch email for user:', user.id, authError);
-                return { ...user, email: 'N/A' };
-            }
-        }));
-
-        // Now apply search filter in JavaScript
-        let filteredUsers = usersWithEmails;
-        if (search) {
-            const searchLower = search.toLowerCase();
-            filteredUsers = usersWithEmails.filter(user =>
-                (user.full_name && user.full_name.toLowerCase().includes(searchLower)) ||
-                (user.email && user.email.toLowerCase().includes(searchLower))
-            );
+        // For the paginated results (max 20), fetch their emails efficiently
+        const { data: authData } = await supabase.auth.admin.listUsers();
+        const emailMap = {};
+        if (authData?.users) {
+            authData.users.forEach(u => { emailMap[u.id] = u.email; });
         }
 
-        // Apply pagination
-        const total = filteredUsers.length;
-        const paginatedUsers = filteredUsers.slice(offset, offset + parseInt(limit));
+        const paginatedUsers = profiles.map(user => ({
+            ...user,
+            email: emailMap[user.id] || 'N/A'
+        }));
 
         res.status(200).json({
             users: paginatedUsers,
             pagination: {
                 page: parseInt(page),
                 limit: parseInt(limit),
-                total: total,
-                totalPages: Math.ceil(total / parseInt(limit))
+                total: count || 0,
+                totalPages: Math.ceil((count || 0) / parseInt(limit))
             }
         });
     } catch (error) {
