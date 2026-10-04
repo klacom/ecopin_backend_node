@@ -61,7 +61,7 @@ export const createUser = async (req, res, next) => {
     }
 };
 
- // Get all users with pagination and filtering
+// Get all users with pagination and filtering
 export const getAllUsers = async (req, res, next) => {
     const { page = 1, limit = 20, search = '', role = '' } = req.query;
     const offset = (page - 1) * limit;
@@ -83,7 +83,7 @@ export const getAllUsers = async (req, res, next) => {
 
         // First get all matching profiles (without search)
         const { data: allProfiles, error: profilesError } = await query;
-        
+
         if (profilesError) {
             return res.status(400).json({
                 message: 'Failed to fetch users',
@@ -109,8 +109,8 @@ export const getAllUsers = async (req, res, next) => {
         let filteredUsers = usersWithEmails;
         if (search) {
             const searchLower = search.toLowerCase();
-            filteredUsers = usersWithEmails.filter(user => 
-                (user.full_name && user.full_name.toLowerCase().includes(searchLower)) || 
+            filteredUsers = usersWithEmails.filter(user =>
+                (user.full_name && user.full_name.toLowerCase().includes(searchLower)) ||
                 (user.email && user.email.toLowerCase().includes(searchLower))
             );
         }
@@ -230,7 +230,20 @@ export const deleteUser = async (req, res, next) => {
     }
 
     try {
-        // Delete from auth.users (this will cascade to profiles)
+        // Delete profile manually first to avoid foreign key issues
+        const { error: profileError } = await supabase
+            .from('profiles')
+            .delete()
+            .eq('id', id);
+
+        if (profileError) {
+            return res.status(400).json({
+                message: 'Failed to delete user profile',
+                error: profileError.message
+            });
+        }
+
+        // Delete from auth.users
         const { error: authError } = await supabase.auth.admin.deleteUser(id);
 
         if (authError) {
@@ -416,10 +429,22 @@ export const getSystemStats = async (req, res, next) => {
             .from('reports')
             .select('*', { count: 'exact', head: true });
 
-        // Get report counts by status
-        const { data: reportsByStatus } = await supabase
-            .from('reports')
-            .select('status');
+        // Get report counts by status (bypass 1000 row limit)
+        let reportsByStatus = [];
+        let fetchHasMore = true;
+        let fetchOffset = 0;
+        while (fetchHasMore) {
+            const { data } = await supabase
+                .from('reports')
+                .select('status')
+                .range(fetchOffset, fetchOffset + 999);
+            if (data && data.length > 0) {
+                reportsByStatus = reportsByStatus.concat(data);
+                fetchOffset += 1000;
+            } else {
+                fetchHasMore = false;
+            }
+        }
 
         const statusCounts = reportsByStatus?.reduce((acc, report) => {
             acc[report.status] = (acc[report.status] || 0) + 1;
@@ -428,7 +453,7 @@ export const getSystemStats = async (req, res, next) => {
 
         // Get total audit logs count
         const { count: totalAuditLogs } = await supabase
-            .from('response_log')
+            .from('audit_logs')
             .select('*', { count: 'exact', head: true });
 
         res.status(200).json({
@@ -473,4 +498,4 @@ export const getTimeoutMinutes = async (req, res, next) => {
     } catch (error) {
         next(error);
     }
-}
+};

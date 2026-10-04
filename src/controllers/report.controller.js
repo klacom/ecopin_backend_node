@@ -1309,6 +1309,10 @@ export const updateLifecycleStage = async (req, res, next) => {
             updated_at: new Date().toISOString()
         };
 
+        if (stage === 'resolved') {
+            updateData.lgu_resolved_at = new Date().toISOString();
+        }
+
         // Auto-approve when acknowledging
         if (stage === 'acknowledged') {
             updateData.validation_status = VALIDATION_STATUS.APPROVED;

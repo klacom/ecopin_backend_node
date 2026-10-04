@@ -201,7 +201,22 @@ export const logout = async (req, res, next) => {
 
 export const refreshToken = async (req, res, next) => {
     try {
-        res.status(200).json({ message: 'Refresh token endpoint' });
+        const { refresh_token } = req.body;
+        if (!refresh_token) {
+            return res.status(400).json({ message: 'Refresh token is required' });
+        }
+
+        const { data, error } = await supabase.auth.refreshSession({ refresh_token });
+
+        if (error) {
+            return res.status(401).json({ message: 'Failed to refresh token', error: error.message });
+        }
+
+        res.status(200).json({ 
+            message: 'Token refreshed successfully',
+            session: data.session,
+            token: data.session.access_token
+        });
     } catch (error) {
         next(error);
     }
