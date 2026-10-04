@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { triggerClustering, getAllClusters, getCluster, updateCluster } from '../controllers/cluster.controller.js';
+import { triggerClustering, getAllClusters, getCluster, updateCluster, updateClusterLabel } from '../controllers/cluster.controller.js';
 import { authenticate, checkUserSuspension, authorize } from '../../../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../../../constants/roles.js';
 
@@ -19,5 +19,6 @@ router.use(authorize(ROLE_GROUPS.FIELD_OPS));
 router.get('/', getAllClusters);
 router.get('/:id', getCluster);
 router.patch('/:id/status', updateCluster);
+router.patch('/:id/label', authorize(ROLE_GROUPS.DESK_OPS), updateClusterLabel);
 
 export default router;

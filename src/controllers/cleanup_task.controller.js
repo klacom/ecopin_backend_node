@@ -781,3 +781,32 @@ export const getAvailableCrew = async (req, res, next) => {
         next(error);
     }
 };
+
+export const updateCleanupTaskTitle = async (req, res, next) => {
+    const { id } = req.params;
+    const { title } = req.body;
+
+    if (!title || typeof title !== 'string' || title.trim() === '') {
+        return res.status(400).json({ message: 'Valid title is required' });
+    }
+
+    try {
+        const { data, error } = await supabase
+            .from('cleanup_tasks')
+            .update({ title: title.trim() })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to update task title',
+                error: error.message
+            });
+        }
+
+        res.status(200).json(data);
+    } catch (error) {
+        next(error);
+    }
+};

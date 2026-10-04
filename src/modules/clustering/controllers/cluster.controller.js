@@ -56,3 +56,36 @@ export const updateCluster = async (req, res, next) => {
     next(error);
   }
 };
+
+// Update cluster label (rename)
+export const updateClusterLabel = async (req, res, next) => {
+  const { id } = req.params;
+  const { label } = req.body;
+
+  if (!label || typeof label !== 'string' || label.trim() === '') {
+    return res.status(400).json({ message: 'Valid label is required' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('clusters')
+      .update({ label: label.trim() })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      return res.status(400).json({
+        message: 'Failed to update cluster label',
+        error: error.message
+      });
+    }
+
+    res.status(200).json({
+      message: 'Cluster label updated successfully',
+      cluster: data
+    });
+  } catch (error) {
+    next(error);
+  }
+};

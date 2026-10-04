@@ -10,7 +10,8 @@ import {
     getTasksByClusterId,
     assignCleanupTask,
     getAvailableCrew,
-    upload
+    upload,
+    updateCleanupTaskTitle
 } from '../controllers/cleanup_task.controller.js';
 import { batchSyncTaskUpdates } from '../controllers/sync.controller.js';
 import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
@@ -46,5 +47,8 @@ router.delete('/:taskId/photo', deleteCleanupPhoto);
 
 // Task completion (field crew only)
 router.patch('/:id/complete', markTaskComplete);
+
+// Title update
+router.patch('/:id/title', authorize(ROLE_GROUPS.DESK_OPS), updateCleanupTaskTitle);
 
 export default router;
