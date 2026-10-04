@@ -32,6 +32,9 @@ router.get('/routes/:routeId/waypoints', authorize(ROLE_GROUPS.FIELD_OPS), ctrl.
 
 // Field crews
 router.get('/crews', authorize(ROLE_GROUPS.FIELD_OPS), ctrl.getFieldCrews);
+router.post('/crews', authorize(ROLE_GROUPS.ADMIN_ONLY), ctrl.createFieldCrew);
+router.patch('/crews/:id/members', authorize(ROLE_GROUPS.DESK_OPS), ctrl.updateCrewMembers);
+router.get('/crews/unassigned-members', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getUnassignedMembers);
 router.post('/tasks/:id/complete', authorize(ROLE_GROUPS.FIELD_OPS), ctrl.completeTask);
 router.put('/crews/:id', authorize(ROLE_GROUPS.ADMIN_ONLY), ctrl.updateFieldCrew);
 

@@ -204,6 +204,10 @@ export const updateUserRole = async (req, res, next) => {
             });
         }
 
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(req.user.id, 'profile_update', `Updated role for user ${id} to ${role}`, ipAddress, userAgent);
+
         res.status(200).json({
             message: 'User role updated successfully',
             user: data
@@ -248,6 +252,10 @@ export const deleteUser = async (req, res, next) => {
                 error: authError.message
             });
         }
+
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(req.user.id, 'account_deletion', `Deleted user account ${id}`, ipAddress, userAgent);
 
         res.status(200).json({
             message: 'User deleted successfully'
@@ -306,6 +314,10 @@ export const updateSystemSettings = async (req, res, next) => {
                 error: error.message
             });
         }
+
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(req.user.id, 'profile_update', `Updated system settings`, ipAddress, userAgent);
 
         res.status(200).json({
             message: 'System settings updated successfully',

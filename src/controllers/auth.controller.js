@@ -85,6 +85,11 @@ export const register = async (req, res, next) => {
             // They can use resend later.
         }
 
+        // Log user creation
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(data.user.id, 'user_created', 'User registered', ipAddress, userAgent);
+
         res.status(201).json({
             message: 'Registration successful. Please check your email to verify your account.',
             user: {
@@ -193,6 +198,11 @@ export const getMe = async (req, res, next) => {
  
 export const logout = async (req, res, next) => {
     try {
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        if (req.user && req.user.id) {
+            await logAuditAction(req.user.id, 'logout', 'User logged out', ipAddress, userAgent);
+        }
         res.status(200).json({ message: 'Logout Successful' });
     } catch (error) {
         next(error);

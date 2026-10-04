@@ -582,13 +582,109 @@ export const getRouteWaypoints = async (req, res, next) => {
 
 export const getFieldCrews = async (req, res, next) => {
   try {
-    const { data, error } = await supabase
+    const { data: crews, error } = await supabase
       .from('field_crews')
       .select('*')
       .order('name');
 
     if (error) return res.status(400).json({ message: 'Failed to fetch crews' });
-    res.json(data);
+
+    // Enrich each crew with member profile data
+    const enriched = await Promise.all(
+      crews.map(async (crew) => {
+        const memberIds = crew.member_profile_ids || [];
+        if (memberIds.length === 0) return { ...crew, members: [] };
+
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, full_name, avatar_url')
+          .in('id', memberIds);
+
+        return { ...crew, members: profiles || [] };
+      })
+    );
+
+    res.json(enriched);
+  } catch (error) { next(error); }
+};
+
+export const updateCrewMembers = async (req, res, next) => {
+  const { id } = req.params;
+  const { user_id, action } = req.body;
+
+  if (!user_id || !['add', 'remove'].includes(action)) {
+    return res.status(400).json({ message: 'user_id and action (add|remove) are required' });
+  }
+
+  try {
+    const { data: crew, error: fetchError } = await supabase
+      .from('field_crews')
+      .select('id, name, member_profile_ids')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !crew) return res.status(404).json({ message: 'Crew not found' });
+
+    let memberIds = crew.member_profile_ids || [];
+
+    if (action === 'add') {
+      // Enforce one crew per user — check if user is in any other crew
+      const { data: allCrews } = await supabase
+        .from('field_crews')
+        .select('id, name, member_profile_ids')
+        .neq('id', id);
+
+      const existingCrew = (allCrews || []).find(
+        c => (c.member_profile_ids || []).includes(user_id)
+      );
+
+      if (existingCrew) {
+        return res.status(409).json({
+          message: `User is already a member of "${existingCrew.name}". Remove them first.`
+        });
+      }
+
+      if (!memberIds.includes(user_id)) {
+        memberIds = [...memberIds, user_id];
+      }
+    } else {
+      memberIds = memberIds.filter(mid => mid !== user_id);
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from('field_crews')
+      .update({ member_profile_ids: memberIds })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) return res.status(400).json({ message: 'Failed to update crew members', error: updateError.message });
+    res.json(updated);
+  } catch (error) { next(error); }
+};
+
+export const getUnassignedMembers = async (req, res, next) => {
+  try {
+    // Get all field_crew role users
+    const { data: fcUsers, error: profilesError } = await supabase
+      .from('profiles')
+      .select('id, full_name, avatar_url, role')
+      .eq('role', 'field_crew')
+      .order('full_name');
+
+    if (profilesError) return res.status(400).json({ message: 'Failed to fetch field crew users' });
+
+    // Get all assigned member IDs across all crews
+    const { data: crews } = await supabase
+      .from('field_crews')
+      .select('member_profile_ids');
+
+    const assignedIds = new Set(
+      (crews || []).flatMap(c => c.member_profile_ids || [])
+    );
+
+    const unassigned = (fcUsers || []).filter(u => !assignedIds.has(u.id));
+    res.json(unassigned);
   } catch (error) { next(error); }
 };
 
@@ -620,6 +716,28 @@ export const updateOptimizationSettings = async (req, res, next) => {
 };
 
 // Phase 15: Admin crew management
+export const createFieldCrew = async (req, res, next) => {
+  const { name, shift_start, shift_end, max_tasks_per_shift } = req.body;
+  if (!name) return res.status(400).json({ message: 'Name is required' });
+
+  try {
+    const { data, error } = await supabase
+      .from('field_crews')
+      .insert({
+        name,
+        shift_start: shift_start || '08:00:00',
+        shift_end: shift_end || '17:00:00',
+        max_tasks_per_shift: parseInt(max_tasks_per_shift) || 10,
+        availability_status: 'available'
+      })
+      .select()
+      .single();
+
+    if (error) return res.status(400).json({ message: 'Failed to create crew', error: error.message });
+    res.json(data);
+  } catch (error) { next(error); }
+};
+
 export const updateFieldCrew = async (req, res, next) => {
   const { id } = req.params;
   const { shift_start, shift_end, max_tasks_per_shift } = req.body;

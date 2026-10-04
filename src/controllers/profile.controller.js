@@ -1,6 +1,7 @@
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
 import { VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, PROFILE_FILE_SIZE } from "../config/index.js";
 import { uploadFromBuffer, deleteFromCloudinary } from "../services/cloudinary.service.js";
+import { logAuditAction } from "../controllers/auth.controller.js";
 
 export const getProfile = async (req, res, next) => {
     try {
@@ -63,6 +64,10 @@ export const updateProfile = async (req, res, next) => {
                 error: error.message
             });
         }
+
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(req.user.id, 'profile_update', `User updated profile information`, ipAddress, userAgent);
 
         res.status(200).json({
             message: 'Profile updated successfully',
@@ -154,10 +159,57 @@ export const uploadAvatar = async (req, res, next) => {
             });
         }
 
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(req.user.id, 'profile_update', `User uploaded new avatar`, ipAddress, userAgent);
+
         res.status(200).json({
             message: 'Avatar uploaded successfully',
             profile: profileData
         });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const deleteAvatar = async (req, res, next) => {
+    try {
+        const userId = req.user.id;
+
+        // Fetch existing avatar URL
+        const { data: existingProfile, error: fetchError } = await supabaseAdmin
+            .from('profiles')
+            .select('avatar_url')
+            .eq('id', userId)
+            .single();
+
+        if (fetchError) {
+            return res.status(400).json({ message: 'Failed to fetch profile', error: fetchError.message });
+        }
+
+        if (existingProfile?.avatar_url) {
+            try {
+                await deleteFromCloudinary(existingProfile.avatar_url);
+            } catch (delErr) {
+                console.warn('Failed to delete avatar from Cloudinary:', delErr.message);
+            }
+        }
+
+        // Update profile with null avatar_url
+        const { error: updateError } = await supabaseAdmin
+            .from('profiles')
+            .update({ avatar_url: null })
+            .eq('id', userId);
+
+        if (updateError) {
+            return res.status(400).json({ message: 'Failed to update profile', error: updateError.message });
+        }
+
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(userId, 'profile_update', 'User deleted avatar', ipAddress, userAgent);
+
+        res.status(200).json({ message: 'Avatar deleted successfully' });
     } catch (error) {
         next(error);
     }
@@ -190,6 +242,10 @@ export const updateDataConsent = async (req, res, next) => {
                 error: error.message
             });
         }
+
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(req.user.id, 'profile_update', `User updated data consent to ${data_consent}`, ipAddress, userAgent);
 
         res.status(200).json({
             message: "Data consent updated successfully.",

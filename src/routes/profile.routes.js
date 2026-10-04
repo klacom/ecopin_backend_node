@@ -3,6 +3,7 @@ import {
     getProfile,
     updateProfile,
     uploadAvatar,
+    deleteAvatar,
     updateDataConsent
 } from '../controllers/profile.controller.js';
 import { authenticate, checkUserSuspension } from '../middleware/auth.middleware.js';
@@ -37,5 +38,6 @@ router.get('/', getProfile);
 router.put('/', updateProfile);
 router.patch('/data-consent', updateDataConsent);
 router.post('/avatar', upload.single('avatar'), uploadAvatar);
+router.delete('/avatar', deleteAvatar);
 
 export default router;
