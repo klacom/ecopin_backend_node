@@ -619,6 +619,47 @@ export const markTaskComplete = async (req, res, next) => {
             message: 'Cleanup task completed successfully',
             task: taskData
         });
+
+        // 5. Fire-and-forget ML Feedback Piggyback
+        try {
+            const mlServiceUrl = process.env.ML_HOTSPOT_SERVICE_URL;
+            if (mlServiceUrl && taskData.cluster_id) {
+                let outcome = 0;
+                let overtime_ratio = 1.0;
+
+                // Avoid Time-Delta Trap: Compare completed_at against scheduled deadline
+                if (taskData.scheduled_date && taskData.completed_at) {
+                    const scheduledMs = new Date(taskData.scheduled_date).getTime();
+                    const completedMs = new Date(taskData.completed_at).getTime();
+                    
+                    const hoursLate = (completedMs - scheduledMs) / (1000 * 60 * 60);
+                    // Base ratio is 1.0, increases if late.
+                    overtime_ratio = completedMs > scheduledMs ? 1.0 + (hoursLate / 24.0) : 1.0;
+                    
+                    // If completed more than 24h past the scheduled deadline, label as escalated (1)
+                    outcome = hoursLate > 24 ? 1 : 0;
+                }
+
+                const payload = {
+                    cluster_id: taskData.cluster_id,
+                    task_id: taskData.id,
+                    crew_count: taskData.assigned_crew_ids ? taskData.assigned_crew_ids.length : 1,
+                    overtime_ratio,
+                    outcome
+                };
+
+                // Non-blocking call so mobile app isn't delayed
+                fetch(`${mlServiceUrl}/feedback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                }).catch(err => {
+                    console.warn('[ML Feedback] Non-blocking ML service error:', err.message);
+                });
+            }
+        } catch (mlErr) {
+            console.warn('[ML Feedback] Error preparing feedback payload:', mlErr.message);
+        }
     } catch (error) {
         next(error);
     }
