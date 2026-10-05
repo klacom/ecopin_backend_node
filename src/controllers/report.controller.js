@@ -16,14 +16,14 @@ import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/pho
 const determineIssueTypeFromText = (title, description) => {
     const lowerTitle = (title || '').toLowerCase();
     const lowerDesc = (description || '').toLowerCase();
-    
-    if (lowerTitle.includes('flood') || lowerDesc.includes('flood') || 
+
+    if (lowerTitle.includes('flood') || lowerDesc.includes('flood') ||
         lowerTitle.includes('water') || lowerDesc.includes('water') ||
         lowerTitle.includes('submerged') || lowerDesc.includes('submerged')) {
         return 'flooding';
     } else if (lowerTitle.includes('pollution') || lowerDesc.includes('pollution') ||
-               lowerTitle.includes('smoke') || lowerDesc.includes('smoke') ||
-               lowerTitle.includes('smog') || lowerDesc.includes('smog')) {
+        lowerTitle.includes('smoke') || lowerDesc.includes('smoke') ||
+        lowerTitle.includes('smog') || lowerDesc.includes('smog')) {
         return 'pollution';
     } else {
         return 'waste'; // Default to waste
@@ -52,7 +52,7 @@ export const mediaUpload = multer({
     fileFilter: (req, file, cb) => {
         const isImage = VALID_IMAGE_MIME_TYPES.includes(file.mimetype);
         const isVideo = VALID_VIDEO_MIME_TYPES.includes(file.mimetype);
-        
+
         if (isImage || isVideo) {
             cb(null, true);
         } else {
@@ -149,13 +149,13 @@ export const uploadReportPhoto = async (req, res, next) => {
         const publicId = `${Date.now()}_${req.file.originalname.replace(/\.[^/.]+$/, '')}`;
         let uploadResult;
         try {
-          uploadResult = await uploadFromBuffer(req.file.buffer, folder, publicId);
+            uploadResult = await uploadFromBuffer(req.file.buffer, folder, publicId);
         } catch (uploadError) {
-          console.error('Cloudinary upload error:', uploadError);
-          return res.status(400).json({
-            message: 'Failed to upload photo',
-            error: uploadError.message
-          });
+            console.error('Cloudinary upload error:', uploadError);
+            return res.status(400).json({
+                message: 'Failed to upload photo',
+                error: uploadError.message
+            });
         }
         const secureUrl = uploadResult.secure_url;
         console.log('Upload successful:', uploadResult);
@@ -289,8 +289,8 @@ export const uploadEvidence = async (req, res, next) => {
 
     // Validate that only one media type is provided
     if (imageFile && videoFile) {
-        return res.status(400).json({ 
-            message: 'Please provide either an image or a video, not both.' 
+        return res.status(400).json({
+            message: 'Please provide either an image or a video, not both.'
         });
     }
 
@@ -331,7 +331,7 @@ export const uploadEvidence = async (req, res, next) => {
                 filename
             );
             console.log('Video uploaded to Cloudinary:', videoUploadResult.secure_url);
-            
+
             return res.status(201).json({
                 message: 'Video evidence uploaded successfully',
                 evidence: {
@@ -443,7 +443,7 @@ export const getReportEvidence = async (req, res, next) => {
 
     try {
         console.log('Fetching evidence for report:', reportId);
-        
+
         // Security: Check if user has access to this report
         const { data: report, error: reportError } = await supabase
             .from('reports_view')
@@ -460,7 +460,7 @@ export const getReportEvidence = async (req, res, next) => {
 
         // Security: Ownership check - users can only access evidence for their own reports or validated public reports
         const isOwner = user_id && report.user_id === user_id;
-        const isApprovedPublic = ['approved', 'validated', 'automatically_valid'].includes(report.validation_status);
+        const isApprovedPublic = ['approved', 'automatically_valid'].includes(report.validation_status);
         const isOfficerOrAdmin = ['admin', 'officer', 'field_crew'].includes(user_role);
 
         if (!isOwner && !isApprovedPublic && !isOfficerOrAdmin) {
@@ -533,15 +533,15 @@ export const createReport = async (req, res, next) => {
         obstruction_level,
     } = req.body;
     const user_id = req.user.id;
-    
+
     // Check for media files (image or video)
     const imageFiles = req.files && req.files['image'] ? req.files['image'] : [];
     const videoFile = req.files && req.files['video'] ? req.files['video'][0] : null;
 
     // Require at least one media type
     if (imageFiles.length === 0 && !videoFile) {
-        return res.status(400).json({ 
-            message: 'Please provide either an image or a video.' 
+        return res.status(400).json({
+            message: 'Please provide either an image or a video.'
         });
     }
 
@@ -562,7 +562,7 @@ export const createReport = async (req, res, next) => {
                 });
             }
         }
-        
+
         if (videoFile) {
             const fileExt = videoFile.originalname.split('.').pop()?.toLowerCase();
             if (!fileExt || !VALID_VIDEO_EXTENSIONS.includes(fileExt)) {
@@ -634,15 +634,15 @@ export const createReport = async (req, res, next) => {
 
                 // Upload media to Cloudinary FIRST (independent of AI validation)
                 console.log(`[Evidence] Starting media upload for report ${report.id}`);
-                
+
                 // Upload video to Cloudinary if present
                 if (videoFile) {
                     try {
                         console.log(`[Video] Uploading video for report ${report.id}`);
                         const timestamp = Date.now();
                         const videoUploadResult = await uploadVideoFromBuffer(
-                            videoFile.buffer, 
-                            `report_evidence/${report.id}`, 
+                            videoFile.buffer,
+                            `report_evidence/${report.id}`,
                             `${timestamp}_${report.id}_video`
                         );
                         console.log(`[Video] Uploaded video to Cloudinary: ${videoUploadResult.secure_url}`);
@@ -689,26 +689,26 @@ export const createReport = async (req, res, next) => {
                 // Process video for AI validation if present
                 if (videoFile) {
                     console.log(`[VIDEO-PIPELINE] START report=${report.id}, filename=${videoFile.originalname}, size=${videoFile.size}, mime=${videoFile.mimetype}`);
-                    
+
                     try {
                         console.log(`[VIDEO-PIPELINE] Stage: EXTRACTION - report=${report.id}`);
-                        
+
                         // Extract 5 frames
                         const frames = await extractVideoFrames(videoFile.buffer, videoFile.originalname);
                         console.log(`[VIDEO-PIPELINE] Stage: EXTRACTION COMPLETE - report=${report.id}, frames=${frames.length}`);
-                        
+
                         console.log(`[VIDEO-PIPELINE] Stage: CLASSIFICATION - report=${report.id}`);
-                        
+
                         // Classify frames in parallel
                         const frameResults = await classifyVideoFrames(frames);
                         console.log(`[VIDEO-PIPELINE] Stage: CLASSIFICATION COMPLETE - report=${report.id}, results=${frameResults.length}`);
-                        
+
                         console.log(`[VIDEO-PIPELINE] Stage: AGGREGATION - report=${report.id}`);
-                        
+
                         // Aggregate results
                         const aggregated = aggregateVideoValidation(frameResults);
                         console.log(`[VIDEO-PIPELINE] Stage: AGGREGATION COMPLETE - report=${report.id}, status=${aggregated.validation_status}, dominant=${aggregated.dominant_class}`);
-                        
+
                         // Use video validation as primary if no image, or for combined reports
                         if (imageFiles.length === 0) {
                             finalValidationStatus = aggregated.validation_status;
@@ -727,7 +727,7 @@ export const createReport = async (req, res, next) => {
                                 console.log(`[VIDEO-PIPELINE] Using video dominant_class for combined report: ${finalIssueType}`);
                             }
                         }
-                        
+
                         console.log(`[VIDEO-PIPELINE] COMPLETE report=${report.id}, status=${finalValidationStatus}`);
                     } catch (videoError) {
                         console.error(`[VIDEO-PIPELINE] FAILED report=${report.id}, stage=AI_PROCESSING, error=${videoError.message}`);
@@ -751,7 +751,7 @@ export const createReport = async (req, res, next) => {
                     console.log(`[Classifier]   images to classify : ${imageFiles.length}`);
                     console.log(`[Classifier]   target             : ${CLASSIFIER_SERVICE_URL}/classify`);
                     console.log(`[Classifier] ══════════════════════════════════════════`);
-                    
+
                     const imageResults = [];
                     for (let i = 0; i < imageFiles.length; i++) {
                         const imageFile = imageFiles[i];
@@ -872,12 +872,12 @@ export const createReport = async (req, res, next) => {
 
                 // Final database update with combined validation status
                 console.log(`[DATABASE-UPDATE] START report=${report.id}, status=${finalValidationStatus}, issue_type=${finalIssueType}`);
-                
+
                 const updatePayload = {
                     validation_status: finalValidationStatus,
                     updated_at: new Date().toISOString(),
                 };
-                
+
                 // Always set issue_type - use AI category if available, otherwise fallback
                 if (finalIssueType && finalIssueType !== 'pending') {
                     updatePayload.issue_type = finalIssueType;
@@ -902,7 +902,7 @@ export const createReport = async (req, res, next) => {
                         console.error(`[DATABASE-UPDATE] FAILED to calculate severity:`, severityErr);
                     }
                 }
-                
+
                 // Record the rejection timestamp when the AI rejects the report.
                 if (finalValidationStatus === VALIDATION_STATUS.REJECTED) {
                     updatePayload.rejected_at = new Date().toISOString();
@@ -910,26 +910,26 @@ export const createReport = async (req, res, next) => {
                         updatePayload.rejection_reason = finalRejectionReason;
                     }
                 }
-                
+
                 // Ensure we never leave it in pending_ai_validation state
                 if (updatePayload.validation_status === VALIDATION_STATUS.PENDING_AI_VALIDATION) {
                     console.log(`[DATABASE-UPDATE] WARNING: Still in pending_ai_validation, forcing to manual_review`);
                     updatePayload.validation_status = VALIDATION_STATUS.MANUAL_REVIEW;
                 }
-                
+
                 // Final safety check: ensure issue_type is never null/undefined/pending
                 if (!updatePayload.issue_type || updatePayload.issue_type === 'pending') {
                     console.log(`[DATABASE-UPDATE] CRITICAL: issue_type is still null/pending, forcing to 'waste'`);
                     updatePayload.issue_type = 'waste';
                 }
-                
+
                 console.log(`[DATABASE-UPDATE] Final payload: ${JSON.stringify(updatePayload)}`);
 
                 const { error: dbError } = await supabase
                     .from('reports')
                     .update(updatePayload)
                     .eq('id', report.id);
-                
+
                 if (dbError) {
                     console.error(`[DATABASE-UPDATE] FAILED report=${report.id}, error=${dbError.message}`);
                     throw new Error(`Database update failed: ${dbError.message}`);
@@ -1780,8 +1780,8 @@ export const syncReportMedia = async (req, res, next) => {
     const videoFile = req.files && req.files['video'] ? req.files['video'][0] : null;
 
     if (imageFiles.length === 0 && !videoFile) {
-        return res.status(400).json({ 
-            message: 'Please provide either an image or a video.' 
+        return res.status(400).json({
+            message: 'Please provide either an image or a video.'
         });
     }
 
@@ -1795,7 +1795,7 @@ export const syncReportMedia = async (req, res, next) => {
                 });
             }
         }
-        
+
         if (videoFile) {
             const fileExt = videoFile.originalname.split('.').pop()?.toLowerCase();
             if (!fileExt || !VALID_VIDEO_EXTENSIONS.includes(fileExt)) {
@@ -1846,14 +1846,14 @@ export const syncReportMedia = async (req, res, next) => {
                 let finalIssueType = null;
 
                 console.log(`[Evidence] Starting media upload for synced report ${report.id}`);
-                
+
                 // Upload video
                 if (videoFile) {
                     try {
                         const timestamp = Date.now();
                         await uploadVideoFromBuffer(
-                            videoFile.buffer, 
-                            `report_evidence/${report.id}`, 
+                            videoFile.buffer,
+                            `report_evidence/${report.id}`,
                             `${timestamp}_${report.id}_video`
                         );
                     } catch (videoUploadError) {
@@ -1880,7 +1880,7 @@ export const syncReportMedia = async (req, res, next) => {
                         const frames = await extractVideoFrames(videoFile.buffer, videoFile.originalname);
                         const frameResults = await classifyVideoFrames(frames);
                         const aggregated = aggregateVideoValidation(frameResults);
-                        
+
                         if (imageFiles.length === 0) {
                             finalValidationStatus = aggregated.validation_status;
                             finalRejectionReason = aggregated.rejection_reason;
@@ -1976,7 +1976,7 @@ export const syncReportMedia = async (req, res, next) => {
                     validation_status: finalValidationStatus,
                     updated_at: new Date().toISOString(),
                 };
-                
+
                 if (finalIssueType && finalIssueType !== 'pending') {
                     updatePayload.issue_type = finalIssueType;
                 } else {
@@ -1994,7 +1994,7 @@ export const syncReportMedia = async (req, res, next) => {
                         console.error(`[DATABASE-UPDATE] FAILED to calculate severity:`, severityErr);
                     }
                 }
-                
+
                 if (finalValidationStatus === VALIDATION_STATUS.REJECTED) {
                     // updatePayload.rejected_at = new Date().toISOString();
                     if (finalRejectionReason) {
@@ -2002,11 +2002,11 @@ export const syncReportMedia = async (req, res, next) => {
                         updatePayload.notes = finalRejectionReason; // Add to notes instead
                     }
                 }
-                
+
                 if (updatePayload.validation_status === VALIDATION_STATUS.PENDING_AI_VALIDATION) {
                     updatePayload.validation_status = VALIDATION_STATUS.MANUAL_REVIEW;
                 }
-                
+
                 if (!updatePayload.issue_type || updatePayload.issue_type === 'pending') {
                     updatePayload.issue_type = 'waste';
                 }
