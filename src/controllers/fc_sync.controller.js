@@ -262,8 +262,44 @@ async function _handleFirstAcceptedWins(
     return _success(operationId, report);
   }
 
-  // ── Stale base_version → REJECT ────────────────────────────────────────────
+  // ── Stale base_version → REJECT (unless is_outlier) ────────────────────────────────────────────
   if (clientVersion < serverVersion) {
+    if (report.is_outlier) {
+      // For sweeper tasks (is_outlier), we use field crew authority (last-write-wins with field priority)
+      // Delegating this to handleFieldAuthorityMerge logic equivalent
+      await _writeAudit({
+        operationId, userId: user.id, opType,
+        entityId: reportId, entityType: 'report',
+        outcome: 'merged',
+        clientBaseVersion: clientVersion,
+        serverVersion,
+        payload,
+        serverState: report,
+        reason: `Sweeper task (outlier): overriding stale base_version using field crew authority`,
+      });
+      const newVersion = await _nextVersion();
+      const { data: updated, error: updateErr } = await supabase
+        .from('reports')
+        .update({ ...payload, fc_version: newVersion, updated_at: new Date().toISOString() })
+        .eq('id', reportId)
+        .select()
+        .single();
+      if (updateErr) return _failed(operationId, updateErr.message);
+      return {
+        operation_id: operationId,
+        status: 'merged',
+        server_record: updated,
+        error_message: null,
+        conflict_detail: {
+          rule: 'field_authority',
+          applied_fields: Object.keys(payload),
+          rejected_fields: [],
+          server_version: serverVersion,
+          client_base_version: clientVersion,
+        },
+      };
+    }
+    
     await _writeAudit({
       operationId, userId: user.id, opType,
       entityId: reportId, entityType: 'report',

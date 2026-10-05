@@ -1,5 +1,6 @@
 import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
 import { OPTIMIZATION_CONFIG } from '../config/optimization.config.js';
+import { sweeperOptimizerService } from '../services/sweeper-optimizer.service.js';
 
 import { calculateClusterPriorities } from '../services/mcdaPrioritizer.service.js';
 import { mapClustersToTasks } from '../services/clusterTaskMapper.service.js';
@@ -846,3 +847,115 @@ export const completeTask = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+export const generateSweeperRoutes = async (req, res) => {
+  // Check role-based access control (dispatch officer)
+  if (req.user?.role !== 'dispatch_officer' && req.user?.role !== 'admin' && req.user?.role !== 'system_administrator') {
+    return res.status(403).json({ error: 'Access denied: Dispatch Officer role required' });
+  }
+
+  const { clusterIds, crewId, shiftDuration } = req.body;
+
+  if (!clusterIds || !Array.isArray(clusterIds) || clusterIds.length === 0) {
+    return res.status(400).json({ error: 'clusterIds array is required and must not be empty' });
+  }
+
+  if (!crewId) {
+    return res.status(400).json({ error: 'crewId is required' });
+  }
+
+  try {
+    const rawRoutes = await sweeperOptimizerService.generateSweeperRoutes(clusterIds, crewId);
+
+    // Transform raw routes to match the expected API response format
+    const routes = rawRoutes.map(route => {
+      let currentOffsetMinutes = 0; // Starts at 0 minutes offset from now
+      const startTime = new Date();
+      
+      const waypoints = route.clusters.map(cluster => {
+        const arrivalTime = new Date(startTime.getTime() + currentOffsetMinutes * 60000);
+        currentOffsetMinutes += cluster.workTime + Math.ceil(route.totalTravelTime / route.clusters.length);
+        
+        return {
+          clusterId: cluster.id,
+          coordinates: cluster.coordinates,
+          estimatedArrival: arrivalTime.toISOString(),
+          workDuration: cluster.workTime
+        };
+      });
+
+      return {
+        taskId: route.taskId,
+        clusterIds: route.clusters.map(c => c.id),
+        totalTravelTime: route.totalTravelTime,
+        totalWorkTime: route.totalWorkTime,
+        totalRouteTime: route.totalRouteTime,
+        waypoints: waypoints
+      };
+    });
+
+    res.json({
+      success: true,
+      routes: routes
+    });
+  } catch (error) {
+    console.error('Error generating sweeper routes:', error);
+    res.status(500).json({ error: 'Internal server error during route optimization' });
+  }
+};
+
+export const getUnassignedOutlierClusters = async (req, res) => {
+  // Check role-based access control
+  if (req.user?.role !== 'dispatch_officer' && req.user?.role !== 'admin' && req.user?.role !== 'system_administrator') {
+    return res.status(403).json({ error: 'Access denied: Dispatch Officer role required' });
+  }
+
+  const statusFilter = req.query.status || 'Pending Assignment';
+
+  try {
+    const { data: clusters, error, count } = await supabase
+      .from('clusters')
+      .select(`
+        id,
+        centroid,
+        issue_type,
+        severity,
+        created_at,
+        reports!inner(id)
+      `, { count: 'exact' })
+      .eq('is_outlier', true)
+      .eq('status', statusFilter);
+
+    if (error) {
+      throw error;
+    }
+
+    // Format response
+    const formattedClusters = clusters.map(c => {
+      let lat = 0;
+      let lng = 0;
+      if (c.centroid && c.centroid.coordinates) {
+        lng = c.centroid.coordinates[0];
+        lat = c.centroid.coordinates[1];
+      }
+
+      const reportId = c.reports && c.reports.length > 0 ? c.reports[0].id : null;
+
+      return {
+        id: c.id,
+        reportId: reportId,
+        coordinates: { lat, lng },
+        issueType: c.issue_type,
+        severity: c.severity,
+        createdAt: c.created_at
+      };
+    });
+
+    res.json({
+      count: count || formattedClusters.length,
+      clusters: formattedClusters
+    });
+  } catch (error) {
+    console.error('Error fetching unassigned outlier clusters:', error);
+    res.status(500).json({ error: 'Failed to fetch unassigned outlier clusters' });
+  }
+};

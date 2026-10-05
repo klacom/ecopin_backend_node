@@ -1,11 +1,17 @@
 import { supabaseAdmin } from '../../../config/supabase.config.js';
 import { CLUSTERING_CONFIG } from '../config/clustering.config.js';
 
+import { outlierClusteringService } from './outlier-clustering.service.js';
+
 export const clusterReports = async () => {
   try {
     console.log('Starting report clustering...');
 
-    //Run DBSCAN to find clusters among recent unresolved reports
+    // 1. First process and isolate any SLA-breached outliers
+    const outlierResult = await outlierClusteringService.clusterOutliers();
+    console.log(`Created ${outlierResult.clusterCount} outlier clusters.`);
+
+    // 2. Run DBSCAN to find clusters among remaining standard reports
     const { data: clustered, error: clusterError } = await supabaseAdmin.rpc(
       'dbscan_reports'
     );
@@ -17,7 +23,7 @@ export const clusterReports = async () => {
 
     if (!clustered || clustered.length === 0) {
       console.log('No reports to cluster.');
-      return { message: 'No reports to cluster.', clusters: [] };
+      return { message: 'No standard reports to cluster.', outlierClusters: outlierResult.clusterCount, clusters: [] };
     }
 
     //Group results by DBSCAN cluster_id (null = noise / singleton)
@@ -25,6 +31,7 @@ export const clusterReports = async () => {
 
     for (const row of clustered) {
       if (row.cluster_id === null) continue; // skip noise points
+      if (row.is_outlier === true) continue; // explicitly exclude outliers from standard clustering
 
       if (!groups.has(row.cluster_id)) {
         groups.set(row.cluster_id, { ids: [], issue_types: [], locations: [] });
