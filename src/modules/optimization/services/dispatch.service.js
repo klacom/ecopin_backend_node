@@ -184,6 +184,7 @@ ${resources}`;
       .insert({
         cluster_id: group[0].id, // Keep primary for backwards compat
         cluster_ids: allClusterIds,
+        report_ids: allReports.map(r => r.id),
         title,
         description,
         status: 'pending',

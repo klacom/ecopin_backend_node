@@ -20,10 +20,16 @@ router.post('/queue/prioritize', authorize(ROLE_GROUPS.DESK_OPS), ctrl.prioritiz
 router.get('/queue', authorize(ROLE_GROUPS.DESK_OPS), ctrl.fetchWorkQueue);
 router.post('/dispatch', authorize(ROLE_GROUPS.DESK_OPS), ctrl.explicitDispatch);
 
+// Optimization Templates (officer-configurable presets)
+router.get('/templates', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getTemplates);
+router.post('/templates', authorize(ROLE_GROUPS.DESK_OPS), ctrl.createTemplate);
+router.delete('/templates/:id', authorize(ROLE_GROUPS.DESK_OPS), ctrl.deleteTemplate);
+
 // Phase 3: Capacity-Aware Planning Endpoints
 router.post('/plan/generate', authorize(ROLE_GROUPS.DESK_OPS), ctrl.generatePlan);
 router.get('/plan/:id/items', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getPlanItems);
 router.post('/plan/:id/commit', authorize(ROLE_GROUPS.DESK_OPS), ctrl.commitPlan);
+
 
 // Route viewing — accessible to field ops (officers + field crew)
 router.get('/routes/active', authorize(ROLE_GROUPS.FIELD_OPS), ctrl.getActiveRoutes);

@@ -15,9 +15,29 @@ function getShiftMinutes(startStr, endStr) {
 }
 
 /**
- * Generates an automated dispatch plan based on current backlog and crew capacity
+ * Generates an automated dispatch plan based on current backlog and crew capacity.
+ * @param {string} userId - The ID of the officer generating the plan.
+ * @param {Object} settings - Officer-configured settings to override defaults.
  */
-export async function generateDispatchPlan(userId) {
+export async function generateDispatchPlan(userId, settings = {}) {
+  const {
+    travel_mode = 'DRIVING',
+    break_duration_min = 60,
+    overtime_tolerance_min = 15,
+    priority_age_weight = 50,   // 0 = Age (oldest first), 100 = Priority score only
+    included_task_types = [],   // Empty array = all task types
+    density_focus = false,
+    zone_ids = [],              // Empty array = all geographic zones
+    max_tasks_per_shift = 15,
+  } = settings;
+
+  // Derive travel buffer from travel mode:
+  // Vehicles need a parking/approach buffer; walkers do not.
+  const TRAVEL_ESTIMATE_MIN =
+    travel_mode === 'DRIVING' ? 25 :
+    travel_mode === 'BICYCLE' ? 15 :
+    10; // WALKING
+
   // 0. Just-In-Time Prioritization
   // Ensure the backlog is freshly prioritized right before we select tasks for dispatch
   await prioritizeBacklog();
@@ -34,43 +54,70 @@ export async function generateDispatchPlan(userId) {
 
   let totalCapacityMinutes = 0;
   for (const crew of crews) {
-    const mins = getShiftMinutes(crew.shift_start, crew.shift_end);
-    totalCapacityMinutes += mins;
+    const shiftMins = getShiftMinutes(crew.shift_start, crew.shift_end);
+    // Subtract break time per crew, then add the officer-permitted overtime buffer
+    totalCapacityMinutes += (shiftMins - break_duration_min + overtime_tolerance_min);
   }
 
-  // Subtract capacity for existing uncompleted tasks that will be re-routed
-  const { data: existingTasks } = await supabase
-    .from('cleanup_tasks')
-    .select('id, estimated_duration_min')
-    .in('status', ['created', 'pending']);
-    
-  let existingTasksEffort = 0;
-  if (existingTasks) {
-    for (const t of existingTasks) {
-      existingTasksEffort += (t.estimated_duration_min || 60) + 20; // adding 20 travel time approx
-    }
-  }
 
-  // 2. Fetch Backlog (we fetch top 200 to ensure we have enough to fill capacity and store 100 omitted)
-  const { data: backlog } = await supabase
+  // 2. Fetch Backlog with settings-driven filters
+  // We fetch top 200 to ensure enough to fill capacity and log omitted items
+  let backlogQuery = supabase
     .from('clusters')
-    .select('id, priority_score, estimated_effort_minutes, recommended_task_type')
-    .in('status', ['prioritized', 'monitoring'])
-    .order('priority_score', { ascending: false })
+    .select('id, priority_score, estimated_effort_minutes, recommended_task_type, created_at')
+    .in('status', ['prioritized', 'monitoring']);
+
+  // Apply Task Type filter only if the officer specified types to include
+  if (included_task_types.length > 0) {
+    backlogQuery = backlogQuery.in('recommended_task_type', included_task_types);
+  }
+
+  // Apply Geographic Zone filter only if the officer restricted to specific zones
+  if (zone_ids.length > 0) {
+    backlogQuery = backlogQuery.in('zone_id', zone_ids);
+  }
+
+  // Blend sort order based on priority_age_weight slider:
+  // weight > 50 → sort by priority_score descending (priority wins)
+  // weight <= 50 → sort by created_at ascending (oldest tasks first)
+  const sortByPriority = priority_age_weight > 50;
+  backlogQuery = backlogQuery
+    .order('priority_score', { ascending: !sortByPriority })
+    .order('created_at', { ascending: sortByPriority })
     .limit(200);
 
+  const { data: backlog } = await backlogQuery;
+
   if (!backlog || backlog.length === 0) {
-    throw new Error('Work queue is empty.');
+    return {
+      plan: null,
+      selectedCount: 0,
+      omittedLoggedCount: 0,
+      capacityUtilized: 0,
+      message: 'Work queue is empty. No tasks available to optimize.'
+    };
   }
 
   // 3. Selection Logic
-  let remainingCapacity = totalCapacityMinutes - existingTasksEffort;
+  let remainingCapacity = totalCapacityMinutes;
+  const totalMaxTasks = max_tasks_per_shift * crews.length;
   const selectedItems = [];
   const omittedItems = [];
-  const TRAVEL_ESTIMATE_MIN = 20; // Heuristic: average 20 mins travel between operations
 
   for (const cluster of backlog) {
     const requiredEffort = (cluster.estimated_effort_minutes || 60) + TRAVEL_ESTIMATE_MIN;
+
+    // Enforce hard max-tasks-per-shift cap before capacity check
+    if (selectedItems.length >= totalMaxTasks) {
+      omittedItems.push({
+        cluster_id: cluster.id,
+        is_selected: false,
+        reason: 'Deferred: maximum task cap per shift reached',
+        estimated_duration_minutes: requiredEffort
+      });
+      if (omittedItems.length >= 100) break;
+      continue;
+    }
     
     if (remainingCapacity >= requiredEffort) {
       selectedItems.push({

@@ -63,8 +63,86 @@ export const explicitDispatch = async (req, res, next) => {
 // Phase 3: Capacity-Aware Planning Endpoints
 export const generatePlan = async (req, res, next) => {
   try {
-    const result = await generateDispatchPlan(req.user.id);
+    // Accept officer-configured settings from the request body
+    const { settings = {} } = req.body;
+    const result = await generateDispatchPlan(req.user.id, settings);
     res.status(201).json({ message: 'Dispatch plan generated successfully', ...result });
+  } catch (error) { next(error); }
+};
+
+// ── Optimization Templates ─────────────────────────────────────────────
+
+/**
+ * GET /api/optimization/templates
+ * Returns all system-level presets (created_by = null) plus the current officer's saved templates.
+ */
+export const getTemplates = async (req, res, next) => {
+  try {
+    const { data, error } = await supabase
+      .from('optimization_templates')
+      .select('*')
+      .or(`created_by.is.null,created_by.eq.${req.user.id}`)
+      .order('is_default', { ascending: false })
+      .order('created_at', { ascending: true });
+
+    if (error) return res.status(400).json({ message: 'Failed to fetch templates', error: error.message });
+    res.status(200).json(data);
+  } catch (error) { next(error); }
+};
+
+/**
+ * POST /api/optimization/templates
+ * Saves the current officer's settings as a new named template.
+ */
+export const createTemplate = async (req, res, next) => {
+  try {
+    const { name, description, settings } = req.body;
+    if (!name || typeof name !== 'string' || name.trim() === '') {
+      return res.status(400).json({ message: 'Template name is required' });
+    }
+    if (!settings || typeof settings !== 'object') {
+      return res.status(400).json({ message: 'Template settings payload is required' });
+    }
+
+    const { data, error } = await supabase
+      .from('optimization_templates')
+      .insert({
+        name: name.trim(),
+        description: description?.trim() || null,
+        created_by: req.user.id,
+        is_default: false,
+        settings
+      })
+      .select()
+      .single();
+
+    if (error) return res.status(400).json({ message: 'Failed to save template', error: error.message });
+    res.status(201).json({ message: 'Template saved successfully', template: data });
+  } catch (error) { next(error); }
+};
+
+/**
+ * DELETE /api/optimization/templates/:id
+ * Deletes one of the officer's own custom templates. System presets (is_default) cannot be deleted.
+ */
+export const deleteTemplate = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Verify ownership and that this is not a system preset
+    const { data: existing, error: fetchError } = await supabase
+      .from('optimization_templates')
+      .select('id, created_by, is_default')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !existing) return res.status(404).json({ message: 'Template not found' });
+    if (existing.is_default) return res.status(403).json({ message: 'System preset templates cannot be deleted' });
+    if (existing.created_by !== req.user.id) return res.status(403).json({ message: 'You can only delete your own templates' });
+
+    const { error } = await supabase.from('optimization_templates').delete().eq('id', id);
+    if (error) return res.status(400).json({ message: 'Failed to delete template', error: error.message });
+    res.status(200).json({ message: 'Template deleted successfully' });
   } catch (error) { next(error); }
 };
 
@@ -113,21 +191,11 @@ export const commitPlan = async (req, res, next) => {
     let assignments = [];
     let optimization_run = null;
     
-    // Fetch existing uncompleted tasks to re-route them
-    const { data: existingTasks } = await supabase
-      .from('cleanup_tasks')
-      .select('*')
-      .in('status', ['created', 'pending']);
-      
-    const uncompletedTasks = existingTasks || [];
+    // We only route the clusters selected in the dispatch plan. 
+    // Re-routing existing tasks should be a separate explicit user action if needed.
     
-    if (clusterIds.length > 0 || uncompletedTasks.length > 0) {
-      if (clusterIds.length > 0) {
-        tasks = await dispatchClusters(clusterIds, req.user.id);
-      }
-      
-      // Merge new tasks and existing uncompleted tasks
-      tasks = [...tasks, ...uncompletedTasks];
+    if (clusterIds.length > 0) {
+      tasks = await dispatchClusters(clusterIds, req.user.id);
       
       // 3.1 Load crews and assign intelligently
       console.log(`[Optimization] Step 3.1: Loading field crews and assigning ${tasks.length} tasks...`);
@@ -499,7 +567,7 @@ export const getOptimizationRunById = async (req, res, next) => {
         const routeIds = routes.map(r => r.id);
         const { data: waypoints } = await supabase
           .from('route_waypoints')
-          .select('*, cleanup_tasks(id, task_type)')
+          .select('*, cleanup_tasks(id, task_type, report_ids)')
           .in('crew_route_id', routeIds)
           .order('sequence_order', { ascending: true });
         
