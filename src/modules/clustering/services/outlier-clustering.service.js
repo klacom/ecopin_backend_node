@@ -22,7 +22,7 @@ class OutlierClusteringService {
       for (const cluster of createdClusters) {
         try {
           await logOutlierClusterCreation(cluster.cluster_id, cluster.report_id);
-          
+
           clusters.push({
             clusterId: cluster.cluster_id,
             reportId: cluster.report_id,
@@ -40,7 +40,7 @@ class OutlierClusteringService {
       clusters
     };
   }
-  
+
   /**
    * Ensure flag propagation from reports to clusters
    * @param {string} reportId
@@ -48,35 +48,35 @@ class OutlierClusteringService {
    */
   async createOutlierCluster(reportId) {
     // This provides a fallback to create a single outlier cluster programmatically if needed
-    
+
     // First verify the report is actually an outlier
     const { data: report, error: reportError } = await supabase
       .from('reports')
-      .select('location, issue_type, severity, is_outlier, cluster_id')
+      .select('location, issue_type, severity_score, is_outlier, cluster_id')
       .eq('id', reportId)
       .single();
-      
+
     if (reportError || !report) {
       throw new Error(`Failed to find report ${reportId}`);
     }
-    
+
     if (!report.is_outlier) {
       throw new Error(`Report ${reportId} is not flagged as an outlier`);
     }
-    
+
     if (report.cluster_id) {
       return report.cluster_id;
     }
-    
+
     // Generate bounding box for single point (PostGIS logic executed in JS or DB)
     // Here we'll use a raw query or just call the DB procedure, but since we have a procedure,
     // let's rely on the DB to do it properly. We can just call clusterOutliers() which processes all unclustered ones.
     // However, to satisfy the interface, we'll do a direct insert if we want a single one.
-    
+
     // For now, we can just call clusterOutliers() and find the matching one,
     // or run a direct query. Given the requirement to follow the design doc,
     // we should implement this method properly.
-    
+
     const { data: clusterData, error: clusterError } = await supabase
       .from('clusters')
       .insert({
@@ -85,25 +85,25 @@ class OutlierClusteringService {
         // As a simplification without direct PostGIS access in JS:
         bounding_box: report.location, // Placeholder, ideally we'd use ST_Buffer on insert
         issue_type: report.issue_type,
-        severity: report.severity,
+        severity_score: report.severity_score,
         is_outlier: true,
         status: 'Pending Assignment'
       })
       .select('id')
       .single();
-      
+
     if (clusterError) {
       throw new Error(`Failed to create cluster for report ${reportId}: ${clusterError.message}`);
     }
-    
+
     // Update the report
     await supabase
       .from('reports')
       .update({ cluster_id: clusterData.id })
       .eq('id', reportId);
-      
+
     await logOutlierClusterCreation(clusterData.id, reportId);
-    
+
     return clusterData.id;
   }
 }

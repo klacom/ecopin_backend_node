@@ -13,7 +13,11 @@ export const clusterReports = async () => {
 
     // 2. Run DBSCAN to find clusters among remaining standard reports
     const { data: clustered, error: clusterError } = await supabaseAdmin.rpc(
-      'dbscan_reports'
+      'dbscan_reports',
+      {
+        p_eps: CLUSTERING_CONFIG.dbscan.eps,
+        p_minpoints: CLUSTERING_CONFIG.dbscan.minpoints
+      }
     );
 
     if (clusterError) {
@@ -60,9 +64,9 @@ export const clusterReports = async () => {
 
       // Determine severity based on report count using config thresholds
       const count = group.ids.length;
-      const severity = count >= CLUSTERING_CONFIG.severity.high ? 'high' 
-                    : count >= CLUSTERING_CONFIG.severity.medium ? 'medium' 
-                    : 'low';
+      const severity = count >= CLUSTERING_CONFIG.severity.high ? 'high'
+        : count >= CLUSTERING_CONFIG.severity.medium ? 'medium'
+          : 'low';
 
       // Compute centroid & insert cluster row via SQL so PostGIS handles geometry
       const { data: newCluster, error: insertError } = await supabaseAdmin.rpc(
