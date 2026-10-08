@@ -29,10 +29,9 @@ router.post('/sla/trigger', authenticate, triggerSlaDetection);
 router.get('/sla/status', authenticate, getSlaStatus);
 
 // Sweeper Optimization Routes
-import { generateSweeperRoutes, getUnassignedOutlierClusters } from '../../optimization/controllers/optimization.controller.js';
+import { generateSweeperRoutes } from '../../optimization/controllers/optimization.controller.js';
 
 router.post('/optimize', authenticate, generateSweeperRoutes);
-router.get('/clusters', authenticate, getUnassignedOutlierClusters);
 
 // Sweeper Analytics Routes
 import { getMetrics, exportMetrics } from '../controllers/analytics.controller.js';

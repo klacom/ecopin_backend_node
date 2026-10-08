@@ -493,16 +493,6 @@ export const generateSweeperRoutes = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-export const getUnassignedOutlierClusters = async (req, res, next) => {
-  try {
-    const { data, error } = await supabase.from('reports').select('id,issue_type,severity_score,deadline_at,lifecycle_state')
-      .is('cluster_id',null).is('cleanup_task_id',null).in('lifecycle_state',['maturing','sla_breached']).eq('status','unresolved')
-      .order('deadline_at').limit(200);
-    if (error) throw error;
-    res.json({ reports: data, count: data.length });
-  } catch (error) { next(error); }
-};
-
 export const getDispatchBlocks = async (req,res,next) => {
   try {
     const {data,error}=await supabase.from('dispatch_access_blocks').select('*').is('cleared_at',null).order('blocked_at').limit(200);

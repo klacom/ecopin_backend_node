@@ -2,37 +2,34 @@ import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
 
 class SweeperAnalyticsService {
   async getMetrics(startDate, endDate, region) {
-    const lifecycleEnabled = process.env.REPORT_LIFECYCLE_ENABLED === 'true';
     const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     // 1. SLA Compliance
-    let reportsQuery = supabase
+    const reportsQuery = supabase
       .from('reports')
-      .select(lifecycleEnabled ? 'id, breached_at, created_at' : 'id, is_outlier, created_at')
-      .gte(lifecycleEnabled ? 'sla_started_at' : 'created_at', start.toISOString())
-      .lte(lifecycleEnabled ? 'sla_started_at' : 'created_at', end.toISOString());
+      .select('id, breached_at, sla_started_at')
+      .gte('sla_started_at', start.toISOString())
+      .lte('sla_started_at', end.toISOString());
 
     const { data: reports, error: reportsError } = await reportsQuery;
     if (reportsError) throw reportsError;
     const totalReports = reports ? reports.length : 0;
-    const breachedReports = reports ? reports.filter(r => lifecycleEnabled ? r.breached_at != null : r.is_outlier).length : 0;
+    const breachedReports = reports ? reports.filter(r => r.breached_at != null).length : 0;
     const rate = totalReports > 0 ? ((totalReports - breachedReports) / totalReports) * 100 : 100;
 
     // 2. Outlier Metrics
-    let outliersQuery = supabase
+    const outliersQuery = supabase
       .from('reports')
-      .select(lifecycleEnabled ? 'sla_started_at' : 'created_at');
-    outliersQuery = lifecycleEnabled
-      ? outliersQuery.eq('lifecycle_state', 'sla_breached')
-      : outliersQuery.eq('is_outlier', true).eq('status', 'unresolved');
+      .select('sla_started_at')
+      .eq('lifecycle_state', 'sla_breached');
     const { data: currentOutliers, error: outliersError } = await outliersQuery;
     if (outliersError) throw outliersError;
       
     let averageAge = 0;
     if (currentOutliers && currentOutliers.length > 0) {
       const now = new Date();
-      const ages = currentOutliers.map(r => (now.getTime() - new Date(lifecycleEnabled ? r.sla_started_at : r.created_at).getTime()) / (1000 * 60 * 60));
+      const ages = currentOutliers.map(r => (now.getTime() - new Date(r.sla_started_at).getTime()) / (1000 * 60 * 60));
       averageAge = ages.reduce((a, b) => a + b, 0) / ages.length;
     }
 

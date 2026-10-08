@@ -46,12 +46,10 @@ export async function getSlaStatus(req, res) {
 
   try {
     // Get current outlier count from reports table
-    let query = supabase
+    const query = supabase
       .from('reports')
-      .select('*', { count: 'exact', head: true });
-    query = process.env.REPORT_LIFECYCLE_ENABLED === 'true'
-      ? query.eq('lifecycle_state', 'sla_breached')
-      : query.eq('is_outlier', true).eq('status', 'unresolved');
+      .select('*', { count: 'exact', head: true })
+      .eq('lifecycle_state', 'sla_breached');
     const { count, error } = await query;
 
     if (error) {

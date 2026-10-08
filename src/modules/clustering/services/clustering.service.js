@@ -29,7 +29,6 @@ export const clusterReports = async () => {
 
     for (const row of clustered) {
       if (row.cluster_id === null) continue; // skip noise points
-      if (row.is_outlier === true) continue; // explicitly exclude outliers from standard clustering
 
       if (!groups.has(row.cluster_id)) {
         groups.set(row.cluster_id, { ids: [], issue_types: [], locations: [] });
