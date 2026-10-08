@@ -6,7 +6,10 @@ describe('contextual hazard classification', () => {
     ['discarded medical needles', 'hazmat_required'],
     ['possible gas smell near bins', 'suspected_hazard'],
     ['There are no chemical spills, just regular trash', 'standard'],
-    ['A box of medical masks is on the sidewalk', 'standard'],
+    ['A box of medical masks is on the sidewalk', 'unknown'],
+    ['A box of unused medical masks is on the sidewalk', 'standard'],
+    ['Not sure whether there is a chemical spill', 'suspected_hazard'],
+    ['No chemical spill but an unknown gas smell', 'suspected_hazard'],
     ['large fallen tree blocking the road', 'standard'],
   ])('%s => %s', (title, expected) => {
     const result = classifyReportHazard({ issue_type: 'waste', title });
