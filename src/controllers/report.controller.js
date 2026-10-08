@@ -10,6 +10,7 @@ import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, VALI
 import { clusterReports } from '../modules/clustering/index.js';
 import { uploadFromBuffer, deleteFromCloudinary, uploadVideoFromBuffer } from '../services/cloudinary.service.js';
 import { calculateSeverity } from '../services/severity.service.js';
+import { classifyReportHazard } from '../services/hazard-classifier.service.js';
 import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
 
 // Helper function to determine issue type from text
@@ -592,6 +593,7 @@ export const createReport = async (req, res, next) => {
                 description,
                 // Set initial issue type based on text analysis, will be updated by AI validation
                 issue_type: initialIssueType,
+                ...classifyReportHazard({ issue_type: initialIssueType, title, description }),
                 location: point,
                 on_private_property: onPrivateProperty,
                 property_owner_consent_status: propertyOwnerConsentStatus,
@@ -922,6 +924,10 @@ export const createReport = async (req, res, next) => {
                     console.log(`[DATABASE-UPDATE] CRITICAL: issue_type is still null/pending, forcing to 'waste'`);
                     updatePayload.issue_type = 'waste';
                 }
+
+                Object.assign(updatePayload, classifyReportHazard({
+                    issue_type: updatePayload.issue_type, title, description, notes: report.notes,
+                }));
 
                 console.log(`[DATABASE-UPDATE] Final payload: ${JSON.stringify(updatePayload)}`);
 
@@ -1444,6 +1450,18 @@ export const updateReportDetails = async (req, res, next) => {
         if (city !== undefined) updateData.city = city;
         if (district !== undefined) updateData.district = district;
 
+        if (description !== undefined || issue_type !== undefined) {
+            const { data: current, error: readError } = await supabase.from('reports')
+                .select('title,description,notes,issue_type').eq('id', id).single();
+            if (readError) return res.status(400).json({ message: 'Failed to read report for hazard review', error: readError.message });
+            Object.assign(updateData, classifyReportHazard({
+                title: current.title,
+                description: description ?? current.description,
+                notes: current.notes,
+                issue_type: issue_type ?? current.issue_type,
+            }));
+        }
+
         const { data, error } = await supabase
             .from('reports')
             .update(updateData)
@@ -1743,6 +1761,12 @@ export const createReportFromRejected = async (req, res, next) => {
                 title: originalReport.title,
                 description: originalReport.description,
                 issue_type: originalReport.issue_type,
+                ...classifyReportHazard({
+                    issue_type: originalReport.issue_type,
+                    title: originalReport.title,
+                    description: originalReport.description,
+                    notes: originalReport.notes,
+                }),
                 location: originalReport.location,
                 on_private_property: originalReport.on_private_property,
                 property_owner_consent_status: originalReport.on_private_property ? 'pending' : 'not_required',
@@ -2010,6 +2034,12 @@ export const syncReportMedia = async (req, res, next) => {
                 if (!updatePayload.issue_type || updatePayload.issue_type === 'pending') {
                     updatePayload.issue_type = 'waste';
                 }
+
+                Object.assign(updatePayload, classifyReportHazard({
+                    issue_type: updatePayload.issue_type,
+                    title: report.title, description: report.description,
+                    notes: updatePayload.notes ?? report.notes,
+                }));
 
                 await supabase.from('reports').update(updatePayload).eq('id', report.id);
 
