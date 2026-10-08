@@ -1054,7 +1054,7 @@ export const getReportById = async (req, res, next) => {
 
         // Fetch response logs (activity logs and agency responses)
         const { data: responseLogs, error: logsError } = await supabase
-            .from('response_log')
+            .from('audit_logs')
             .select('*, profiles(full_name)')
             .eq('report_id', id)
             .order('created_at', { ascending: false });
@@ -1231,7 +1231,7 @@ const logAuditAction = async (reportId, userId, actionType, actionDetails) => {
     try {
         console.log('Logging audit action:', { reportId, userId, actionType, actionDetails });
         const { data, error } = await supabase
-            .from('response_log')
+            .from('audit_logs')
             .insert({
                 report_id: reportId,
                 user_id: userId,
@@ -1403,7 +1403,7 @@ export const logAgencyResponse = async (req, res, next) => {
 
     try {
         const { data, error } = await supabase
-            .from('response_log')
+            .from('audit_logs')
             .insert({
                 report_id: id,
                 user_id,
@@ -1475,7 +1475,7 @@ export const fetchAgencyResponses = async (req, res, next) => {
 
     try {
         const { data, error } = await supabase
-            .from('response_log')
+            .from('audit_logs')
             .select('*')
             .eq('report_id', id)
             .order('created_at', { ascending: false });

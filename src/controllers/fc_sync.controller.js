@@ -513,7 +513,7 @@ async function _handleAddNote(operationId, reportId, payload, user) {
   const action = payload.action ?? payload.action_details ?? '';
 
   const { data: note, error } = await supabase
-    .from('response_log')
+    .from('audit_logs')
     .insert({
       report_id: reportId,
       user_id: user.id,

@@ -387,7 +387,7 @@ export const getAuditLogs = async (req, res, next) => {
 
     try {
         let query = supabase
-            .from('audit_logs')
+            .from('system_logs')
             .select('*', { count: 'exact' })
             .range(offset, offset + limit - 1)
             .order('created_at', { ascending: false });
@@ -513,7 +513,7 @@ export const getSystemStats = async (req, res, next) => {
 
         // Get total audit logs count
         const { count: totalAuditLogs } = await supabase
-            .from('audit_logs')
+            .from('system_logs')
             .select('*', { count: 'exact', head: true });
 
         res.status(200).json({
