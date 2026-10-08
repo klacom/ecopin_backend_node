@@ -9,9 +9,7 @@ export async function getConfigurationValue(parameterName, defaultValue = null) 
     .single();
     
   if (error || !data) {
-    if (error && error.code !== 'PGRST116') { // PGRST116 is "no rows returned"
-      console.error(`Error fetching config ${parameterName}:`, error);
-    }
+    if (error && error.code !== 'PGRST116') throw new Error(`Configuration unavailable: ${parameterName}`);
     return defaultValue;
   }
   return data.parameter_value;

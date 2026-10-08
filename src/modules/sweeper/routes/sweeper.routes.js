@@ -9,12 +9,9 @@ import { getAuditLogs } from '../controllers/audit.controller.js';
 
 const router = express.Router();
 
-// Mock authentication/authorization middleware for these routes
-// In a real application, replace this with your actual auth middleware
-const authenticate = (req, res, next) => {
-  // Assume req.user is set by prior middleware
-  next();
-};
+import { authenticate, authorize } from '../../../middleware/auth.middleware.js';
+import { ROLE_GROUPS } from '../../../constants/roles.js';
+router.use(authenticate, authorize(ROLE_GROUPS.DESK_OPS));
 
 // Configuration Routes
 router.get('/config', authenticate, getConfig);

@@ -31,6 +31,9 @@ router.get('/plan/:id/items', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getPlanItems
 router.post('/plan/:id/commit', authorize(ROLE_GROUPS.DESK_OPS), ctrl.commitPlan);
 
 
+router.get('/blocks', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getDispatchBlocks);
+router.post('/blocks/:id/clear', authorize(ROLE_GROUPS.DESK_OPS), ctrl.clearDispatchBlock);
+
 // Route viewing — accessible to field ops (officers + field crew)
 router.get('/routes/active', authorize(ROLE_GROUPS.FIELD_OPS), ctrl.getActiveRoutes);
 router.get('/routes/:routeId', authorize(ROLE_GROUPS.FIELD_OPS), ctrl.getRouteById);

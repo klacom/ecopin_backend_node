@@ -3,7 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 // Local Docker only. No Supabase URL, API key or deployment credentials are used.
-const container = 'ecopin-slice-a-postgres';
+const container = process.env.TEST_POSTGRES_CONTAINER ?? 'ecopin-slice-a-postgis';
 const database = `lifecycle_test_${process.pid}_${Date.now()}`;
 const args = db => ['exec', '-i', container, 'psql', '-X', '-qAt', '-U', 'postgres', '-d', db, '-v', 'ON_ERROR_STOP=1'];
 function sql(db, input) {

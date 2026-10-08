@@ -32,8 +32,8 @@ router.get('/cluster/:clusterId', getTasksByClusterId);
 router.use(authorize(ROLE_GROUPS.FIELD_OPS));
 
 router.post('/sync/batch', batchSyncTaskUpdates);
-router.post('/', createCleanupTask);
-router.post('/custom', createCustomCleanupTask);
+router.post('/', authorize(ROLE_GROUPS.DESK_OPS), createCleanupTask);
+router.post('/custom', authorize(ROLE_GROUPS.DESK_OPS), createCustomCleanupTask);
 router.get('/', getAllCleanupTasks);
 router.get('/available-crew', getAvailableCrew);
 router.get('/:id', getCleanupTaskById);
@@ -47,6 +47,7 @@ router.delete('/:taskId/photo', deleteCleanupPhoto);
 
 // Task completion (field crew only)
 router.patch('/:id/complete', markTaskComplete);
+router.post('/:id/complete', markTaskComplete);
 
 // Title update
 router.patch('/:id/title', authorize(ROLE_GROUPS.DESK_OPS), updateCleanupTaskTitle);

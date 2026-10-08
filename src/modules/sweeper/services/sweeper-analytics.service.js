@@ -39,7 +39,8 @@ class SweeperAnalyticsService {
     const { data: resolvedTasks, error: resolvedError } = await supabase
       .from('cleanup_tasks')
       .select('id, created_at, completed_at')
-      .eq('is_outlier', true)
+      .eq('dispatch_kind', 'sweeper')
+      .in('completion_result', ['completed','cleanup_completed'])
       .eq('status', 'completed')
       .gte('created_at', start.toISOString())
       .lte('created_at', end.toISOString());
@@ -54,8 +55,8 @@ class SweeperAnalyticsService {
     // 3. Sweeper Tasks
     const { data: allSweeperTasks, error: tasksError } = await supabase
       .from('cleanup_tasks')
-      .select('id, status, estimated_duration_min, cluster_ids')
-      .eq('is_outlier', true)
+      .select('id, status, estimated_duration_min, cluster_ids, report_ids')
+      .eq('dispatch_kind', 'sweeper')
       .gte('created_at', start.toISOString())
       .lte('created_at', end.toISOString());
     if (tasksError) throw tasksError;
@@ -114,9 +115,11 @@ class SweeperAnalyticsService {
         assigned_crew_ids,
         cluster_ids,
         estimated_duration_min,
+        estimated_work_minutes,
+        report_ids,
         completed_at
       `)
-      .eq('is_outlier', true)
+      .eq('dispatch_kind', 'sweeper')
       .gte('created_at', start.toISOString())
       .lte('created_at', end.toISOString());
 

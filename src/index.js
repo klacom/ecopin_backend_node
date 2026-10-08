@@ -1,3 +1,4 @@
+import { startDispatchWatchdog, stopDispatchWatchdog } from './jobs/dispatch-watchdog.js';
 // Main entry point for the EcoPin backend API server.
 
 import app from './app.js';
@@ -24,10 +25,12 @@ server.on('error', (error) => {
 // Start background cron jobs
 startAllSchedules();
 startSlaSchedule();
+startDispatchWatchdog();
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
     stopSlaSchedule();
+    stopDispatchWatchdog();
     console.log('SIGTERM signal received: closing HTTP server');
     server.close(() => {
         console.log('HTTP server closed');
@@ -36,6 +39,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
     stopSlaSchedule();
+    stopDispatchWatchdog();
     console.log('SIGINT signal received: closing HTTP server');
     server.close(() => {
         console.log('HTTP server closed');

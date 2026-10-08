@@ -1,17 +1,11 @@
 import { supabaseAdmin } from '../../../config/supabase.config.js';
 import { CLUSTERING_CONFIG } from '../config/clustering.config.js';
 
-import { outlierClusteringService } from './outlier-clustering.service.js';
 
 export const clusterReports = async () => {
   try {
     console.log('Starting report clustering...');
 
-    // 1. First process and isolate any SLA-breached outliers
-    const outlierResult = await outlierClusteringService.clusterOutliers();
-    console.log(`Created ${outlierResult.clusterCount} outlier clusters.`);
-
-    // 2. Run DBSCAN to find clusters among remaining standard reports
     const { data: clustered, error: clusterError } = await supabaseAdmin.rpc(
       'dbscan_reports',
       {
@@ -27,7 +21,7 @@ export const clusterReports = async () => {
 
     if (!clustered || clustered.length === 0) {
       console.log('No reports to cluster.');
-      return { message: 'No standard reports to cluster.', outlierClusters: outlierResult.clusterCount, clusters: [] };
+      return { message: 'No standard reports to cluster.', clusters: [] };
     }
 
     //Group results by DBSCAN cluster_id (null = noise / singleton)
@@ -145,26 +139,7 @@ export const getClusterById = async (clusterId) => {
   }
 };
 
-export const updateClusterStatus = async (clusterId, status) => {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('clusters')
-      .update({ status })
-      .eq('id', clusterId)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    // Also update all member reports to the same status
-    await supabaseAdmin
-      .from('reports')
-      .update({ status })
-      .eq('cluster_id', clusterId);
-
-    return data;
-  } catch (error) {
-    console.error('Error updating cluster status:', error);
-    throw error;
-  }
+export const updateClusterStatus = async (clusterId,status,actor) => {
+  const {data,error}=await supabaseAdmin.rpc('set_cluster_queue_status',{cluster_id:clusterId,actor,next_status:status});
+  if(error) throw error;return data;
 };

@@ -1,71 +1,25 @@
-import { getTaskLocation } from './crewAssigner.service.js';
 import { getDistanceAndDuration } from '../providers/distance.provider.js';
-
-/**
- * Generate route waypoints for a crew's assigned tasks
- * @param {string} crewId 
- * @param {Array<string>} orderedTaskIds 
- * @param {Object} depot {latitude, longitude}
- * @param {string} provider 'none', 'ors', 'google'
- */
-export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provider = 'none') {
-  const waypoints = [];
-
-  // 1. Start with depot
-  waypoints.push({
-    sequence_order: 0,
-    latitude: depot.latitude,
-    longitude: depot.longitude,
-    cleanup_task_id: null,
-    waypoint_type: 'depot_start',
-    distance_from_previous_meters: 0,
-    estimated_time_from_previous_min: 0,
-  });
-
-  // 2. For each task in order, get its location
-  let prevLat = depot.latitude, prevLng = depot.longitude;
-  
-  for (let i = 0; i < orderedTaskIds.length; i++) {
-    const taskId = orderedTaskIds[i];
-    const taskLocation = await getTaskLocation(taskId);
-    
-    // Use distance provider abstraction
-    const { distance_meters: distance, duration_min: time, polyline } = await getDistanceAndDuration(
-      prevLat, prevLng, taskLocation.lat, taskLocation.lng, provider === 'none' ? 'haversine' : provider
-    );
-
-    waypoints.push({
-      sequence_order: i + 1,
-      latitude: taskLocation.lat,
-      longitude: taskLocation.lng,
-      cleanup_task_id: taskId,
-      waypoint_type: 'task',
-      distance_from_previous_meters: Math.round(distance),
-      estimated_time_from_previous_min: Math.round(time * 10) / 10,
-      polyline: polyline || null
-    });
-
-    prevLat = taskLocation.lat;
-    prevLng = taskLocation.lng;
+export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provider = 'haversine', { locations, speedFactor = 1, travelMode = 'DRIVING', signal, distance = getDistanceAndDuration } = {}) {
+  if (!locations || !Number.isFinite(speedFactor) || speedFactor<=0) throw new Error('Verified task locations and speed factor required');
+  const waypoints = [{ sequence_order: 0, latitude: depot.latitude, longitude: depot.longitude, cleanup_task_id: null,
+    waypoint_type: 'depot_start', distance_from_previous_meters: 0, estimated_time_from_previous_min: 0 }];
+  let previous = depot;
+  let approximate = false;
+  const stops = [...orderedTaskIds.map(id => {
+    const location = locations.get(id);
+    if (!location || !Number.isFinite(location.lat) || !Number.isFinite(location.lng)) throw new Error('Task location unavailable');
+    return { latitude: location.lat, longitude: location.lng, id };
+  }), { ...depot, id: null }];
+  for (const stop of stops) {
+    signal?.throwIfAborted();
+    const leg = await distance(previous.latitude, previous.longitude, stop.latitude, stop.longitude, provider === 'none' ? 'haversine' : provider, signal, travelMode);
+    approximate ||= leg.approximate === true;
+    waypoints.push({ sequence_order: waypoints.length, latitude: stop.latitude, longitude: stop.longitude,
+      cleanup_task_id: stop.id, waypoint_type: stop.id ? 'task' : 'depot_end', distance_from_previous_meters: Math.ceil(leg.distance_meters),
+      estimated_time_from_previous_min: Math.ceil(leg.duration_min / speedFactor), polyline: leg.polyline ?? null });
+    previous = stop;
   }
-  
-  // Optional: add depot_end waypoint if we want them to return to depot
-  /*
-  const returnDistance = haversineDistance(prevLat, prevLng, depot.latitude, depot.longitude);
-  waypoints.push({
-    sequence_order: orderedTaskIds.length + 1,
-    latitude: depot.latitude,
-    longitude: depot.longitude,
-    cleanup_task_id: null,
-    waypoint_type: 'depot_end',
-    distance_from_previous_meters: Math.round(returnDistance),
-    estimated_time_from_previous_min: Math.round((returnDistance / 833) * 10) / 10,
-  });
-  */
-
-  // 3. Calculate totals
-  const totalDistance = waypoints.reduce((sum, w) => sum + (w.distance_from_previous_meters || 0), 0);
-  const totalTime = waypoints.reduce((sum, w) => sum + (w.estimated_time_from_previous_min || 0), 0);
-
-  return { waypoints, totalDistance, totalTime };
+  return { crew_id: crewId, task_ids: orderedTaskIds, waypoints, approximate,
+    totalDistance: waypoints.reduce((sum,w) => sum+w.distance_from_previous_meters,0),
+    totalTime: waypoints.reduce((sum,w) => sum+w.estimated_time_from_previous_min,0) };
 }

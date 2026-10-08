@@ -18,7 +18,7 @@ router.post('/trigger', authorize(ROLE_GROUPS.DESK_OPS), triggerClustering);
 router.use(authorize(ROLE_GROUPS.FIELD_OPS));
 router.get('/', getAllClusters);
 router.get('/:id', getCluster);
-router.patch('/:id/status', updateCluster);
+router.patch('/:id/status', authorize(ROLE_GROUPS.DESK_OPS), updateCluster);
 router.patch('/:id/label', authorize(ROLE_GROUPS.DESK_OPS), updateClusterLabel);
 
 export default router;

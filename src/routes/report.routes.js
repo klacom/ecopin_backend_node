@@ -1,3 +1,5 @@
+import { fieldReportWrite } from '../middleware/field-report-write.middleware.js';
+import { uploadFieldReportPhoto, deleteFieldReportPhoto } from '../controllers/field-report-photo.controller.js';
 import { Router } from 'express';
 import {
     createReport,
@@ -58,6 +60,7 @@ router.get('/cluster/:clusterId', getReportsByClusterId);
 
 // Routes that require officer/admin role
 router.use(authorize(ROLE_GROUPS.REPORT_MGMT));
+router.use(fieldReportWrite);
 router.get('/analytics/satisfaction', getSatisfactionAnalytics);
 router.patch('/:id/status', updateReportStatus);
 router.patch('/:id/validation', updateReportValidation);
@@ -66,9 +69,9 @@ router.patch('/:id/details', updateReportDetails);
 router.get('/:id/agency-responses', fetchAgencyResponses);
 router.post('/:id/agency-responses', logAgencyResponse);
 router.post('/:id/notes', addReportNote);
-router.delete('/:id/photo', deleteReportPhoto);
+router.delete('/:id/photo', (req,res,next) => req.user.role === 'field_crew' ? deleteFieldReportPhoto(req,res,next) : deleteReportPhoto(req,res,next));
 
-router.post('/:id/photo', beforeAfterUpload.single('image'), uploadReportPhoto);
+router.post('/:id/photo', beforeAfterUpload.single('image'), (req,res,next) => req.user.role === 'field_crew' ? uploadFieldReportPhoto(req,res,next) : uploadReportPhoto(req,res,next));
 router.patch('/cluster/:clusterId/complete', batchCompleteReportsByCluster);
 router.patch('/:id/property-owner-consent', updatePropertyOwnerConsent);
 router.patch('/:id/resolve', lguResolveReport); // LGU resolves report

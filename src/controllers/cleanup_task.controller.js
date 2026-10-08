@@ -1,9 +1,11 @@
+import { generateDispatchPlan } from '../modules/optimization/services/dispatchPlanner.service.js';
+import { commitAndRoutePlan } from '../modules/optimization/services/dispatchCommit.service.js';
+import { processTaskFeedback } from '../modules/optimization/services/taskFeedback.service.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import { CLEANUP_TASK_PHOTOS_STORAGE_PATH } from "../config/index.js";
 import multer from 'multer';
 import { BEFORE_AFTER_PHOTO_FILE_SIZE } from "../config/index.js";
-import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
-import { reverseGeocode } from '../services/geocoding.service.js';
+import { hashBuffer, checkPhotoDuplicate } from '../services/photo_dedup.service.js';
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -19,290 +21,34 @@ export const upload = multer({
     }
 });
 
-export const createCleanupTask = async (req, res, next) => {
-    const { cluster_id, title, description, assigned_crew_ids } = req.body;
-    const user_id = req.user.id;
-
-    // Allow tasks without crew assignment (they remain 'pending' for later optimization)
-    const hasCrewAssignment = assigned_crew_ids && Array.isArray(assigned_crew_ids) && assigned_crew_ids.length > 0;
-
-    try {
-        // Check if reports in this cluster have manual review status
-        const { data: manualReviewReports, error: manualReviewError } = await supabase
-            .from('reports')
-            .select('id, validation_status')
-            .eq('cluster_id', cluster_id)
-            .eq('validation_status', 'manual_review');
-
-        if (manualReviewError) {
-            return res.status(400).json({
-                message: 'Failed to check report validation status',
-                error: manualReviewError.message
-            });
-        }
-
-        if (manualReviewReports && manualReviewReports.length > 0) {
-            return res.status(400).json({
-                message: 'Reports with manual review status must be approved before being added to a cleanup task',
-                manual_review_reports: manualReviewReports.map(r => r.id)
-            });
-        }
-
-        // Check if reports in this cluster already belong to another cleanup task
-        const { data: existingReports, error: checkError } = await supabase
-            .from('reports')
-            .select('id, cleanup_task_id')
-            .eq('cluster_id', cluster_id)
-            .not('cleanup_task_id', 'is', null);
-
-        if (checkError) {
-            return res.status(400).json({
-                message: 'Failed to check report status',
-                error: checkError.message
-            });
-        }
-
-        if (existingReports && existingReports.length > 0) {
-            return res.status(400).json({
-                message: 'Some reports in this cluster already belong to another cleanup task',
-                conflicting_reports: existingReports.map(r => r.id)
-            });
-        }
-
-        // Create cleanup task with assignment info
-        const taskData = {
-            cluster_id,
-            title,
-            description,
-            status: hasCrewAssignment ? 'pending' : 'created',
-            created_by: user_id
-        };
-
-        // Inherit cluster priority if available
-        if (cluster_id) {
-            const { data: cluster } = await supabase
-                .from('clusters')
-                .select('priority, priority_score, center')
-                .eq('id', cluster_id)
-                .single();
-            if (cluster) {
-                taskData.priority = cluster.priority;
-                taskData.priority_score = cluster.priority_score;
-                if (cluster.center) {
-                    taskData.location = cluster.center;
-                    taskData.street_address = await reverseGeocode(cluster.center);
-                }
-            }
-        }
-
-        if (hasCrewAssignment) {
-            taskData.assigned_crew_ids = assigned_crew_ids;
-            taskData.assigned_at = new Date().toISOString();
-            taskData.assigned_by = user_id;
-            taskData.last_assigned_at = new Date().toISOString();
-        }
-
-        const { data, error } = await supabase
-            .from('cleanup_tasks')
-            .insert(taskData)
-            .select()
-            .single();
-
-        if (error) {
-            return res.status(400).json({
-                message: 'Failed to create cleanup task',
-                error: error.message
-            });
-        }
-
-        // Update all reports in the cluster to link to this cleanup task and set lifecycle
-        const { error: reportsError } = await supabase
-            .from('reports')
-            .update({
-                cleanup_task_id: data.id,
-                status: 'in_progress',
-                lifecycle_stage: 'assigned',
-                updated_at: new Date().toISOString()
-            })
-            .eq('cluster_id', cluster_id);
-
-        if (reportsError) {
-            console.error('Failed to update reports with cleanup task linkage:', reportsError);
-            // Don't fail the request, just log the error
-        }
-
-        // Send notifications to assigned crew members
-        if (assigned_crew_ids && assigned_crew_ids.length > 0) {
-            for (const crewId of assigned_crew_ids) {
-                try {
-                    await supabase
-                        .from('notifications')
-                        .insert({
-                            user_id: crewId,
-                            report_id: null,
-                            cleanup_task_id: data.id,
-                            type: 'task_assigned',
-                            title: 'New Task Assigned',
-                            body: `You have been assigned to cleanup task: ${title}`
-                        });
-                } catch (notifError) {
-                    console.error('Failed to send notification to crew:', crewId, notifError);
-                }
-            }
-        }
-
-        res.status(201).json({
-            message: 'Cleanup task created successfully',
-            task: data
-        });
-    } catch (error) {
-        next(error);
-    }
+export const createCleanupTask = async (req,res,next) => {
+  try {
+    if (!req.body.cluster_id) return res.status(400).json({message:'cluster_id is required'});
+    const {plan}=await generateDispatchPlan(req.user.id,{mode:'standard',cluster_ids:[req.body.cluster_id]});
+    const result=await commitAndRoutePlan(plan.id,req.user.id);
+    res.status(result.routing_status==='needs_replan'?202:201).json({...result,task:result.tasks[0]??null});
+  } catch(error){next(error);}
 };
-
-// Create custom cleanup task with selected report IDs
-export const createCustomCleanupTask = async (req, res, next) => {
-    const { report_ids, title, description, assigned_crew_ids } = req.body;
-    const user_id = req.user.id;
-
-    if (!report_ids || !Array.isArray(report_ids) || report_ids.length === 0) {
-        return res.status(400).json({
-            message: 'Report IDs are required',
-            error: 'Please provide at least one report ID'
-        });
+export const createCustomCleanupTask = async (req,res,next) => {
+  try {
+    if (!Array.isArray(req.body.report_ids)||!req.body.report_ids.length) return res.status(400).json({message:'report_ids are required'});
+    if(!Array.isArray(req.body.assigned_crew_ids??[])) return res.status(400).json({message:'assigned_crew_ids must be an array'});
+    const {data,error}=await supabase.rpc('create_manual_cleanup_task',{
+      actor:req.user.id,selected_report_ids:req.body.report_ids,task_title:req.body.title,
+      task_description:req.body.description??null,crew_member_ids:req.body.assigned_crew_ids??[],
+      task_priority:req.body.priority??null
+    });
+    if(error) throw error;
+    if(data.status==='conflict') return res.status(409).json({message:'Selected reports changed or are blocked; refresh before creating a task',...data});
+    if ((req.body.assigned_crew_ids??[]).length) {
+      const {error:noticeError}=await supabase.from('notifications').insert(req.body.assigned_crew_ids.map(user_id=>({
+        user_id,report_id:null,cleanup_task_id:data.task.id,type:'task_assigned',
+        title:'New Task Assigned',body:`You have been assigned to cleanup task: ${data.task.title}`
+      })));
+      if(noticeError) console.error('Manual task notification failed',noticeError);
     }
-
-    // Allow tasks without crew assignment (they remain 'pending' for later optimization)
-    const hasCrewAssignment = assigned_crew_ids && Array.isArray(assigned_crew_ids) && assigned_crew_ids.length > 0;
-
-    try {
-        // Check if any of the selected reports have manual review status
-        const { data: manualReviewReports, error: manualReviewError } = await supabase
-            .from('reports')
-            .select('id, validation_status')
-            .in('id', report_ids)
-            .eq('validation_status', 'manual_review');
-
-        if (manualReviewError) {
-            return res.status(400).json({
-                message: 'Failed to check report validation status',
-                error: manualReviewError.message
-            });
-        }
-
-        if (manualReviewReports && manualReviewReports.length > 0) {
-            return res.status(400).json({
-                message: 'Reports with manual review status must be approved before being added to a cleanup task',
-                manual_review_reports: manualReviewReports.map(r => r.id)
-            });
-        }
-
-        // Check if any of the selected reports already belong to another cleanup task
-        const { data: existingReports, error: checkError } = await supabase
-            .from('reports')
-            .select('id, cleanup_task_id')
-            .in('id', report_ids)
-            .not('cleanup_task_id', 'is', null);
-
-        if (checkError) {
-            return res.status(400).json({
-                message: 'Failed to check report status',
-                error: checkError.message
-            });
-        }
-
-        if (existingReports && existingReports.length > 0) {
-            return res.status(400).json({
-                message: 'Some selected reports already belong to another cleanup task',
-                conflicting_reports: existingReports.map(r => r.id)
-            });
-        }
-
-        // Create cleanup task with assignment info
-        const taskData = {
-            title,
-            description,
-            status: hasCrewAssignment ? 'pending' : 'created',
-            created_by: user_id,
-            is_custom: true,
-            report_ids: report_ids
-        };
-
-        // Geocode based on the first report's location
-        const { data: firstReport } = await supabase
-            .from('reports')
-            .select('location')
-            .eq('id', report_ids[0])
-            .single();
-            
-        if (firstReport && firstReport.location) {
-            taskData.location = firstReport.location;
-            taskData.street_address = await reverseGeocode(firstReport.location);
-        }
-
-        if (hasCrewAssignment) {
-            taskData.assigned_crew_ids = assigned_crew_ids;
-            taskData.assigned_at = new Date().toISOString();
-            taskData.assigned_by = user_id;
-            taskData.last_assigned_at = new Date().toISOString();
-        }
-
-        const { data, error } = await supabase
-            .from('cleanup_tasks')
-            .insert(taskData)
-            .select()
-            .single();
-
-        if (error) {
-            return res.status(400).json({
-                message: 'Failed to create cleanup task',
-                error: error.message
-            });
-        }
-
-        // Update selected reports to link to this cleanup task and set lifecycle
-        const { error: reportsError } = await supabase
-            .from('reports')
-            .update({
-                cleanup_task_id: data.id,
-                status: 'in_progress',
-                lifecycle_stage: 'assigned',
-                updated_at: new Date().toISOString()
-            })
-            .in('id', report_ids);
-
-        if (reportsError) {
-            console.error('Failed to update reports with cleanup task linkage:', reportsError);
-            // Don't fail the request, just log the error
-        }
-
-        // Send notifications to assigned crew members
-        if (assigned_crew_ids && assigned_crew_ids.length > 0) {
-            for (const crewId of assigned_crew_ids) {
-                try {
-                    await supabase
-                        .from('notifications')
-                        .insert({
-                            user_id: crewId,
-                            report_id: null,
-                            cleanup_task_id: data.id,
-                            type: 'task_assigned',
-                            title: 'New Task Assigned',
-                            body: `You have been assigned to cleanup task: ${title}`
-                        });
-                } catch (notifError) {
-                    console.error('Failed to send notification to crew:', crewId, notifError);
-                }
-            }
-        }
-
-        res.status(201).json({
-            message: 'Custom cleanup task created successfully',
-            task: data
-        });
-    } catch (error) {
-        next(error);
-    }
+    res.status(201).json({message:'Custom cleanup task created successfully',task:data.task});
+  } catch(error){next(error);}
 };
 
 export const getAllCleanupTasks = async (req, res, next) => {
@@ -316,7 +62,7 @@ export const getAllCleanupTasks = async (req, res, next) => {
             .order('created_at', { ascending: false });
 
         // Filter for tasks assigned to current user if requested
-        if (assigned_to_me === 'true') {
+        if (assigned_to_me === 'true' || req.user.role === 'field_crew') {
             query = query.contains('assigned_crew_ids', [userId]);
         }
 
@@ -359,6 +105,7 @@ export const getCleanupTaskById = async (req, res, next) => {
             });
         }
 
+        if(req.user.role==='field_crew'&&!data.assigned_crew_ids?.includes(req.user.id)) return res.status(403).json({message:'Task access denied'});
         res.status(200).json(data);
     } catch (error) {
         next(error);
@@ -366,303 +113,51 @@ export const getCleanupTaskById = async (req, res, next) => {
 };
 
 // Upload before/after photo for cleanup task
-export const uploadCleanupPhoto = async (req, res, next) => {
-    const { taskId } = req.params;
-    const { photo_type } = req.body; // 'before' or 'after'
-
-    if (!req.file) {
-        return res.status(400).json({ message: 'No file uploaded' });
+async function photoTask(taskId,user) {
+  const {data:task,error}=await supabase.from('cleanup_tasks').select('*').eq('id',taskId).single();
+  if(error||!task) { const e=new Error('Task not found');e.statusCode=404;throw e; }
+  if(!['admin','officer'].includes(user.role)&&(!task.assigned_crew_ids?.includes(user.id)||task.route_status!=='ready')) {
+    const e=new Error('Task access denied');e.statusCode=403;throw e;
+  }
+  return task;
+}
+export const uploadCleanupPhoto = async (req,res,next) => {
+  try {
+    const {taskId}=req.params;const {photo_type}=req.body;
+    if(!['before','after'].includes(photo_type)||!req.file) return res.status(400).json({message:'An image and before/after photo_type are required'});
+    const task=await photoTask(taskId,req.user);
+    const incomingHash=hashBuffer(req.file.buffer);
+    const {isDuplicate}=await checkPhotoDuplicate('cleanup_tasks',taskId,photo_type,incomingHash);
+    if(isDuplicate) return res.json({duplicate:true,task});
+    const filePath=`${taskId}/${photo_type}/${crypto.randomUUID()}`;
+    const {error:uploadError}=await supabase.storage.from(CLEANUP_TASK_PHOTOS_STORAGE_PATH).upload(filePath,req.file.buffer,{contentType:req.file.mimetype,upsert:false});
+    if(uploadError) throw uploadError;
+    const {data:urlData}=supabase.storage.from(CLEANUP_TASK_PHOTOS_STORAGE_PATH).getPublicUrl(filePath);
+    const {data,error}=await supabase.rpc('set_task_photo',{task_id:taskId,actor:req.user.id,slot:photo_type,url:urlData.publicUrl,photo_hash:incomingHash,expected_version:task.fc_version});
+    if(error||data.status==='conflict') {
+      await supabase.storage.from(CLEANUP_TASK_PHOTOS_STORAGE_PATH).remove([filePath]);
+      return res.status(error?.code==='42501'?403:409).json({message:error?.message??'Task changed; retry photo upload'});
     }
-
-    try {
-        // ── Phase 5: server-side photo deduplication ────────────────────────
-        const incomingHash = hashBuffer(req.file.buffer);
-        const { isDuplicate, existingUrl } = await checkPhotoDuplicate(
-            'cleanup_tasks', taskId, photo_type, incomingHash
-        );
-
-        if (isDuplicate) {
-            console.log(`[uploadCleanupPhoto] duplicate photo for task ${taskId} (${photo_type})`);
-            const { data: currentTask } = await supabase
-                .from('cleanup_tasks').select('*').eq('id', taskId).single();
-            return res.status(200).json({
-                message: 'Photo already uploaded (duplicate)',
-                duplicate: true,
-                task: currentTask,
-            });
-        }
-        // ── End dedup check ─────────────────────────────────────────────────
-
-        const timestamp = Date.now();
-        const filename = `${timestamp}_${req.file.originalname}`;
-        const filePath = `${taskId}/${photo_type}/${filename}`;
-
-        // Upload to Supabase storage
-        const { data: uploadData, error: uploadError } = await supabase
-            .storage
-            .from(CLEANUP_TASK_PHOTOS_STORAGE_PATH)
-            .upload(filePath, req.file.buffer, {
-                contentType: req.file.mimetype,
-                upsert: false
-            });
-
-        if (uploadError) {
-            return res.status(400).json({
-                message: 'Failed to upload photo',
-                error: uploadError.message
-            });
-        }
-
-        // Get public URL
-        const { data: urlData } = supabase
-            .storage
-            .from(CLEANUP_TASK_PHOTOS_STORAGE_PATH)
-            .getPublicUrl(filePath);
-
-        // Update the task with the photo URL
-        const updateData = photo_type === 'before'
-            ? { before_photo_url: urlData.publicUrl }
-            : { after_photo_url: urlData.publicUrl };
-
-        if (photo_type === 'before') {
-            updateData.status = 'in_progress';
-        }
-
-        const { data: taskData, error: taskError } = await supabase
-            .from('cleanup_tasks')
-            .update(updateData)
-            .eq('id', taskId)
-            .select()
-            .single();
-
-        if (taskError) {
-            return res.status(400).json({
-                message: 'Failed to update task with photo',
-                error: taskError.message
-            });
-        }
-
-        // Persist hash for future dedup checks.
-        await storePhotoHash('cleanup_tasks', taskId, photo_type, incomingHash);
-
-        res.status(200).json({
-            message: 'Photo uploaded successfully',
-            task: taskData
-        });
-    } catch (error) {
-        next(error);
-    }
+    res.json({task:data.server_record});
+  } catch(error){next(error);}
+};
+export const deleteCleanupPhoto = async (req,res,next) => {
+  try {
+    const {taskId}=req.params;const {photo_type}=req.body;
+    if(!['before','after'].includes(photo_type)) return res.status(400).json({message:'before/after photo_type required'});
+    const task=await photoTask(taskId,req.user);
+    const {data,error}=await supabase.rpc('set_task_photo',{task_id:taskId,actor:req.user.id,slot:photo_type,url:null,photo_hash:null,expected_version:task.fc_version});
+    if(error) throw error;
+    if(data.status==='conflict') return res.status(409).json(data);
+    res.json({task:data.server_record});
+  } catch(error){next(error);}
 };
 
-// Delete before/after photo for cleanup task
-export const deleteCleanupPhoto = async (req, res, next) => {
-    const { taskId } = req.params;
-    const { photo_type } = req.body; // 'before' or 'after'
-
-    console.log('Deleting cleanup task photo:', { taskId, photo_type });
-
-    try {
-        // Get the current task to find the photo URL
-        const { data: task, error: fetchError } = await supabase
-            .from('cleanup_tasks')
-            .select('*')
-            .eq('id', taskId)
-            .single();
-
-        if (fetchError) {
-            console.error('Failed to fetch task:', fetchError);
-            return res.status(404).json({
-                message: 'Cleanup task not found',
-                error: fetchError.message
-            });
-        }
-
-        const photoUrl = photo_type === 'before' ? task.before_photo_url : task.after_photo_url;
-
-        if (!photoUrl) {
-            return res.status(400).json({
-                message: 'No photo to delete'
-            });
-        }
-
-        // Extract the file path from the URL
-        const urlParts = photoUrl.split('/');
-        const fileName = urlParts[urlParts.length - 1];
-        const filePath = `${taskId}/${photo_type}/${fileName}`;
-
-        console.log('Deleting file path:', filePath);
-
-        // Delete from Supabase storage
-        const { error: deleteError } = await supabase
-            .storage
-            .from(CLEANUP_TASK_PHOTOS_STORAGE_PATH)
-            .remove([filePath]);
-
-        if (deleteError) {
-            console.error('Failed to delete photo from storage:', deleteError);
-            return res.status(400).json({
-                message: 'Failed to delete photo from storage',
-                error: deleteError.message
-            });
-        }
-
-        console.log('Photo deleted from storage successfully');
-
-        // Update the task to remove the photo URL
-        const updateData = photo_type === 'before'
-            ? { before_photo_url: null, status: 'pending' }
-            : { after_photo_url: null };
-
-        const { data: taskData, error: taskError } = await supabase
-            .from('cleanup_tasks')
-            .update(updateData)
-            .eq('id', taskId)
-            .select()
-            .single();
-
-        if (taskError) {
-            console.error('Failed to update task:', taskError);
-            return res.status(400).json({
-                message: 'Failed to update task',
-                error: taskError.message
-            });
-        }
-
-        console.log('Task updated successfully:', taskData);
-
-        res.status(200).json({
-            message: 'Photo deleted successfully',
-            task: taskData
-        });
-    } catch (error) {
-        console.error('Delete photo error:', error);
-        next(error);
-    }
-};
-
-export const markTaskComplete = async (req, res, next) => {
-    const { id } = req.params;
-    const userId = req.user.id;
-
-    try {
-        // 1. Get the task to verify assignment
-        const { data: task, error: fetchError } = await supabase
-            .from('cleanup_tasks')
-            .select('*')
-            .eq('id', id)
-            .single();
-
-        if (fetchError) {
-            return res.status(404).json({
-                message: 'Cleanup task not found',
-                error: fetchError.message
-            });
-        }
-
-        // 2. Verify current user is assigned to this task
-        if (!task.assigned_crew_ids || task.assigned_crew_ids.length === 0) {
-            return res.status(403).json({
-                message: 'Task is not assigned',
-                error: 'Unassigned tasks must be claimed or assigned before they can be marked complete.'
-            });
-        }
-
-        if (!task.assigned_crew_ids.includes(userId)) {
-            return res.status(403).json({
-                message: 'You are not assigned to this task',
-                error: 'Only assigned crew members can complete this task'
-            });
-        }
-
-        // 3. Mark the task as complete
-        const { data: taskData, error: taskError } = await supabase
-            .from('cleanup_tasks')
-            .update({
-                status: 'completed',
-                completed_at: new Date().toISOString()
-            })
-            .eq('id', id)
-            .select()
-            .single();
-
-        if (taskError) {
-            return res.status(400).json({
-                message: 'Failed to mark task complete',
-                error: taskError.message
-            });
-        }
-
-        // 4. Update linked reports' lifecycle and status
-        if (taskData.is_custom && taskData.report_ids) {
-            // Custom task: update selected reports
-            await supabase
-                .from('reports')
-                .update({
-                    status: 'resolved',
-                    lifecycle_stage: 'resolved',
-                    updated_at: new Date().toISOString()
-                })
-                .in('id', taskData.report_ids);
-        } else if (taskData.cluster_id) {
-            // Cluster-based task: update all reports in cluster
-            await supabase
-                .from('reports')
-                .update({
-                    status: 'resolved',
-                    lifecycle_stage: 'resolved',
-                    updated_at: new Date().toISOString()
-                })
-                .eq('cluster_id', taskData.cluster_id);
-        }
-
-        res.status(200).json({
-            message: 'Cleanup task completed successfully',
-            task: taskData
-        });
-
-        // 5. Fire-and-forget ML Feedback Piggyback
-        try {
-            const mlServiceUrl = process.env.ML_HOTSPOT_SERVICE_URL;
-            if (mlServiceUrl && taskData.cluster_id) {
-                let outcome = 0;
-                let overtime_ratio = 1.0;
-
-                // Avoid Time-Delta Trap: Compare completed_at against scheduled deadline
-                if (taskData.scheduled_date && taskData.completed_at) {
-                    const scheduledMs = new Date(taskData.scheduled_date).getTime();
-                    const completedMs = new Date(taskData.completed_at).getTime();
-                    
-                    const hoursLate = (completedMs - scheduledMs) / (1000 * 60 * 60);
-                    // Base ratio is 1.0, increases if late.
-                    overtime_ratio = completedMs > scheduledMs ? 1.0 + (hoursLate / 24.0) : 1.0;
-                    
-                    // If completed more than 24h past the scheduled deadline, label as escalated (1)
-                    outcome = hoursLate > 24 ? 1 : 0;
-                }
-
-                const payload = {
-                    cluster_id: taskData.cluster_id,
-                    task_id: taskData.id,
-                    crew_count: taskData.assigned_crew_ids ? taskData.assigned_crew_ids.length : 1,
-                    overtime_ratio,
-                    outcome
-                };
-
-                // Non-blocking call so mobile app isn't delayed
-                fetch(`${mlServiceUrl}/feedback`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                }).catch(err => {
-                    console.warn('[ML Feedback] Non-blocking ML service error:', err.message);
-                });
-            }
-        } catch (mlErr) {
-            console.warn('[ML Feedback] Error preparing feedback payload:', mlErr.message);
-        }
-    } catch (error) {
-        next(error);
-    }
+export const markTaskComplete = async (req,res,next) => {
+  try {
+    const task=await processTaskFeedback(req.params.id,req.body.outcome??'completed',req.body.notes,req.user.id,req.body);
+    res.json({message:'Task outcome recorded',task});
+  } catch(error){next(error);}
 };
 
 export const getTasksByClusterId = async (req, res, next) => {
@@ -690,118 +185,10 @@ export const getTasksByClusterId = async (req, res, next) => {
 };
 
 // Assign cleanup task to field crew members
-export const assignCleanupTask = async (req, res, next) => {
-    const { id } = req.params;
-    const { assigned_crew_ids } = req.body;
-    const userId = req.user.id;
-
-    try {
-        // Get current task to compare assignments
-        const { data: currentTask, error: fetchError } = await supabase
-            .from('cleanup_tasks')
-            .select('*')
-            .eq('id', id)
-            .single();
-
-        if (fetchError) {
-            return res.status(404).json({
-                message: 'Cleanup task not found',
-                error: fetchError.message
-            });
-        }
-
-        const previousAssignees = currentTask.assigned_crew_ids || [];
-        const newAssignees = assigned_crew_ids || [];
-
-        // Determine newly assigned and removed crew members
-        const newlyAssigned = newAssignees.filter(id => !previousAssignees.includes(id));
-        const removedAssignees = previousAssignees.filter(id => !newAssignees.includes(id));
-
-        // Update task with new assignments
-        const updateData = {
-            last_assigned_at: new Date().toISOString()
-        };
-
-        if (newAssignees.length > 0) {
-            updateData.assigned_crew_ids = newAssignees;
-            if (!currentTask.assigned_at) {
-                updateData.assigned_at = new Date().toISOString();
-            }
-            updateData.assigned_by = userId;
-
-            // Update status if it was unassigned
-            if (currentTask.status === 'created') {
-                updateData.status = 'pending';
-            }
-        } else {
-            updateData.assigned_crew_ids = null;
-
-            // Revert status if it was assigned but not yet in progress
-            if (currentTask.status === 'pending') {
-                updateData.status = 'created';
-            }
-        }
-
-        const { data: taskData, error: updateError } = await supabase
-            .from('cleanup_tasks')
-            .update(updateData)
-            .eq('id', id)
-            .select()
-            .single();
-
-        if (updateError) {
-            return res.status(400).json({
-                message: 'Failed to assign cleanup task',
-                error: updateError.message
-            });
-        }
-
-        // Send notifications to newly assigned crew
-        for (const crewId of newlyAssigned) {
-            try {
-                await supabase
-                    .from('notifications')
-                    .insert({
-                        user_id: crewId,
-                        report_id: null,
-                        cleanup_task_id: id,
-                        type: 'task_assigned',
-                        title: 'Task Assigned',
-                        body: `You have been assigned to cleanup task: ${taskData.title}`
-                    });
-            } catch (notifError) {
-                console.error('Failed to send notification to crew:', crewId, notifError);
-            }
-        }
-
-        // Send notifications to removed crew
-        for (const crewId of removedAssignees) {
-            try {
-                await supabase
-                    .from('notifications')
-                    .insert({
-                        user_id: crewId,
-                        report_id: null,
-                        cleanup_task_id: id,
-                        type: 'task_reassigned',
-                        title: 'Task Reassigned',
-                        body: `You have been removed from cleanup task: ${taskData.title}`
-                    });
-            } catch (notifError) {
-                console.error('Failed to send notification to crew:', crewId, notifError);
-            }
-        }
-
-        res.status(200).json({
-            message: 'Cleanup task assigned successfully',
-            task: taskData
-        });
-    } catch (error) {
-        next(error);
-    }
+export const assignCleanupTask = async (req,res) => {
+  res.status(409).json({message:'Assignments are published atomically from dispatch plans. Cancel with a classified outcome and generate a new plan to change crews.'});
 };
 
-// Get available field crew members for assignment
 export const getAvailableCrew = async (req, res, next) => {
     try {
         const { data, error } = await supabase

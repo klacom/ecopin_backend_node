@@ -7,6 +7,7 @@ const supabaseAdmin = { from: jest.fn(table => {
   const builder = {
     select: jest.fn(value => { query.select = value; return builder; }),
     eq: jest.fn((key, value) => { query.filters.push([key, value]); return builder; }),
+    in: jest.fn((key,value)=>{query.filters.push([key,value]);return builder;}),
     gte: jest.fn(() => builder), lte: jest.fn(() => builder),
     then: (resolve, reject) => Promise.resolve(answers.shift()).then(resolve, reject)
   };
@@ -26,7 +27,8 @@ test('closed reports retain their breach in compliance and queries use live task
   const metrics = await sweeperAnalyticsService.getMetrics('2026-10-01', '2026-10-08');
   expect(metrics.slaCompliance).toEqual({ rate: 50, totalReports: 2, breachedReports: 1 });
   expect(queries[1].filters).toContainEqual(['lifecycle_state', 'sla_breached']);
-  expect(queries[3].select).toBe('id, status, estimated_duration_min, cluster_ids');
+  expect(queries[3].select).toBe('id, status, estimated_duration_min, cluster_ids, report_ids');
+  expect(queries[3].filters).toContainEqual(['dispatch_kind','sweeper']);
   expect(metrics.sweeperTasks.averageClustersPerTask).toBe(1);
 });
 
