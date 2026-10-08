@@ -7,6 +7,7 @@ import {
     updateUserRole,
     deleteUser,
     createUser,
+    changeUserPassword,
     getSystemSettings,
     updateSystemSettings,
     getAuditLogs,

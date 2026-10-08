@@ -40,14 +40,26 @@ export async function prioritizeBacklog(weatherCondition = 'normal') {
   return updatedClusters;
 }
 
-export async function getWorkQueue(limit = 100) {
-  const { data, error } = await supabase
+export async function getWorkQueue(limit = 100, targetOutliersOnly = false) {
+  let query = supabase
     .from('clusters')
     .select('id, issue_type, center, status, priority, priority_score, report_count, estimated_effort_minutes, recommended_task_type, created_at')
     .in('status', ['prioritized', 'queued', 'monitoring'])
     .order('priority_score', { ascending: false })
     .limit(limit);
-    
+
+  // Conditionally apply the outlier filter
+  if (targetOutliersOnly) {
+    query = query.eq('is_outlier', true);
+  } else {
+    // Assuming standard clusters are NOT outliers
+    query = query.or('is_outlier.eq.false,is_outlier.is.null');
+  }
+
+  const { data, error } = await query;
+   
+  console.log("Data Work Queue: ", data);
+
   if (error) throw error;
   return data || [];
 }

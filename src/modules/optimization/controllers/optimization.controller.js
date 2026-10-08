@@ -43,9 +43,17 @@ export const prioritizeQueue = async (req, res, next) => {
 };
 
 export const fetchWorkQueue = async (req, res, next) => {
+  console.log("Is Target Outlier Only: ", req.query.target_outliers_only);
+  console.log("Type of Target Outlier: ", typeof req.query.target_outliers_only);
+  console.log("Is Target Outlier True: ", req.query.target_outliers_only === 'true');
   try {
     await prioritizeBacklog();
-    const queue = await getWorkQueue(parseInt(req.query.limit) || 100);
+    
+    // Parse the query parameter (it comes in as a string 'true' or 'false')
+    const targetOutliersOnly = req.query.target_outliers_only === 'true'; 
+    
+    // Pass both parameters
+    const queue = await getWorkQueue(parseInt(req.query.limit) || 100, targetOutliersOnly);
     res.status(200).json(queue);
   } catch (error) { next(error); }
 };
