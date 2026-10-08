@@ -11,10 +11,18 @@ export const batchFcSync = async (req, res, next) => {
         results.push({ operation_id: op?.operation_id ?? null, status: 'failed', error_message: 'Invalid operation or base_version' });
         continue;
       }
-      const { data, error } = await db.rpc('apply_fc_operation', {
-        actor: req.user.id, operation_id: op.operation_id, operation_type: op.operation_type,
-        entity_id: op.entity_id, entity_type: op.entity_type, payload: op.payload, base_version: op.base_version ?? 0
-      });
+      const isReconciliation = op.operation_type === 'fc.report.reconcile';
+      if (isReconciliation && (op.entity_type !== 'report' || op.entity_id !== op.payload?.report_id)) {
+        results.push({ operation_id: op.operation_id, status: 'rejected', error_message: 'Report receipt target mismatch' });
+        continue;
+      }
+      const { data, error } = await db.rpc(isReconciliation ? 'reconcile_report_outcome' : 'apply_fc_operation',
+        isReconciliation ? {
+          actor: req.user.id, operation_id: op.operation_id, payload: op.payload
+        } : {
+          actor: req.user.id, operation_id: op.operation_id, operation_type: op.operation_type,
+          entity_id: op.entity_id, entity_type: op.entity_type, payload: op.payload, base_version: op.base_version ?? 0
+        });
       results.push(error ? { operation_id: op.operation_id, status: 'failed', error_message: error.message, server_record: null } : data);
     }
     return res.json({ results });

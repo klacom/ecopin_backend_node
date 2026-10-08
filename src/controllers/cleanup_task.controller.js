@@ -58,7 +58,7 @@ export const getAllCleanupTasks = async (req, res, next) => {
 
         let query = supabase
             .from('cleanup_tasks')
-            .select('*, clusters(*), reports(id, title, description, issue_type, location, status)')
+            .select('*, clusters(*), reports(id, title, description, issue_type, location, status, report_claim_generation)')
             .order('created_at', { ascending: false });
 
         // Filter for tasks assigned to current user if requested
@@ -82,7 +82,11 @@ export const getAllCleanupTasks = async (req, res, next) => {
             console.log('Tasks with assigned_crew_ids:', data.map(t => ({ id: t.id, assigned_crew_ids: t.assigned_crew_ids })));
         }
 
-        res.status(200).json(data);
+        res.status(200).json(data.map(task => ({
+            ...task,
+            report_claim_generations: Object.fromEntries((task.reports ?? [])
+                .map(report => [report.id, report.report_claim_generation])),
+        })));
     } catch (error) {
         next(error);
     }
@@ -94,7 +98,7 @@ export const getCleanupTaskById = async (req, res, next) => {
     try {
         const { data, error } = await supabase
             .from('cleanup_tasks')
-            .select('*, clusters(*), reports(id, title, description, issue_type, location, status)')
+            .select('*, clusters(*), reports(id, title, description, issue_type, location, status, report_claim_generation)')
             .eq('id', id)
             .single();
 
@@ -106,7 +110,11 @@ export const getCleanupTaskById = async (req, res, next) => {
         }
 
         if(req.user.role==='field_crew'&&!data.assigned_crew_ids?.includes(req.user.id)) return res.status(403).json({message:'Task access denied'});
-        res.status(200).json(data);
+        res.status(200).json({
+            ...data,
+            report_claim_generations: Object.fromEntries((data.reports ?? [])
+                .map(report => [report.id, report.report_claim_generation])),
+        });
     } catch (error) {
         next(error);
     }
