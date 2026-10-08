@@ -59,6 +59,8 @@ export const updateCluster = async (req, res, next) => {
 
 // Update cluster label (rename)
 export const updateClusterLabel = async (req, res, next) => {
+  // console.log("Received Body:", req.body);
+
   const { id } = req.params;
   const { label } = req.body;
 
