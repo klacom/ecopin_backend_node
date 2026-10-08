@@ -4,7 +4,7 @@ function badInput(message) { const error = new Error(message); error.statusCode 
 export function resolvePlanSettings(input = {}) {
   if (!input || Array.isArray(input) || typeof input !== 'object') throw badInput('settings must be an object');
   const settings = { mode: 'standard', travel_mode: 'DRIVING', break_duration_min: 60, overtime_tolerance_min: 15, max_tasks_per_shift: 15, capacity_utilization: 1, ...input };
-  if (!['standard', 'sweeper'].includes(settings.mode)) throw badInput('Slice A supports standard or sweeper mode');
+  if (!['standard', 'sweeper', 'mixed'].includes(settings.mode)) throw badInput('Invalid dispatch mode');
   for (const [key, min, max] of [['break_duration_min', 0, 240], ['overtime_tolerance_min', 0, 120], ['max_tasks_per_shift', 1, 100], ['capacity_utilization', 0.1, 1]]) {
     if (typeof settings[key] !== 'number' || !Number.isFinite(settings[key]) || settings[key] < min || settings[key] > max) throw badInput(`Invalid ${key}`);
   }

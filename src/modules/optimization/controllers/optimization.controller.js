@@ -5,6 +5,7 @@ import { prioritizeBacklog, getWorkQueue } from '../services/workQueue.service.j
 import { dispatchClusters } from '../services/dispatch.service.js';
 import { commitAndRoutePlan } from '../services/dispatchCommit.service.js';
 import { generateDispatchPlan } from '../services/dispatchPlanner.service.js';
+import { enqueuePlan, readPlanJob } from '../services/planJobs.service.js';
 import { processTaskFeedback } from '../services/taskFeedback.service.js';
 
 // Phase 2: Work Queue Endpoints
@@ -42,10 +43,17 @@ export const explicitDispatch = async (req, res, next) => {
 // Phase 3: Capacity-Aware Planning Endpoints
 export const generatePlan = async (req, res, next) => {
   try {
-    // Accept officer-configured settings from the request body
     const { settings = {} } = req.body;
-    const result = await generateDispatchPlan(req.user.id, settings);
-    res.status(201).json({ message: 'Dispatch plan generated successfully', ...result });
+    const job = await enqueuePlan(req.user.id, settings, req.get('Idempotency-Key'));
+    res.status(202).json(job);
+  } catch (error) { next(error); }
+};
+
+export const getPlanJob = async (req, res, next) => {
+  try {
+    const job = await readPlanJob(req.params.jobId, req.user.id);
+    if (!job) return res.status(404).json({ message: 'Planning job not found' });
+    res.json(job);
   } catch (error) { next(error); }
 };
 
@@ -136,6 +144,31 @@ export const getPlanItems = async (req, res, next) => {
 
     if (error) return res.status(400).json({ message: 'Failed to fetch plan items', error: error.message });
     res.status(200).json(data);
+  } catch (error) { next(error); }
+};
+
+export const getPlan = async (req, res, next) => {
+  try {
+    const { data: plan, error } = await supabase.from('dispatch_plans')
+      .select('id,mode,status,planned_date,created_at,settings_snapshot,capacity_breakdown,rejected_bundles,solver_diagnostics,planning_as_of')
+      .eq('id', req.params.id).maybeSingle();
+    if (error) throw error;
+    if (!plan) return res.status(404).json({ message: 'Plan not found' });
+    const { data: items, error: itemError } = await supabase.from('dispatch_plan_items')
+      .select('*').eq('dispatch_plan_id', plan.id).order('group_key').order('bundle_order');
+    if (itemError) throw itemError;
+    const groups = [];
+    const byKey = new Map();
+    for (const item of items ?? []) {
+      if (item.item_type === 'bundled_report') continue;
+      const group = { group_key: item.group_key, anchor: item, satellites: [] };
+      byKey.set(item.group_key, group);
+      groups.push(group);
+    }
+    for (const item of items ?? []) if (item.item_type === 'bundled_report')
+      byKey.get(item.group_key)?.satellites.push(item);
+    res.json({ plan, items, groups, capacity: plan.capacity_breakdown ?? {},
+      rejectedBundles: plan.rejected_bundles ?? [], settings: plan.settings_snapshot });
   } catch (error) { next(error); }
 };
 
@@ -418,13 +451,17 @@ export const updateOptimizationSettings = async (req, res, next) => {
 // Phase 15: Admin crew management
 export const createFieldCrew = async (req,res,next) => {
   try {
-    const {data,error}=await supabase.from('field_crews').insert(fleetSettings(req.body,true)).select().single();
+    const fleet = fleetSettings(req.body,true);
+    if (fleet.hazmat_certified) fleet.certification_reviewed_by = req.user.id;
+    const {data,error}=await supabase.from('field_crews').insert(fleet).select().single();
     if(error) throw error;res.status(201).json(data);
   } catch(error){next(error);}
 };
 export const updateFieldCrew = async (req,res,next) => {
   try {
-    const {data,error}=await supabase.from('field_crews').update({...fleetSettings(req.body),updated_at:new Date().toISOString()}).eq('id',req.params.id).select().single();
+    const fleet = fleetSettings(req.body);
+    if (fleet.hazmat_certified !== undefined) fleet.certification_reviewed_by = req.user.id;
+    const {data,error}=await supabase.from('field_crews').update({...fleet,updated_at:new Date().toISOString()}).eq('id',req.params.id).select().single();
     if(error) throw error;res.json(data);
   } catch(error){next(error);}
 };

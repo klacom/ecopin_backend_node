@@ -10,6 +10,7 @@ async function rows(query) {
 
 export async function generateDispatchPlan(userId, input = {}) {
   const settings = resolvePlanSettings(input);
+  if (settings.mode === 'mixed') throw new Error('Mixed plans must run through the asynchronous planning job');
   await prioritizeBacklog();
   const [crews, activeTasks, workTimes, weightsRows, blocks] = await Promise.all([
     rows(supabase.from('field_crews').select('*').eq('availability_status', 'available')),

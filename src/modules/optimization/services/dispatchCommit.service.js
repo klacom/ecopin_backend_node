@@ -1,9 +1,13 @@
 import { supabaseAdmin as db } from '../../../config/supabase.config.js';
 import { generateRouteForCrew } from './routeGenerator.service.js';
+import { assignTasksToCrews } from './crewAssigner.service.js';
 
 async function result(query) { const { data, error } = await query; if (error) throw error; return data; }
 
 export async function commitAndRoutePlan(planId, actor) {
+  const plan = await result(db.from('dispatch_plans').select('mode,route_proposal,settings_snapshot')
+    .eq('id', planId).single());
+  if (plan.mode === 'mixed') return commitMixedAndRoute(planId, actor, plan);
   const committed = await result(db.rpc('commit_dispatch_plan', { plan_id: planId, actor }));
   if (!committed.tasks.length) return { ...committed, run: null, routing_status: 'empty' };
   committed.tasks.sort((a,b)=>(b.priority_score??0)-(a.priority_score??0)||a.id.localeCompare(b.id));
@@ -31,6 +35,30 @@ export async function commitAndRoutePlan(planId, actor) {
     return { ...committed, tasks, run: { id: published.run_id }, routing_status: 'ready' };
   } catch (error) {
     await result(db.rpc('finish_plan_routing', { plan_id: planId, actor, token: lease.token, failure: error.message }));
+    return { ...committed, run: null, routing_status: 'needs_replan', warning: error.message };
+  }
+}
+
+async function commitMixedAndRoute(planId, actor, plan) {
+  const committed = await result(db.rpc('commit_mixed_dispatch_plan', { plan_id: planId, actor }));
+  if (!committed.tasks.length) return { ...committed, run: null, routing_status: 'empty' };
+  const lease = await result(db.rpc('begin_plan_routing', { plan_id: planId, actor }));
+  if (lease.run_id) return { ...committed, run: { id: lease.run_id }, routing_status: 'ready' };
+  if (!lease.token) return { ...committed, run: null, routing_status: lease.running ? 'routing' : 'needs_replan' };
+  try {
+    const crews = await result(db.from('field_crews').select('*')
+      .in('id', [...new Set(committed.tasks.map(task => task.assigned_field_crew_id))]));
+    const depot = plan.settings_snapshot.depot;
+    if (![depot?.lat, depot?.lng].every(Number.isFinite)) throw new Error('Saved plan depot is unavailable');
+    const routes = assignTasksToCrews(plan.route_proposal, committed.results, crews, depot,
+      Number(plan.settings_snapshot.mixed_max_detour_minutes));
+    const published = await result(db.rpc('publish_mixed_dispatch_routes', { plan_id: planId, actor,
+      token: lease.token, routes, depot: { latitude: depot.lat, longitude: depot.lng } }));
+    const tasks = await result(db.from('cleanup_tasks').select('*').eq('source_plan_id', planId));
+    return { ...committed, tasks, run: { id: published.run_id }, routing_status: 'ready' };
+  } catch (error) {
+    await result(db.rpc('finish_plan_routing', { plan_id: planId, actor,
+      token: lease.token, failure: error.message }));
     return { ...committed, run: null, routing_status: 'needs_replan', warning: error.message };
   }
 }

@@ -1,4 +1,5 @@
 import { startDispatchWatchdog, stopDispatchWatchdog } from './jobs/dispatch-watchdog.js';
+import { startPlanningWorker, stopPlanningWorker } from './jobs/planning-worker.js';
 // Main entry point for the EcoPin backend API server.
 
 import app from './app.js';
@@ -26,11 +27,13 @@ server.on('error', (error) => {
 startAllSchedules();
 startSlaSchedule();
 startDispatchWatchdog();
+startPlanningWorker();
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
     stopSlaSchedule();
     stopDispatchWatchdog();
+    stopPlanningWorker();
     console.log('SIGTERM signal received: closing HTTP server');
     server.close(() => {
         console.log('HTTP server closed');
@@ -40,6 +43,7 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
     stopSlaSchedule();
     stopDispatchWatchdog();
+    stopPlanningWorker();
     console.log('SIGINT signal received: closing HTTP server');
     server.close(() => {
         console.log('HTTP server closed');

@@ -4,8 +4,8 @@ const crew = { id: 'crew', supports_standard: true, supports_sweeper: false, ava
 const cluster = { item_type: 'cluster', cluster_id: 'cluster', group_key: 'cluster:cluster', report_ids: ['r1'], service_minutes: 30, priority_score: 80 };
 const report = { item_type: 'report', report_id: 'r2', group_key: 'report:r2', report_ids: ['r2'], service_minutes: 30, priority_score: 90 };
 
-test('Mixed remains unavailable until Slice B', () => {
-  expect(() => resolvePlanSettings({ mode: 'mixed' })).toThrow('standard or sweeper');
+test('Mixed is an accepted bounded planning mode', () => {
+  expect(resolvePlanSettings({ mode: 'mixed' }).mode).toBe('mixed');
 });
 test.each([{ break_duration_min: -1 }, { overtime_tolerance_min: Infinity }, { max_tasks_per_shift: 0 }, { capacity_utilization: 2 }])('reject invalid planning settings %o', value => {
   expect(() => resolvePlanSettings(value)).toThrow();
