@@ -123,7 +123,7 @@ export const login = async (req, res, next) => {
         // Fetch role and verification status from profiles table
         const { data: profile, error: profileError } = await supabaseAdmin
             .from('profiles')
-            .select('role, is_email_verified')
+            .select('role, is_email_verified, require_password_change')
             .eq('id', data.user.id)
             .single();
 
@@ -144,6 +144,19 @@ export const login = async (req, res, next) => {
             return res.status(403).json({
                 message: 'Email not verified. Please check your inbox.',
                 code: 'EMAIL_NOT_VERIFIED'
+            });
+        }
+
+        if (profile.require_password_change === true) {
+            return res.status(200).json({
+                message: 'Password change required',
+                requirePasswordChange: true,
+                session: data.session,
+                user: {
+                    ...data.user,
+                    role: profile?.role || 'citizen'
+                },
+                token: data.session.access_token
             });
         }
 
@@ -303,6 +316,43 @@ export const changePassword = async (req, res, next) => {
         res.status(200).json({ message: 'Password changed successfully' });
     } catch (error) {
         next(error)
+    }
+};
+
+export const forceChangePassword = async (req, res, next) => {
+    const { new_password } = req.body;
+    const ipAddress = req.ip || req.connection.remoteAddress;
+    const userAgent = req.get('user-agent');
+
+    if (!new_password) {
+        return res.status(400).json({ message: 'New password is required' });
+    }
+
+    try {
+        // Update password using the admin client
+        const { data, error } = await supabaseAdmin.auth.admin.updateUserById(req.user.id, {
+            password: new_password
+        });
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Password change failed',
+                error: error.message
+            });
+        }
+
+        // Clear the require_password_change flag
+        await supabaseAdmin
+            .from('profiles')
+            .update({ require_password_change: false })
+            .eq('id', req.user.id);
+
+        // Log password change event
+        await logAuditAction(req.user.id, 'password_change', `User changed password upon login`, ipAddress, userAgent);
+
+        res.status(200).json({ message: 'Password changed successfully' });
+    } catch (error) {
+        next(error);
     }
 };
 

@@ -16,11 +16,15 @@ export const createUser = async (req, res, next) => {
         });
     }
 
+    // Use default password if not provided
+    const defaultPassword = '12345678Aa@';
+    const finalPassword = password || defaultPassword;
+
     try {
         // Create user in Supabase Auth
         const { data: authData, error: authError } = await supabase.auth.admin.createUser({
             email,
-            password,
+            password: finalPassword,
             email_confirm: true
         });
 
@@ -37,7 +41,8 @@ export const createUser = async (req, res, next) => {
             .upsert({
                 id: authData.user.id,
                 full_name: full_name || email.split('@')[0],
-                role: role
+                role: role,
+                require_password_change: true
             })
             .select()
             .single();
@@ -211,6 +216,52 @@ export const updateUserRole = async (req, res, next) => {
         res.status(200).json({
             message: 'User role updated successfully',
             user: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Change user password (admin forced reset)
+export const changeUserPassword = async (req, res, next) => {
+    const { id } = req.params;
+    const { password } = req.body;
+
+    if (!password) {
+        return res.status(400).json({
+            message: 'Password is required'
+        });
+    }
+
+    try {
+        // Update password in Supabase Auth
+        const { data: authData, error: authError } = await supabase.auth.admin.updateUserById(id, {
+            password: password
+        });
+
+        if (authError) {
+            return res.status(400).json({
+                message: 'Failed to update user password',
+                error: authError.message
+            });
+        }
+
+        // Set require_password_change to true
+        const { error: profileError } = await supabase
+            .from('profiles')
+            .update({ require_password_change: true })
+            .eq('id', id);
+
+        if (profileError) {
+            console.error('Failed to set require_password_change flag:', profileError);
+        }
+
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(req.user.id, 'profile_update', `Reset password for user ${id}`, ipAddress, userAgent);
+
+        res.status(200).json({
+            message: 'User password updated successfully'
         });
     } catch (error) {
         next(error);

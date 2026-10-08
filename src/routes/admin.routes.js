@@ -11,7 +11,8 @@ import {
     updateSystemSettings,
     getAuditLogs,
     getSystemStats,
-    getTimeoutMinutes
+    getTimeoutMinutes,
+    changeUserPassword
 } from '../controllers/admin.controller.js';
 
 const router = Router();
@@ -30,6 +31,7 @@ router.post('/users', authorize(['admin']), createUser);
 router.get('/users', authorize(['admin']), getAllUsers);
 router.get('/users/:id', authorize(['admin']), getUserById);
 router.patch('/users/:id/role', authorize(['admin']), updateUserRole);
+router.patch('/users/:id/password', authorize(['admin']), changeUserPassword);
 router.delete('/users/:id', authorize(['admin']), deleteUser);
 
 // System settings (admin only)

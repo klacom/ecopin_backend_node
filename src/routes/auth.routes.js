@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { register, login, logout, refreshToken, forgotPassword, resetPassword, getMe, changePassword, validateSession, verifyEmail, resendVerification, getPasswordRequirements } from '../controllers/auth.controller.js';
+import { register, login, logout, refreshToken, forgotPassword, resetPassword, getMe, changePassword, forceChangePassword, validateSession, verifyEmail, resendVerification, getPasswordRequirements } from '../controllers/auth.controller.js';
 import { validateRegistration, validateLogin } from '../middleware/validation.middleware.js';
 import { authenticate, checkUserSuspension } from '../middleware/auth.middleware.js';
 
@@ -13,6 +13,7 @@ router.post('/refresh-token', refreshToken);
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password', resetPassword);
 router.put('/change-password', authenticate, checkUserSuspension, changePassword);
+router.post('/force-change-password', authenticate, checkUserSuspension, forceChangePassword);
 router.get('/validate-session', validateSession); // No authenticate middleware - validates token directly
 router.get('/verify-email', verifyEmail);
 router.post('/resend-verification', resendVerification);
