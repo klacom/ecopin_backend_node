@@ -7,7 +7,7 @@ function sql(db,s){return execFileSync('docker',['exec','-i',container,'psql','-
 let created=false;
 try {
  sql('postgres',`create database ${database};`);created=true;
- for(const file of ['tests/sql/lifecycle-bootstrap.sql','tests/sql/dispatch-bootstrap.sql','migrations/20261008064832_report_lifecycle_foundation.sql','migrations/20261008071533_slice_a_dispatch_claims.sql','migrations/20261008072440_slice_a_fleet_and_failures.sql','migrations/20261008073726_slice_a_route_publication.sql','migrations/20261008075500_slice_a_mobile_authority.sql','migrations/20261008083500_slice_a_report_photo_authority.sql','migrations/20261008085000_slice_a_mobile_view_version.sql','migrations/20261008101500_slice_a_manual_task_compatibility.sql','migrations/20261008134000_slice_b_enums.sql','migrations/20261008134500_slice_b_schema.sql','migrations/20261008135000_slice_b_jobs.sql','migrations/20261008135500_slice_b_snapshot.sql','migrations/20261008140000_slice_b_mixed_draft.sql','migrations/20261008141000_slice_b_mixed_commit.sql','migrations/20261008142000_slice_b_mixed_routes.sql','migrations/20261008170000_slice_c_assignment_receipts.sql','migrations/20261008173000_slice_c_hazard_classification.sql','migrations/20261008180000_slice_c_offline_reconciliation.sql'])sql(database,readFileSync(file,'utf8'));
+ for(const file of ['tests/sql/lifecycle-bootstrap.sql','tests/sql/dispatch-bootstrap.sql','migrations/20261008064832_report_lifecycle_foundation.sql','migrations/20261008071533_slice_a_dispatch_claims.sql','migrations/20261008072440_slice_a_fleet_and_failures.sql','migrations/20261008073726_slice_a_route_publication.sql','migrations/20261008075500_slice_a_mobile_authority.sql','migrations/20261008083500_slice_a_report_photo_authority.sql','migrations/20261008085000_slice_a_mobile_view_version.sql','migrations/20261008101500_slice_a_manual_task_compatibility.sql','migrations/20261008134000_slice_b_enums.sql','migrations/20261008134500_slice_b_schema.sql','migrations/20261008135000_slice_b_jobs.sql','migrations/20261008135500_slice_b_snapshot.sql','migrations/20261008140000_slice_b_mixed_draft.sql','migrations/20261008141000_slice_b_mixed_commit.sql','migrations/20261008142000_slice_b_mixed_routes.sql','migrations/20261008170000_slice_c_assignment_receipts.sql','migrations/20261008173000_slice_c_hazard_classification.sql','migrations/20261008180000_slice_c_offline_reconciliation.sql','migrations/20261008183000_slice_c_field_feedback.sql'])sql(database,readFileSync(file,'utf8'));
  console.log('All migration definitions compile');
  sql(database,readFileSync('tests/sql/dispatch-regression.sql','utf8'));
  console.log('Dispatch and authority regression assertions passed');
@@ -17,6 +17,8 @@ try {
  console.log('Assignment and report claim receipt generations passed');
  sql(database,readFileSync('tests/sql/slice-c-reconciliation-regression.sql','utf8'));
  console.log('Offline cleanup, ghost, replay and contested receipt assertions passed');
+ sql(database,readFileSync('tests/sql/slice-c-field-feedback-regression.sql','utf8'));
+ console.log('Field load, disposal and blocked-site feedback assertions passed');
  sql(database,`
  insert into field_crews(id,name,member_profile_ids,shift_start,shift_end,max_tasks_per_shift) values('00000000-0000-0000-0000-000000000020','Second crew',array['00000000-0000-0000-0000-000000000003'::uuid],'08:00','17:00',10);
  insert into clusters(id,center,report_count) values('00000000-0000-0000-0000-000000000100',extensions.st_setsrid(extensions.st_makepoint(121,14),4326),1);

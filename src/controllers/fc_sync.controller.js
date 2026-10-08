@@ -12,12 +12,20 @@ export const batchFcSync = async (req, res, next) => {
         continue;
       }
       const isReconciliation = op.operation_type === 'fc.report.reconcile';
+      const isFieldLoad = op.operation_type === 'fc.load.record';
+      const isFieldFailure = op.operation_type === 'fc.task.failure';
       if (isReconciliation && (op.entity_type !== 'report' || op.entity_id !== op.payload?.report_id)) {
         results.push({ operation_id: op.operation_id, status: 'rejected', error_message: 'Report receipt target mismatch' });
         continue;
       }
-      const { data, error } = await db.rpc(isReconciliation ? 'reconcile_report_outcome' : 'apply_fc_operation',
-        isReconciliation ? {
+      if ((isFieldLoad || isFieldFailure) && (op.entity_type !== 'task' || op.entity_id !== op.payload?.task_id)) {
+        results.push({ operation_id: op.operation_id, status: 'rejected', error_message: 'Task feedback target mismatch' });
+        continue;
+      }
+      const feedbackRpc = isReconciliation ? 'reconcile_report_outcome'
+        : isFieldLoad ? 'record_field_load' : isFieldFailure ? 'submit_field_failure' : null;
+      const { data, error } = await db.rpc(feedbackRpc ?? 'apply_fc_operation',
+        feedbackRpc ? {
           actor: req.user.id, operation_id: op.operation_id, payload: op.payload
         } : {
           actor: req.user.id, operation_id: op.operation_id, operation_type: op.operation_type,
