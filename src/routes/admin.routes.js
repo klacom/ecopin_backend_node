@@ -12,8 +12,7 @@ import {
     updateSystemSettings,
     getAuditLogs,
     getSystemStats,
-    getTimeoutMinutes,
-    changeUserPassword
+    getTimeoutMinutes
 } from '../controllers/admin.controller.js';
 
 const router = Router();
