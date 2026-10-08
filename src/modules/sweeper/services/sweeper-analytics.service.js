@@ -2,42 +2,48 @@ import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
 
 class SweeperAnalyticsService {
   async getMetrics(startDate, endDate, region) {
+    const lifecycleEnabled = process.env.REPORT_LIFECYCLE_ENABLED === 'true';
     const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     // 1. SLA Compliance
     let reportsQuery = supabase
       .from('reports')
-      .select('id, is_outlier, created_at')
-      .gte('created_at', start.toISOString())
-      .lte('created_at', end.toISOString());
+      .select(lifecycleEnabled ? 'id, breached_at, created_at' : 'id, is_outlier, created_at')
+      .gte(lifecycleEnabled ? 'sla_started_at' : 'created_at', start.toISOString())
+      .lte(lifecycleEnabled ? 'sla_started_at' : 'created_at', end.toISOString());
 
-    const { data: reports } = await reportsQuery;
+    const { data: reports, error: reportsError } = await reportsQuery;
+    if (reportsError) throw reportsError;
     const totalReports = reports ? reports.length : 0;
-    const breachedReports = reports ? reports.filter(r => r.is_outlier).length : 0;
+    const breachedReports = reports ? reports.filter(r => lifecycleEnabled ? r.breached_at != null : r.is_outlier).length : 0;
     const rate = totalReports > 0 ? ((totalReports - breachedReports) / totalReports) * 100 : 100;
 
     // 2. Outlier Metrics
-    const { data: currentOutliers } = await supabase
+    let outliersQuery = supabase
       .from('reports')
-      .select('created_at')
-      .eq('is_outlier', true)
-      .eq('status', 'pending');
+      .select(lifecycleEnabled ? 'sla_started_at' : 'created_at');
+    outliersQuery = lifecycleEnabled
+      ? outliersQuery.eq('lifecycle_state', 'sla_breached')
+      : outliersQuery.eq('is_outlier', true).eq('status', 'unresolved');
+    const { data: currentOutliers, error: outliersError } = await outliersQuery;
+    if (outliersError) throw outliersError;
       
     let averageAge = 0;
     if (currentOutliers && currentOutliers.length > 0) {
       const now = new Date();
-      const ages = currentOutliers.map(r => (now.getTime() - new Date(r.created_at).getTime()) / (1000 * 60 * 60));
+      const ages = currentOutliers.map(r => (now.getTime() - new Date(lifecycleEnabled ? r.sla_started_at : r.created_at).getTime()) / (1000 * 60 * 60));
       averageAge = ages.reduce((a, b) => a + b, 0) / ages.length;
     }
 
-    const { data: resolvedTasks } = await supabase
+    const { data: resolvedTasks, error: resolvedError } = await supabase
       .from('cleanup_tasks')
       .select('id, created_at, completed_at')
       .eq('is_outlier', true)
       .eq('status', 'completed')
       .gte('created_at', start.toISOString())
       .lte('created_at', end.toISOString());
+    if (resolvedError) throw resolvedError;
 
     let averageResolutionTime = 0;
     if (resolvedTasks && resolvedTasks.length > 0) {
@@ -46,12 +52,13 @@ class SweeperAnalyticsService {
     }
 
     // 3. Sweeper Tasks
-    const { data: allSweeperTasks } = await supabase
+    const { data: allSweeperTasks, error: tasksError } = await supabase
       .from('cleanup_tasks')
-      .select('id, status, estimated_duration_minutes, clusters')
+      .select('id, status, estimated_duration_min, cluster_ids')
       .eq('is_outlier', true)
       .gte('created_at', start.toISOString())
       .lte('created_at', end.toISOString());
+    if (tasksError) throw tasksError;
       
     const totalCreated = allSweeperTasks ? allSweeperTasks.length : 0;
     const completedTasks = allSweeperTasks ? allSweeperTasks.filter(t => t.status === 'completed') : [];
@@ -61,11 +68,11 @@ class SweeperAnalyticsService {
     let averageClustersPerTask = 0;
     
     if (allSweeperTasks && totalCreated > 0) {
-      const totalDurations = allSweeperTasks.reduce((acc, task) => acc + (task.estimated_duration_minutes || 0), 0);
+      const totalDurations = allSweeperTasks.reduce((acc, task) => acc + (task.estimated_duration_min || 0), 0);
       averageRouteTime = totalDurations / totalCreated;
       
       const totalClusters = allSweeperTasks.reduce((acc, task) => {
-        return acc + (Array.isArray(task.clusters) ? task.clusters.length : 0);
+        return acc + (Array.isArray(task.cluster_ids) ? task.cluster_ids.length : 0);
       }, 0);
       averageClustersPerTask = totalClusters / totalCreated;
     }
@@ -105,8 +112,8 @@ class SweeperAnalyticsService {
         id,
         created_at,
         assigned_crew_ids,
-        clusters,
-        estimated_duration_minutes,
+        cluster_ids,
+        estimated_duration_min,
         completed_at
       `)
       .eq('is_outlier', true)
@@ -117,7 +124,8 @@ class SweeperAnalyticsService {
       throw error;
     }
     
-    return tasks;
+    // Preserve the existing export-controller contract while querying real columns.
+    return tasks?.map(task => ({ ...task, clusters: task.cluster_ids, estimated_duration_minutes: task.estimated_duration_min }));
   }
 }
 

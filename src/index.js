@@ -3,6 +3,7 @@
 import app from './app.js';
 import { PORT as _PORT, NODE_ENV, NEXT_PUBLIC_SUPABASE_URL } from './config/index.js';
 import { startAllSchedules } from './modules/spatial_forecast/services/forecastScheduler.service.js';
+import { startSlaSchedule, stopSlaSchedule } from './jobs/cron.js';
 
 const PORT = _PORT || 3000;
 
@@ -22,9 +23,11 @@ server.on('error', (error) => {
 
 // Start background cron jobs
 startAllSchedules();
+startSlaSchedule();
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
+    stopSlaSchedule();
     console.log('SIGTERM signal received: closing HTTP server');
     server.close(() => {
         console.log('HTTP server closed');
@@ -32,6 +35,7 @@ process.on('SIGTERM', () => {
 });
 
 process.on('SIGINT', () => {
+    stopSlaSchedule();
     console.log('SIGINT signal received: closing HTTP server');
     server.close(() => {
         console.log('HTTP server closed');
