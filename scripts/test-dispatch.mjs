@@ -73,6 +73,7 @@ try {
    assert.equal(sql(database,"select notes from reports where id='00000000-0000-0000-0000-000000000101';").trim(),'first');
  }finally{first?.child.kill();}
  console.log('Concurrent mobile writes compare version under the row lock: passed');
+ sql(database,readFileSync('tests/sql/legacy-retirement-bootstrap.sql','utf8'));
  sql(database,readFileSync('migrations/099_remove_is_outlier.sql','utf8'));
  assert.equal(sql(database,"select count(*) from information_schema.columns where table_schema='public' and table_name in ('reports','clusters','cleanup_tasks') and column_name='is_outlier';").trim(),'0');
  assert.equal(sql(database,"select count(*) from pg_proc where pronamespace='public'::regnamespace and proname='detect_sla_outliers';").trim(),'0');
