@@ -6,7 +6,7 @@ GRANT INSERT,SELECT ON task_read_results TO anon,authenticated,service_role;
 CREATE FUNCTION pg_temp.task_assert(label text,condition boolean) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN INSERT INTO task_read_results VALUES(label,CASE WHEN condition IS TRUE THEN 'PASS' ELSE 'FAIL' END,'Condition='||coalesce(condition::text,'null')); END $$;
 DO $$
-DECLARE owner_id uuid; stranger uuid; crew uuid; officer uuid; admin uuid; cid uuid;
+DECLARE owner_id uuid; stranger uuid; crew uuid; officer uuid; admin uuid; cid uuid:=gen_random_uuid();
   tid uuid:=gen_random_uuid(); public_tid uuid:=gen_random_uuid(); rid uuid:=gen_random_uuid();
   public_rid uuid:=gen_random_uuid(); other_private uuid:=gen_random_uuid();
   data jsonb; actor_id uuid; caller text;
@@ -16,8 +16,9 @@ BEGIN
  SELECT id INTO crew FROM public.profiles WHERE role::text='field_crew' LIMIT 1;
  SELECT id INTO officer FROM public.profiles WHERE role::text='officer' LIMIT 1;
  SELECT id INTO admin FROM public.profiles WHERE role::text='admin' LIMIT 1;
- SELECT id INTO cid FROM public.clusters LIMIT 1;
- IF owner_id IS NULL OR stranger IS NULL OR crew IS NULL OR officer IS NULL OR admin IS NULL OR cid IS NULL THEN RAISE EXCEPTION 'Missing synthetic-test roles/cluster'; END IF;
+ IF owner_id IS NULL OR stranger IS NULL OR crew IS NULL OR officer IS NULL OR admin IS NULL THEN RAISE EXCEPTION 'Missing synthetic-test roles'; END IF;
+ INSERT INTO public.clusters(id,center,report_count)
+ VALUES(cid,extensions.st_setsrid(extensions.st_makepoint(122,15),4326),0);
  INSERT INTO public.cleanup_tasks(id,title,description,cluster_id,status,route_status,assigned_crew_ids,before_photo_url,after_photo_url,report_ids)
  VALUES(tid,'Private operational title','Private operations',cid,'pending','ready',ARRAY[crew],
  'https://synthetic.invalid/before','https://synthetic.invalid/after',ARRAY[rid]),
@@ -100,4 +101,3 @@ BEGIN
 END $$;
 SELECT * FROM task_read_results ORDER BY test;
 ROLLBACK;
-
