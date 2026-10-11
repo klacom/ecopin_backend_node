@@ -1,3 +1,5 @@
+export {getPublicReports,getReportById,getReportsByClusterId} from './report-read.controller.js';
+import {readReportForViewer,canReadReportEvidence} from '../services/report-access.service.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
@@ -439,35 +441,14 @@ export const uploadEvidence = async (req, res, next) => {
 
 export const getReportEvidence = async (req, res, next) => {
     const { reportId } = req.params;
-    const user_id = req.user?.id;
-    const user_role = req.user?.role || 'public';
 
     try {
         console.log('Fetching evidence for report:', reportId);
 
-        // Security: Check if user has access to this report
-        const { data: report, error: reportError } = await supabase
-            .from('reports_view')
-            .select('user_id, validation_status')
-            .eq('id', reportId)
-            .single();
-
-        if (reportError || !report) {
-            return res.status(404).json({
-                message: 'Report not found',
-                error: reportError?.message || 'Report does not exist'
-            });
-        }
-
-        // Security: Ownership check - users can only access evidence for their own reports or validated public reports
-        const isOwner = user_id && report.user_id === user_id;
-        const isApprovedPublic = ['approved', 'automatically_valid'].includes(report.validation_status);
-        const isOfficerOrAdmin = ['admin', 'officer', 'field_crew'].includes(user_role);
-
-        if (!isOwner && !isApprovedPublic && !isOfficerOrAdmin) {
-            return res.status(403).json({
-                message: 'Access denied: You can only access evidence for your own reports or validated public reports'
-            });
+        const access = await readReportForViewer(supabase,reportId,req.user);
+        if (!access) return res.status(404).json({message:'Report not found'});
+        if (!canReadReportEvidence(access)) {
+            return res.status(403).json({message:'Evidence requires authorized report access'});
         }
 
         const prefix = `report_evidence/${reportId}`;
@@ -1003,80 +984,7 @@ export const getMyReports = async (req, res, next) => {
     }
 };
 
-export const getPublicReports = async (req, res, next) => {
-    try {
-        const { data, error } = await supabase
-            .from('reports_view')
-            .select('*');
 
-        if (error) {
-            return res.status(400).json({
-                message: 'Failed to fetch public reports from view',
-                error: error.message
-            });
-        }
-
-        // Filter out rejected reports and reports with denied consent
-        const filteredData = (data || []).filter(report =>
-            report.validation_status !== 'rejected' &&
-            !(report.on_private_property && report.property_owner_consent_status === 'denied')
-        );
-
-        res.status(200).json(filteredData);
-    } catch (error) {
-        next(error);
-    }
-};
-
-export const getReportById = async (req, res, next) => {
-    const { id } = req.params;
-    const user_id = req.user.id;
-    const user_role = req.user.role || 'citizen';
-
-    try {
-        const { data: report, error: reportError } = await supabase
-            .from('reports_view')
-            .select('*, profiles(id, full_name, data_consent)')
-            .eq('id', id)
-            .single();
-
-        if (reportError) {
-            return res.status(404).json({
-                message: 'Report not found',
-                error: reportError.message
-            });
-        }
-
-        // Security: Ownership check - users can only access their own reports or approved public reports
-        const isOwner = report.user_id === user_id;
-        const isApprovedPublic = report.validation_status === 'approved';
-        const isOfficerOrAdmin = ['admin', 'officer', 'field_crew'].includes(user_role);
-
-        if (!isOwner && !isApprovedPublic && !isOfficerOrAdmin) {
-            return res.status(403).json({
-                message: 'Access denied: You can only access your own reports or approved public reports'
-            });
-        }
-
-        // Fetch response logs (activity logs and agency responses)
-        const { data: responseLogs, error: logsError } = await supabase
-            .from('response_log')
-            .select('*, profiles(full_name)')
-            .eq('report_id', id)
-            .order('created_at', { ascending: false });
-
-        if (logsError) {
-            console.error('Error fetching response logs:', logsError);
-        }
-
-        res.status(200).json({
-            ...report,
-            response_logs: responseLogs || []
-        });
-    } catch (error) {
-        next(error);
-    }
-};
 
 export const updateReportStatus = async (req, res, next) => {
     const { id } = req.params;
@@ -1174,34 +1082,6 @@ export const updateReportValidation = async (req, res, next) => {
     }
 };
 
-export const getReportsByClusterId = async (req, res, next) => {
-    const { clusterId } = req.params;
-
-    try {
-        const { data, error } = await supabase
-            .from('reports_view')
-            .select('*')
-            .eq('cluster_id', clusterId)
-            .order('created_at', { ascending: false });
-
-        if (error) {
-            return res.status(400).json({
-                message: 'Failed to fetch reports by cluster',
-                error: error.message
-            });
-        }
-
-        // Filter out rejected and denied reports
-        const filteredData = (data || []).filter(report =>
-            report.validation_status !== 'rejected' &&
-            !(report.on_private_property && report.property_owner_consent_status === 'denied')
-        );
-
-        res.status(200).json(filteredData);
-    } catch (error) {
-        next(error);
-    }
-};
 
 export const batchCompleteReportsByCluster = async (req, res, next) => {
     const { clusterId } = req.params;
