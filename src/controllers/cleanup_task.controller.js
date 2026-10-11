@@ -4,6 +4,7 @@ import { processTaskFeedback } from '../modules/optimization/services/taskFeedba
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import { CLEANUP_TASK_PHOTOS_STORAGE_PATH } from "../config/index.js";
 import multer from 'multer';
+import {reportPage} from '../services/report-access.service.js';
 import { BEFORE_AFTER_PHOTO_FILE_SIZE } from "../config/index.js";
 import { hashBuffer, checkPhotoDuplicate } from '../services/photo_dedup.service.js';
 
@@ -51,73 +52,53 @@ export const createCustomCleanupTask = async (req,res,next) => {
   } catch(error){next(error);}
 };
 
+async function readCleanupTasks(req, filters = {}) {
+  if (!req.user?.id) {
+    const error = new Error('Authentication required');
+    error.statusCode = 401;
+    throw error;
+  }
+  const {limit, offset} = reportPage(req.query ?? {});
+  const {data, error} = await supabase.rpc('read_authorized_cleanup_tasks', {
+    actor: req.user.id,
+    p_task_id: filters.taskId ?? null,
+    p_cluster_id: filters.clusterId ?? null,
+    p_assigned_only: req.query?.assigned_to_me === 'true',
+    p_limit: filters.taskId ? 1 : limit + 1,
+    p_offset: filters.taskId ? 0 : offset,
+  });
+  if (error) throw error;
+  if (!Array.isArray(data)) throw new Error('Invalid authorized task response');
+  return {data: data.slice(0, limit), hasMore: data.length > limit};
+}
+
+function taskReadError(error, res, next) {
+  if ([400, 401].includes(error.statusCode)) {
+    return res.status(error.statusCode).json({message: error.message});
+  }
+  return next(error);
+}
+
 export const getAllCleanupTasks = async (req, res, next) => {
-    try {
-        const { assigned_to_me } = req.query;
-        const userId = req.user.id;
-
-        let query = supabase
-            .from('cleanup_tasks')
-            .select('*, clusters(*), reports(id, title, description, issue_type, location, status, report_claim_generation)')
-            .order('created_at', { ascending: false });
-
-        // Filter for tasks assigned to current user if requested
-        if (assigned_to_me === 'true' || req.user.role === 'field_crew') {
-            query = query.contains('assigned_crew_ids', [userId]);
-        }
-
-        const { data, error } = await query;
-
-        if (error) {
-            console.error('Error fetching cleanup tasks:', error);
-            return res.status(400).json({
-                message: 'Failed to fetch cleanup tasks',
-                error: error.message
-            });
-        }
-
-        console.log('Fetched cleanup tasks:', data.length, 'tasks');
-        if (assigned_to_me === 'true') {
-            console.log('User ID:', userId);
-            console.log('Tasks with assigned_crew_ids:', data.map(t => ({ id: t.id, assigned_crew_ids: t.assigned_crew_ids })));
-        }
-
-        res.status(200).json(data.map(task => ({
-            ...task,
-            report_claim_generations: Object.fromEntries((task.reports ?? [])
-                .map(report => [report.id, report.report_claim_generation])),
-        })));
-    } catch (error) {
-        next(error);
-    }
+  try {
+    const {data, hasMore} = await readCleanupTasks(req);
+    res.set('Cache-Control', 'private, no-store');
+    res.set('X-Has-More', String(hasMore));
+    return res.json(data);
+  } catch (error) {
+    return taskReadError(error, res, next);
+  }
 };
 
 export const getCleanupTaskById = async (req, res, next) => {
-    const { id } = req.params;
-
-    try {
-        const { data, error } = await supabase
-            .from('cleanup_tasks')
-            .select('*, clusters(*), reports(id, title, description, issue_type, location, status, report_claim_generation)')
-            .eq('id', id)
-            .single();
-
-        if (error) {
-            return res.status(404).json({
-                message: 'Cleanup task not found',
-                error: error.message
-            });
-        }
-
-        if(req.user.role==='field_crew'&&!data.assigned_crew_ids?.includes(req.user.id)) return res.status(403).json({message:'Task access denied'});
-        res.status(200).json({
-            ...data,
-            report_claim_generations: Object.fromEntries((data.reports ?? [])
-                .map(report => [report.id, report.report_claim_generation])),
-        });
-    } catch (error) {
-        next(error);
-    }
+  try {
+    const {data} = await readCleanupTasks(req, {taskId: req.params.id});
+    res.set('Cache-Control', 'private, no-store');
+    if (!data.length) return res.status(404).json({message: 'Cleanup task not found'});
+    return res.json(data[0]);
+  } catch (error) {
+    return taskReadError(error, res, next);
+  }
 };
 
 // Upload before/after photo for cleanup task
@@ -172,27 +153,14 @@ export const markTaskComplete = async (req,res,next) => {
 };
 
 export const getTasksByClusterId = async (req, res, next) => {
-    const { clusterId } = req.params;
-
-    try {
-        const { data, error } = await supabase
-            .from('cleanup_tasks')
-            .select('*')
-            .eq('cluster_id', clusterId)
-            .order('created_at', { ascending: false });
-
-        if (error) {
-            console.log("Fail to fetch cleanup tasks: ", error);
-            return res.status(400).json({
-                message: 'Failed to fetch cleanup tasks',
-                error: error.message
-            });
-        }
-
-        res.status(200).json(data);
-    } catch (error) {
-        next(error);
-    }
+  try {
+    const {data, hasMore} = await readCleanupTasks(req, {clusterId: req.params.clusterId});
+    res.set('Cache-Control', 'private, no-store');
+    res.set('X-Has-More', String(hasMore));
+    return res.json(data);
+  } catch (error) {
+    return taskReadError(error, res, next);
+  }
 };
 
 // Assign cleanup task to field crew members
