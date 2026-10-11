@@ -1,25 +1,22 @@
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '../config/supabase.config.js';
 import { transporter } from '../config/email.config.js';
 import { SMTP_FROM_NAME, SMTP_USER, APP_BASE_URL, EMAIL_VERIFICATION_EXPIRY_HOURS } from '../config/index.js';
 
 /**
- * Generates a verification token and stores it in the database
+ * Generates a verification token; only its digest crosses the database boundary.
  * @param {string} userId - The Supabase user ID
- * @returns {string} - The generated verification token
+ * @returns {Promise<string|null>} - Token, or null when issuance is deferred.
  */
 export const generateVerificationToken = async (userId) => {
     const token = uuidv4();
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + EMAIL_VERIFICATION_EXPIRY_HOURS);
-
-    const { error } = await supabaseAdmin
-        .from('email_verifications')
-        .insert({
-            user_id: userId,
-            token: token,
-            expires_at: expiresAt.toISOString(),
-        });
+    const tokenDigest = createHash('sha256').update(token).digest('hex');
+    const { data, error } = await supabaseAdmin.rpc('issue_email_verification', {
+        p_user_id: userId,
+        p_token_digest: tokenDigest,
+        p_ttl_hours: EMAIL_VERIFICATION_EXPIRY_HOURS
+    });
 
     if (error) {
         console.error('Error storing verification token', {
@@ -28,7 +25,7 @@ export const generateVerificationToken = async (userId) => {
         throw new Error('Failed to generate verification token');
     }
 
-    return token;
+    return data ? token : null;
 };
 
 /**

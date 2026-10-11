@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals';
+import { createHash } from 'node:crypto';
 
 // This staged file is intended to be copied to backend/tests before running.
 // Every external boundary is replaced; no Supabase client or SMTP connection loads.
@@ -64,7 +65,7 @@ function query(table) {
 
 beforeEach(() => {
   state = {
-    verification: { id: 'synthetic-verification', user_id: 'synthetic-citizen', token: TOKEN, used_at: null, expires_at: '2099-01-01T00:00:00.000Z' },
+    verification: { id: 'synthetic-verification', user_id: 'synthetic-citizen', token_digest: createHash('sha256').update(TOKEN).digest('hex'), used_at: null, expires_at: '2099-01-01T00:00:00.000Z' },
     profile: { id: 'synthetic-citizen', is_email_verified: false },
   };
   fault = null; readGate = null; readsWaiting = 0; releaseReads = null;
@@ -166,6 +167,23 @@ test('a thrown dependency error cannot put token details in logs', async () => {
   const res = await redeem();
   expect(res.statusCode).toBe(500);
   expect(JSON.stringify(consoleError.mock.calls)).not.toContain(TOKEN);
+  expect(state.profile.is_email_verified).toBe(false);
+});
+
+test('digest lookup canonicalizes an uppercase UUID link', async () => {
+  const token='abcdefab-1111-4111-8111-111111111111';
+  state.verification.token_digest=createHash('sha256').update(token).digest('hex');
+  const res=response();
+  await verifyEmail({query:{token:token.toUpperCase()}},res);
+  expect(res.statusCode).toBe(200);
+});
+
+test('legacy raw token is not used as a fallback to the digest lookup', async () => {
+  delete state.verification.token_digest;
+  state.verification.token=TOKEN;
+  const res=await redeem();
+  expect(res.statusCode).toBe(400);
+  expect(updateUserById).not.toHaveBeenCalled();
   expect(state.profile.is_email_verified).toBe(false);
 });
 

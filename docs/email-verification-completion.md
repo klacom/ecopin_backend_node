@@ -19,3 +19,5 @@ Verification on 11 October 2026:
 Run `node scripts/test-email-completion.mjs` to reproduce the fresh database drill. It removes only its own generated container. Revert the matching controller before dropping the function in an emergency rollback; otherwise completion fails closed. Restoring the old controller reopens the documented false-success and race defects.
 
 The security advisor still reports the already reviewed limited-owner public map view and disabled leaked-password protection; this migration adds no new security advisory. Function access follows [Supabase database function guidance](https://supabase.com/docs/guides/database/functions).
+
+Subsequent migration 20261011154236 moved new token issuance and lookup to digests and added a distributed per-user cooldown. See docs/email-verification-issuance.md for current verification and remaining S02 work. The completion guarantees above remain in place.

@@ -4,6 +4,7 @@
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
 import { MOBILE_REDIRECT_URL } from "../config/index.js";
 import { generateVerificationToken, sendVerificationEmail } from "../services/email.service.js";
+import { createHash } from 'node:crypto';
 
 // Helper function to log audit action
 export const logAuditAction = async (userId, actionType, actionDetails, ipAddress = null, userAgent = null) => {
@@ -75,7 +76,7 @@ export const register = async (req, res, next) => {
             console.log('[Email Flow] Verification token generated');
             
             console.log(`[Email Flow] Invoking sendVerificationEmail to SMTP transporter...`);
-            await sendVerificationEmail(email, token);
+            if (token) await sendVerificationEmail(email, token);
             console.log(`[Email Flow] sendVerificationEmail completed successfully!`);
             
         } catch (emailError) {
@@ -403,7 +404,7 @@ export const verifyEmail = async (req, res, next) => {
         const { data: verificationData, error: fetchError } = await supabaseAdmin
             .from('email_verifications')
             .select('id,user_id,expires_at,used_at')
-            .eq('token', token)
+            .eq('token_digest', createHash('sha256').update(token.toLowerCase()).digest('hex'))
             .single();
 
         if (fetchError || !verificationData) {
@@ -476,16 +477,17 @@ export const resendVerification = async (req, res, next) => {
             .single();
 
         if (profile && profile.is_email_verified) {
-            return res.status(400).json({ message: 'Email is already verified.' });
+            return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
         }
 
         // Generate and send new token
         const token = await generateVerificationToken(user.id);
-        await sendVerificationEmail(email, token);
+        if (token) await sendVerificationEmail(email, token);
 
-        return res.status(200).json({ message: 'Verification email resent successfully.' });
+        return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
     } catch (error) {
-        next(error);
+        console.error('Verification resend failed');
+        return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
     }
 };
 
