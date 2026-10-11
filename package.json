@@ -11,6 +11,7 @@
     "test:db:dispatch": "node scripts/test-dispatch.mjs",
     "test:db:optimization": "node scripts/test-optimization.mjs",
     "test:db:public-access": "node scripts/test-public-access.mjs",
+    "test:db:cleanup-storage": "node scripts/test-cleanup-storage.mjs",
     "test:db:lifecycle": "node scripts/test-report-lifecycle.mjs",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop backend",
