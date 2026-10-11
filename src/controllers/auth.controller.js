@@ -392,8 +392,9 @@ export const validateSession = async (req, res, next) => {
 
 export const verifyEmail = async (req, res, next) => {
     const { token } = req.query;
+    res.set('Cache-Control', 'no-store');
 
-    if (!token) {
+    if (typeof token !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
         return res.status(400).send('Verification token is required');
     }
 
@@ -401,7 +402,7 @@ export const verifyEmail = async (req, res, next) => {
         // 1. Find token
         const { data: verificationData, error: fetchError } = await supabaseAdmin
             .from('email_verifications')
-            .select('*')
+            .select('id,user_id,expires_at,used_at')
             .eq('token', token)
             .single();
 
@@ -415,29 +416,35 @@ export const verifyEmail = async (req, res, next) => {
         }
 
         // 3. Check expiry
-        if (new Date(verificationData.expires_at) < new Date()) {
+        if (new Date(verificationData.expires_at) <= new Date()) {
             return res.status(400).send(renderVerificationHtml('Verification link has expired. Please request a new one.', false));
         }
 
-        // 4. Update verification record
-        await supabaseAdmin
-            .from('email_verifications')
-            .update({ used_at: new Date().toISOString() })
-            .eq('id', verificationData.id);
+        // Auth confirmation is idempotent. Failures leave the token retryable.
+        const { data: authData, error: authError } = await supabaseAdmin.auth.admin
+            .updateUserById(verificationData.user_id, { email_confirm: true });
+        if (authError || authData?.user?.id !== verificationData.user_id) {
+            return res.status(503).send(renderVerificationHtml('Verification is temporarily unavailable. Please try this link again.', false));
+        }
 
-        // 5. Update profile
-        await supabaseAdmin
-            .from('profiles')
-            .update({ is_email_verified: true })
-            .eq('id', verificationData.user_id);
-
-        // 6. Update Supabase Auth user (optional, but good practice for sync)
-        await supabaseAdmin.auth.admin.updateUserById(verificationData.user_id, { email_confirm: true });
+        // One transaction checks fresh expiry/single use and verifies an existing profile.
+        // Another request cannot succeed from the stale unused-token snapshot above.
+        const { data: completed, error: completionError } = await supabaseAdmin.rpc(
+            'complete_email_verification', {
+                p_verification_id: verificationData.id,
+                p_user_id: verificationData.user_id
+            });
+        if (completionError) {
+            return res.status(503).send(renderVerificationHtml('Verification is temporarily unavailable. Please try this link again.', false));
+        }
+        if (completed !== true) {
+            return res.status(400).send(renderVerificationHtml('Invalid, expired, already used link, or incomplete account setup.', false));
+        }
 
         // 7. Return success HTML with deep link
         return res.status(200).send(renderVerificationHtml('Email verified successfully!', true));
     } catch (error) {
-        console.error('Error in verifyEmail:', error);
+        console.error('Email verification failed');
         return res.status(500).send(renderVerificationHtml('An error occurred during verification.', false));
     }
 };
