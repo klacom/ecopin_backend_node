@@ -451,38 +451,33 @@ export const verifyEmail = async (req, res, next) => {
 };
 
 export const resendVerification = async (req, res, next) => {
-    const { email } = req.body;
+    const { email } = req.body ?? {};
 
     if (!email) {
         return res.status(400).json({ message: 'Email is required' });
     }
 
-    try {
-        // Find user by email
-        const { data: { users }, error: authError } = await supabaseAdmin.auth.admin.listUsers();
-        if (authError) throw authError;
+    if (typeof email !== 'string' || email.length > 320) {
+        return res.status(400).json({ message: 'Invalid email' });
+    }
+    const normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(normalizedEmail)) {
+        return res.status(400).json({ message: 'Invalid email' });
+    }
 
-        const user = users.find(u => u.email === email);
-        
-        if (!user) {
+    try {
+        const { data: userId, error: lookupError } = await supabaseAdmin.rpc(
+            'find_email_verification_user', { p_email: normalizedEmail }
+        );
+        if (lookupError) throw lookupError;
+        if (!userId) {
             // Return 200 to not leak existence of user
             return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
         }
 
-        // Check profile
-        const { data: profile } = await supabaseAdmin
-            .from('profiles')
-            .select('is_email_verified')
-            .eq('id', user.id)
-            .single();
-
-        if (profile && profile.is_email_verified) {
-            return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
-        }
-
         // Generate and send new token
-        const token = await generateVerificationToken(user.id);
-        if (token) await sendVerificationEmail(email, token);
+        const token = await generateVerificationToken(userId);
+        if (token) await sendVerificationEmail(normalizedEmail, token);
 
         return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
     } catch (error) {

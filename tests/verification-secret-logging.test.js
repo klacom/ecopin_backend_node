@@ -50,12 +50,11 @@ test('deferred registration issuance does not send a null verification link',asy
 });
 
 test.each(['absent','verified','deferred','issued','issuance_error','smtp_error','auth_error'])('resend gives the same response for %s account and never sends deferred links',async state=>{
- supabaseAdmin.auth.admin.listUsers.mockResolvedValue({data:{users:state==='absent'?[]:[{id:'synthetic-user',email:'citizen@example.invalid'}]},error:null});
- supabaseAdmin.from.mockReturnValueOnce({select:()=>({eq:()=>({single:async()=>({data:{is_email_verified:state==='verified'},error:null})})})});
- supabaseAdmin.rpc.mockResolvedValue({data:state==='deferred'?null:'synthetic-issuance',error:null});
- if(state==='issuance_error')supabaseAdmin.rpc.mockResolvedValue({data:null,error:{code:'23503'}});
+ supabaseAdmin.rpc.mockImplementation(async name=>{
+   if(name==='find_email_verification_user')return {data:['absent','verified'].includes(state)?null:'synthetic-user',error:state==='auth_error'?{message:'Synthetic lookup unavailable'}:null};
+   return {data:state==='deferred'?null:'synthetic-issuance',error:state==='issuance_error'?{code:'23503'}:null};
+ });
  if(state==='smtp_error')sendMail.mockRejectedValue(new Error('Synthetic SMTP unavailable'));
- if(state==='auth_error')supabaseAdmin.auth.admin.listUsers.mockResolvedValue({data:{users:[]},error:{message:'Synthetic Auth unavailable'}});
  const res={code:null,status(code){this.code=code;return this},json(value){this.body=value;return this}};
  await resendVerification({body:{email:'citizen@example.invalid'}},res,e=>{throw e});
  expect(res.code).toBe(200);expect(res.body.message).toBe('If an account exists, a verification email has been sent.');
