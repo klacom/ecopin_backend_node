@@ -22,7 +22,9 @@ export const generateVerificationToken = async (userId) => {
         });
 
     if (error) {
-        console.error('Error storing verification token:', error);
+        console.error('Error storing verification token', {
+            code: /^[0-9A-Z]{5}$/.test(error?.code ?? '') ? error.code : 'UNKNOWN'
+        });
         throw new Error('Failed to generate verification token');
     }
 
@@ -37,7 +39,7 @@ export const generateVerificationToken = async (userId) => {
 export const sendVerificationEmail = async (toEmail, token) => {
     console.log(`[Email Service] Preparing to send email to ${toEmail}`);
     const verificationUrl = `${APP_BASE_URL}/api/auth/verify-email?token=${token}`;
-    console.log(`[Email Service] Verification URL created: ${verificationUrl}`);
+    console.log('[Email Service] Verification link prepared');
     
     // EcoPin Branded HTML Email Template
     const htmlContent = `
@@ -151,7 +153,9 @@ export const sendVerificationEmail = async (toEmail, token) => {
         const info = await transporter.sendMail(mailOptions);
         console.log(`[Email Service] ✅ Verification email sent successfully! MessageId: ${info.messageId}`);
     } catch (error) {
-        console.error('[Email Service] ❌ Error caught inside sendVerificationEmail:', error);
-        throw new Error(`Failed to send verification email via SMTP: ${error.message}`);
+        console.error('[Email Service] Verification email delivery failed', {
+            code: /^[A-Z0-9_]{1,24}$/.test(error?.code ?? '') ? error.code : 'UNKNOWN'
+        });
+        throw new Error('Failed to send verification email via SMTP');
     }
 };

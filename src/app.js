@@ -3,7 +3,7 @@
 import express, { json, urlencoded } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import morgan from 'morgan';
+import { requestLogger } from './middleware/requestLogging.middleware.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { FRONTEND_URL } from './config/index.js';
@@ -47,7 +47,7 @@ app.use(cors({
 }));
 app.use(json({ limit: '10mb' }));
 app.use(urlencoded({ extended: true }));
-app.use(morgan('combined')); // Logging
+app.use(requestLogger());
 
 // Apply rate limiting to all routes
 app.use(rateLimiter);

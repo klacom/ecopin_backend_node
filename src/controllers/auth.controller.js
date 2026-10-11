@@ -72,7 +72,7 @@ export const register = async (req, res, next) => {
             
             console.log(`[Email Flow] Generating token for user ID: ${data.user.id}`);
             const token = await generateVerificationToken(data.user.id);
-            console.log(`[Email Flow] Token generated successfully: ${token.substring(0, 10)}...`);
+            console.log('[Email Flow] Verification token generated');
             
             console.log(`[Email Flow] Invoking sendVerificationEmail to SMTP transporter...`);
             await sendVerificationEmail(email, token);
