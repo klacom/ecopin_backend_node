@@ -56,7 +56,7 @@ async function resend(email = TARGET_EMAIL) {
 
 test('an unverified account beyond the first Auth page receives its verification email', async () => {
   await resend();
-  expect(generateVerificationToken).toHaveBeenCalledWith(TARGET_ID);
+  expect(generateVerificationToken).toHaveBeenCalledWith(TARGET_ID, TARGET_EMAIL);
   expect(sendVerificationEmail).toHaveBeenCalledWith(TARGET_EMAIL, 'synthetic-delivered-token');
 });
 
@@ -86,7 +86,7 @@ test.each(['missing', 'verified', 'null'])('%s lookup outcome returns the generi
 test('distributed issuance deferral sends no null-token email', async () => {
   generateVerificationToken.mockResolvedValue(null);
   await resend();
-  expect(generateVerificationToken).toHaveBeenCalledWith(TARGET_ID);
+  expect(generateVerificationToken).toHaveBeenCalledWith(TARGET_ID, TARGET_EMAIL);
   expect(sendVerificationEmail).not.toHaveBeenCalled();
 });
 

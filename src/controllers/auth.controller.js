@@ -72,7 +72,7 @@ export const register = async (req, res, next) => {
             console.log(`[Email Flow] Starting verification email process for ${email}...`);
             
             console.log(`[Email Flow] Generating token for user ID: ${data.user.id}`);
-            const token = await generateVerificationToken(data.user.id);
+            const token = await generateVerificationToken(data.user.id, email);
             console.log('[Email Flow] Verification token generated');
             
             console.log(`[Email Flow] Invoking sendVerificationEmail to SMTP transporter...`);
@@ -400,45 +400,82 @@ export const verifyEmail = async (req, res, next) => {
     }
 
     try {
-        // 1. Find token
-        const { data: verificationData, error: fetchError } = await supabaseAdmin
+        // 1. Find token by digest (backward-compatible across migrated and unmigrated live schemas)
+        const tokenDigest = createHash('sha256').update(token.toLowerCase()).digest('hex');
+        let fetchResult = await supabaseAdmin
             .from('email_verifications')
-            .select('id,user_id,expires_at,used_at')
-            .eq('token_digest', createHash('sha256').update(token.toLowerCase()).digest('hex'))
-            .single();
+            .select('id,user_id,issued_to_email,expires_at,used_at')
+            .eq('token_digest', tokenDigest)
+            .maybeSingle();
 
-        if (fetchError || !verificationData) {
+        if (fetchResult.error && (fetchResult.error.code === '42703' || fetchResult.error.message?.includes('issued_to_email'))) {
+            // Graceful fallback for unmigrated live database where issued_to_email does not exist
+            fetchResult = await supabaseAdmin
+                .from('email_verifications')
+                .select('id,user_id,expires_at,used_at')
+                .eq('token_digest', tokenDigest)
+                .maybeSingle();
+        }
+
+        if (fetchResult.error || !fetchResult.data) {
             return res.status(400).send(renderVerificationHtml('Invalid or expired token', false));
         }
 
+        const verificationData = fetchResult.data;
+
         // 2. Check if already used
         if (verificationData.used_at) {
-            return res.status(400).send(renderVerificationHtml('Email already verified. You can log in.', false));
+            return res.status(400).send(renderVerificationHtml('Email already verified or link has already been used. You can log in.', false));
         }
 
-        // 3. Check expiry
-        if (new Date(verificationData.expires_at) <= new Date()) {
-            return res.status(400).send(renderVerificationHtml('Verification link has expired. Please request a new one.', false));
+        // 4. Fetch authoritative Auth user state
+        const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(verificationData.user_id);
+        if (userError || !userData?.user) {
+            return res.status(503).send(renderVerificationHtml('Account not found for this verification link.', false));
         }
 
-        // Auth confirmation is idempotent. Failures leave the token retryable.
-        const { data: authData, error: authError } = await supabaseAdmin.auth.admin
-            .updateUserById(verificationData.user_id, { email_confirm: true });
-        if (authError || authData?.user?.id !== verificationData.user_id) {
-            return res.status(503).send(renderVerificationHtml('Verification is temporarily unavailable. Please try this link again.', false));
+        if (userData.user.id !== verificationData.user_id) {
+            return res.status(503).send(renderVerificationHtml('Verification is temporarily unavailable.', false));
+        }
+        const currentAuthEmail = userData.user.email?.toLowerCase().trim();
+        if (!currentAuthEmail) {
+            return res.status(400).send(renderVerificationHtml('No active email found for this account.', false));
         }
 
-        // One transaction checks fresh expiry/single use and verifies an existing profile.
-        // Another request cannot succeed from the stale unused-token snapshot above.
-        const { data: completed, error: completionError } = await supabaseAdmin.rpc(
-            'complete_email_verification', {
-                p_verification_id: verificationData.id,
-                p_user_id: verificationData.user_id
-            });
+        if (!verificationData.issued_to_email) {
+            return res.status(400).send(renderVerificationHtml('Please request a new verification link.', false));
+        }
+
+        // Validate bound email address if recorded on token
+        if (verificationData.issued_to_email) {
+            const boundEmail = verificationData.issued_to_email.toLowerCase().trim();
+            if (currentAuthEmail !== boundEmail) {
+                // Changed email rejects the old link
+                return res.status(400).send(renderVerificationHtml('Verification link is not valid for the current account email.', false));
+            }
+        }
+
+        // Final authoritative email check, Auth confirmation, profile and token writes
+        // occur together. A missing migration fails closed rather than using the old race.
+        const rpcResult = await supabaseAdmin.rpc('redeem_email_verification_atomic', {
+            p_verification_id: verificationData.id,
+            p_user_id: verificationData.user_id,
+            p_expected_email: currentAuthEmail
+        });
+        const { data: completed, error: completionError } = rpcResult;
+
         if (completionError) {
+            // Database transient failure: do not fake rollback with email_confirm: false.
+            // Leave token unconsumed so the user can safely retry and converge.
+            console.error('Database completion error during verification', {
+                code: completionError.code || 'UNKNOWN'
+            });
             return res.status(503).send(renderVerificationHtml('Verification is temporarily unavailable. Please try this link again.', false));
         }
+
         if (completed !== true) {
+            // Token was already consumed, expired, or invalid.
+            // Do not attempt invalid Auth unconfirmation; winner's confirmation is preserved.
             return res.status(400).send(renderVerificationHtml('Invalid, expired, already used link, or incomplete account setup.', false));
         }
 
@@ -475,8 +512,8 @@ export const resendVerification = async (req, res, next) => {
             return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
         }
 
-        // Generate and send new token
-        const token = await generateVerificationToken(userId);
+        // Generate and send new token with bound email
+        const token = await generateVerificationToken(userId, normalizedEmail);
         if (token) await sendVerificationEmail(normalizedEmail, token);
 
         return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });

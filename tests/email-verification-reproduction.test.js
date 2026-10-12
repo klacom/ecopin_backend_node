@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 
 // This staged file is intended to be copied to backend/tests before running.
 // Every external boundary is replaced; no Supabase client or SMTP connection loads.
-const updateUserById = jest.fn();
-const admin = { from: jest.fn(), rpc: jest.fn(), auth: { admin: { updateUserById } } };
+const updateUserById = jest.fn(), getUserById = jest.fn();
+const admin = { from: jest.fn(), rpc: jest.fn(), auth: { admin: { updateUserById, getUserById } } };
 jest.unstable_mockModule('../src/config/supabase.config.js', () => ({ supabase: {}, supabaseAdmin: admin }));
 jest.unstable_mockModule('../src/config/index.js', () => ({ MOBILE_REDIRECT_URL: 'ecopin://auth' }));
 jest.unstable_mockModule('../src/services/email.service.js', () => ({
@@ -65,7 +65,7 @@ function query(table) {
 
 beforeEach(() => {
   state = {
-    verification: { id: 'synthetic-verification', user_id: 'synthetic-citizen', token_digest: createHash('sha256').update(TOKEN).digest('hex'), used_at: null, expires_at: '2099-01-01T00:00:00.000Z' },
+    verification: { issued_to_email:'citizen@example.invalid', id: 'synthetic-verification', user_id: 'synthetic-citizen', token_digest: createHash('sha256').update(TOKEN).digest('hex'), used_at: null, expires_at: '2099-01-01T00:00:00.000Z' },
     profile: { id: 'synthetic-citizen', is_email_verified: false },
   };
   fault = null; readGate = null; readsWaiting = 0; releaseReads = null;
@@ -76,9 +76,11 @@ beforeEach(() => {
   });
   updateUserById.mockReset();
   updateUserById.mockResolvedValue({ data: { user: { id: 'synthetic-citizen' } }, error: null });
+  getUserById.mockReset();
+  getUserById.mockResolvedValue({ data: { user: { id: 'synthetic-citizen', email: 'citizen@example.invalid' } }, error: null });
   admin.rpc.mockReset();
   admin.rpc.mockImplementation(async (name, args) => {
-    if (name !== 'complete_email_verification') throw new Error('Unexpected RPC');
+    if (name !== 'redeem_email_verification_atomic') throw new Error('Unexpected RPC');
     const row = state.verification;
     if (fault === 'profile_error') return {data:null,error:{code:'42501'}};
     if (!row || row.id !== args.p_verification_id || row.user_id !== args.p_user_id
@@ -129,7 +131,7 @@ test('a profile update matching zero rows cannot produce verification success', 
 });
 
 test('a resolved Supabase Auth admin error cannot produce verification success', async () => {
-  updateUserById.mockResolvedValue({ data: { user: null }, error: { status: 503, message: 'Synthetic Auth service unavailable' } });
+  getUserById.mockResolvedValue({ data: { user: null }, error: { status: 503, message: 'Synthetic Auth service unavailable' } });
   const res = await redeem();
   expect(res.statusCode).not.toBe(200);
   expect(res.body).not.toContain('Email verified successfully!');
@@ -155,7 +157,7 @@ test('expired token fails without confirming Auth or consuming the token', async
 });
 
 test('a mismatched Auth response cannot verify the profile', async () => {
-  updateUserById.mockResolvedValue({data:{user:{id:'another-user'}},error:null});
+  getUserById.mockResolvedValue({data:{user:{id:'another-user'}},error:null});
   const res = await redeem();
   expect(res.statusCode).toBe(503);
   expect(state.profile.is_email_verified).toBe(false);
@@ -163,7 +165,7 @@ test('a mismatched Auth response cannot verify the profile', async () => {
 });
 
 test('a thrown dependency error cannot put token details in logs', async () => {
-  updateUserById.mockRejectedValue(new Error('Secret token=' + TOKEN));
+  getUserById.mockRejectedValue(new Error('Secret token=' + TOKEN));
   const res = await redeem();
   expect(res.statusCode).toBe(500);
   expect(JSON.stringify(consoleError.mock.calls)).not.toContain(TOKEN);
@@ -195,4 +197,30 @@ test('two overlapping redemptions of one unused token have exactly one success',
   expect(readsWaiting).toBe(2);
   expect(responses.filter(res => res.statusCode === 200)).toHaveLength(1);
   expect(responses.filter(res => res.body.includes('Email verified successfully!'))).toHaveLength(1);
+});
+
+test('redemption with bound email mismatch rejects and does not confirm Auth', async () => {
+  state.verification.issued_to_email = 'alice@example.invalid';
+  getUserById.mockResolvedValue({ data: { user: { id: 'synthetic-citizen', email: 'bob@example.invalid' } }, error: null });
+  const res = await redeem();
+  expect(res.statusCode).toBe(400);
+  expect(res.body).toContain('Verification link is not valid for the current account email.');
+  expect(updateUserById).not.toHaveBeenCalled();
+  expect(admin.rpc).not.toHaveBeenCalled();
+});
+
+test('RPC completion failure does not attempt invalid Auth unconfirmation', async () => {
+  admin.rpc.mockResolvedValue({ data: false, error: null });
+  const res = await redeem();
+  expect(res.statusCode).toBe(400);
+  expect(updateUserById).not.toHaveBeenCalled();
+  expect(updateUserById).not.toHaveBeenCalledWith('synthetic-citizen', { email_confirm: false });
+});
+
+test('RPC error leaves retry path open without attempting invalid Auth unconfirmation', async () => {
+  admin.rpc.mockResolvedValue({ data: null, error: { code: '500', message: 'DB connection failure' } });
+  const res = await redeem();
+  expect(res.statusCode).toBe(503);
+  expect(updateUserById).not.toHaveBeenCalled();
+  expect(updateUserById).not.toHaveBeenCalledWith('synthetic-citizen', { email_confirm: false });
 });

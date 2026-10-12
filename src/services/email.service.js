@@ -9,14 +9,26 @@ import { SMTP_FROM_NAME, SMTP_USER, APP_BASE_URL, EMAIL_VERIFICATION_EXPIRY_HOUR
  * @param {string} userId - The Supabase user ID
  * @returns {Promise<string|null>} - Token, or null when issuance is deferred.
  */
-export const generateVerificationToken = async (userId) => {
+export const generateVerificationToken = async (userId, email = null) => {
     const token = uuidv4();
     const tokenDigest = createHash('sha256').update(token).digest('hex');
-    const { data, error } = await supabaseAdmin.rpc('issue_email_verification', {
+    const rpcParams = {
         p_user_id: userId,
         p_token_digest: tokenDigest,
         p_ttl_hours: EMAIL_VERIFICATION_EXPIRY_HOURS
-    });
+    };
+    if (email) {
+        rpcParams.p_email = email.trim().toLowerCase();
+    }
+    let { data, error } = await supabaseAdmin.rpc('issue_email_verification', rpcParams);
+
+    if (error && rpcParams.p_email && (error.code === 'PGRST202' || error.message?.includes('p_email'))) {
+        // Backward-compatible fallback for unmigrated live database
+        delete rpcParams.p_email;
+        const retryResult = await supabaseAdmin.rpc('issue_email_verification', rpcParams);
+        data = retryResult.data;
+        error = retryResult.error;
+    }
 
     if (error) {
         console.error('Error storing verification token', {

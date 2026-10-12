@@ -19,6 +19,30 @@ test('distributed issuance deferral returns no token to send',async()=>{
  rpc.mockResolvedValue({data:null,error:null});
  expect(await generateVerificationToken('synthetic-user')).toBeNull();
 });
+test('issuance with email passes normalized email to issue_email_verification RPC', async () => {
+ const token = await generateVerificationToken('synthetic-user', '  Alice@Example.COM  ');
+ expect(token).toBeDefined();
+ expect(rpc).toHaveBeenCalledWith('issue_email_verification', {
+  p_user_id: 'synthetic-user',
+  p_token_digest: createHash('sha256').update(token).digest('hex'),
+  p_ttl_hours: 24,
+  p_email: 'alice@example.com'
+ });
+});
+test('issuance falls back to 3-parameter overload if database has unmigrated schema (PGRST202)', async () => {
+ rpc.mockImplementation(async (name, args) => {
+  if (args.p_email) return { data: null, error: { code: 'PGRST202', message: 'Could not find function with parameter p_email' } };
+  return { data: 'legacy-issuance', error: null };
+ });
+ const token = await generateVerificationToken('synthetic-user', 'alice@example.com');
+ expect(token).toBeDefined();
+ expect(rpc).toHaveBeenCalledTimes(2);
+ expect(rpc).toHaveBeenLastCalledWith('issue_email_verification', {
+  p_user_id: 'synthetic-user',
+  p_token_digest: createHash('sha256').update(token).digest('hex'),
+  p_ttl_hours: 24
+ });
+});
 test('database issuance errors propagate a safe message without echoing digest details',async()=>{
  const errorLog=jest.spyOn(console,'error').mockImplementation(()=>{});
  let digest;
