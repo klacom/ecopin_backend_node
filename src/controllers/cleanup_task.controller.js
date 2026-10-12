@@ -41,13 +41,6 @@ export const createCustomCleanupTask = async (req,res,next) => {
     });
     if(error) throw error;
     if(data.status==='conflict') return res.status(409).json({message:'Selected reports changed or are blocked; refresh before creating a task',...data});
-    if ((req.body.assigned_crew_ids??[]).length) {
-      const {error:noticeError}=await supabase.from('notifications').insert(req.body.assigned_crew_ids.map(user_id=>({
-        user_id,report_id:null,cleanup_task_id:data.task.id,type:'task_assigned',
-        title:'New Task Assigned',body:`You have been assigned to cleanup task: ${data.task.title}`
-      })));
-      if(noticeError) console.error('Manual task notification failed',noticeError);
-    }
     res.status(201).json({message:'Custom cleanup task created successfully',task:data.task});
   } catch(error){next(error);}
 };

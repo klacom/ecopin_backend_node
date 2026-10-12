@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {spawn,execFileSync} from 'node:child_process';
+import {readFileSync,writeFileSync} from 'node:fs';
+const docker='C:/Program Files/Docker/Docker/resources/bin/docker.exe';
+const container='supabase_db_ecopin-recovery-20261012';
+const info=JSON.parse(execFileSync(docker,['inspect',container],{encoding:'utf8'}))[0];
+assert.ok(Object.values(info.Config.Labels??{}).includes('ecopin-recovery-20261012'));
+const p=spawn(docker,['exec','-i',container,'psql','-U','postgres','-d','postgres','-X','-q','-t','-A','-v','ON_ERROR_STOP=1'],{stdio:['pipe','pipe','pipe']});
+let out='',err='';p.stdout.on('data',d=>out+=d);p.stderr.on('data',d=>err+=d);
+const done=new Promise((resolve,reject)=>p.on('close',code=>{if(code){writeFileSync('C:/dev/App-Builders-Hackathon/.ecopin-optimization/.private/local-supabase-recovery/manual-notice-error.private.log',err);reject(Error('Manual notice regression SQL failed; diagnostic saved privately'));}else resolve();}));
+p.stdin.end(readFileSync('tests/sql/manual-task-notification-regression.sql','utf8'));await done;
+const checks=JSON.parse(out.trim());assert.equal(checks.length,6);assert.ok(checks.every(t=>t.status==='PASS'),JSON.stringify(checks));
+console.log(JSON.stringify({at:new Date().toISOString(),checks,scope:'Rollback-only fixtures on the owned local recovery stack'}));
