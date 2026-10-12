@@ -1,8 +1,9 @@
+import { removeOrQueue } from '../services/storage-cleanup.service.js';
 import { generateDispatchPlan } from '../modules/optimization/services/dispatchPlanner.service.js';
 import { commitAndRoutePlan } from '../modules/optimization/services/dispatchCommit.service.js';
 import { processTaskFeedback } from '../modules/optimization/services/taskFeedback.service.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
-import { CLEANUP_TASK_PHOTOS_STORAGE_PATH } from "../config/index.js";
+import { CLEANUP_TASK_PHOTOS_STORAGE_PATH, NEXT_PUBLIC_SUPABASE_URL } from "../config/index.js";
 import multer from 'multer';
 import {reportPage} from '../services/report-access.service.js';
 import { BEFORE_AFTER_PHOTO_FILE_SIZE } from "../config/index.js";
@@ -94,6 +95,29 @@ export const getCleanupTaskById = async (req, res, next) => {
   }
 };
 
+function extractValidatedStoragePath(photoUrl, expectedBucket, expectedTaskId, expectedSlot) {
+  if (!photoUrl || typeof photoUrl !== 'string') return null;
+  try {
+    const parsed = new URL(photoUrl);
+    const expectedOrigin = new URL(NEXT_PUBLIC_SUPABASE_URL).origin;
+    if (parsed.origin !== expectedOrigin || parsed.username || parsed.password) return null;
+    if (!/^\/storage\/v1\/object\/(public|sign|authenticated)\//.test(parsed.pathname)) return null;
+    const marker = `/${encodeURIComponent(expectedBucket)}/`;
+    const markerIdx = parsed.pathname.indexOf(marker);
+    if (markerIdx === -1) return null;
+    const relPath = decodeURIComponent(parsed.pathname.substring(markerIdx + marker.length));
+    const parts = relPath.split('/');
+    if (parts.length !== 3) return null;
+    const [pathTaskId, pathSlot, fileUuid] = parts;
+    if (pathTaskId !== expectedTaskId) return null;
+    if (pathSlot !== expectedSlot) return null;
+    if (!/^[0-9a-zA-Z._-]{1,128}$/.test(fileUuid) || fileUuid === '.' || fileUuid === '..') return null;
+    return relPath;
+  } catch {
+    return null;
+  }
+}
+
 // Upload before/after photo for cleanup task
 async function photoTask(taskId,user) {
   const {data:task,error}=await supabase.from('cleanup_tasks').select('*').eq('id',taskId).single();
@@ -117,11 +141,42 @@ export const uploadCleanupPhoto = async (req,res,next) => {
     const filePath=`${taskId}/${photo_type}/${crypto.randomUUID()}`;
     const {error:uploadError}=await supabase.storage.from(CLEANUP_TASK_PHOTOS_STORAGE_PATH).upload(filePath,req.file.buffer,{contentType:req.file.mimetype,upsert:false});
     if(uploadError) throw uploadError;
-    const {data:urlData}=supabase.storage.from(CLEANUP_TASK_PHOTOS_STORAGE_PATH).getPublicUrl(filePath);
-    const {data,error}=await supabase.rpc('set_task_photo',{task_id:taskId,actor:req.user.id,slot:photo_type,url:urlData.publicUrl,photo_hash:incomingHash,expected_version:task.fc_version});
-    if(error||data.status==='conflict') {
-      await supabase.storage.from(CLEANUP_TASK_PHOTOS_STORAGE_PATH).remove([filePath]);
+
+    let targetUrl;
+    try {
+      const storageBucket = supabase.storage.from(CLEANUP_TASK_PHOTOS_STORAGE_PATH);
+      if (typeof storageBucket.createSignedUrl === 'function') {
+        const { data: signedData, error: signError } = await storageBucket.createSignedUrl(filePath, 86400); // 24 hours
+        if (!signError && signedData?.signedUrl) {
+          targetUrl = signedData.signedUrl;
+        }
+      }
+    } catch {
+      // Fallback to public URL
+    }
+    if (!targetUrl) {
+      const { data: urlData } = supabase.storage.from(CLEANUP_TASK_PHOTOS_STORAGE_PATH).getPublicUrl(filePath);
+      targetUrl = urlData.publicUrl;
+    }
+    const previousPhotoUrl = task[`${photo_type}_photo_url`];
+    let attachment;
+    try {
+      attachment=await supabase.rpc('set_task_photo',{task_id:taskId,actor:req.user.id,slot:photo_type,url:targetUrl,photo_hash:incomingHash,expected_version:task.fc_version});
+    } catch(error) {
+      // A transport failure may hide a committed attachment; the worker rechecks references.
+      await removeOrQueue(CLEANUP_TASK_PHOTOS_STORAGE_PATH,filePath);
+      throw error;
+    }
+    const {data,error}=attachment;
+    if(error||!data||data.status==='conflict') {
+      await removeOrQueue(CLEANUP_TASK_PHOTOS_STORAGE_PATH, filePath);
       return res.status(error?.code==='42501'?403:409).json({message:error?.message??'Task changed; retry photo upload'});
+    }
+    if (previousPhotoUrl) {
+      const previousPath = extractValidatedStoragePath(previousPhotoUrl, CLEANUP_TASK_PHOTOS_STORAGE_PATH, taskId, photo_type);
+      if (previousPath && previousPath !== filePath) {
+        await removeOrQueue(CLEANUP_TASK_PHOTOS_STORAGE_PATH, previousPath);
+      }
     }
     res.json({task:data.server_record});
   } catch(error){next(error);}
@@ -131,11 +186,46 @@ export const deleteCleanupPhoto = async (req,res,next) => {
     const {taskId}=req.params;const {photo_type}=req.body;
     if(!['before','after'].includes(photo_type)) return res.status(400).json({message:'before/after photo_type required'});
     const task=await photoTask(taskId,req.user);
+    const previousPhotoUrl = task[`${photo_type}_photo_url`];
     const {data,error}=await supabase.rpc('set_task_photo',{task_id:taskId,actor:req.user.id,slot:photo_type,url:null,photo_hash:null,expected_version:task.fc_version});
     if(error) throw error;
     if(data.status==='conflict') return res.status(409).json(data);
+    if (previousPhotoUrl) {
+      const previousPath = extractValidatedStoragePath(previousPhotoUrl, CLEANUP_TASK_PHOTOS_STORAGE_PATH, taskId, photo_type);
+      if (previousPath) {
+        await removeOrQueue(CLEANUP_TASK_PHOTOS_STORAGE_PATH, previousPath);
+      }
+    }
     res.json({task:data.server_record});
   } catch(error){next(error);}
+};
+
+export const getCleanupPhotoMedia = async (req, res, next) => {
+  try {
+    const { taskId, slot } = req.params;
+    if (!['before', 'after'].includes(slot)) return res.status(400).json({ message: 'Invalid photo slot' });
+    const task = await photoTask(taskId, req.user);
+    const photoUrl = task[`${slot}_photo_url`];
+    if (!photoUrl) return res.status(404).json({ message: 'No photo uploaded for this slot' });
+    const storagePath = extractValidatedStoragePath(photoUrl, CLEANUP_TASK_PHOTOS_STORAGE_PATH, taskId, slot);
+    if (!storagePath) {
+      return res.status(404).json({ message: 'Photo reference is not a trusted Storage object' });
+    }
+    const { data: signedData, error: signError } = await supabase.storage
+      .from(CLEANUP_TASK_PHOTOS_STORAGE_PATH)
+      .createSignedUrl(storagePath, 3600); // 1 hour
+    if (!signError && signedData?.signedUrl) {
+      return res.redirect(signedData.signedUrl);
+    }
+    const { data: blob, error: downloadError } = await supabase.storage
+      .from(CLEANUP_TASK_PHOTOS_STORAGE_PATH)
+      .download(storagePath);
+    if (downloadError || !blob) throw (downloadError || new Error('Failed to retrieve photo bytes'));
+    const buffer = Buffer.from(await blob.arrayBuffer());
+    res.setHeader('Content-Type', blob.type || 'image/jpeg');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    return res.send(buffer);
+  } catch (error) { next(error); }
 };
 
 export const markTaskComplete = async (req,res,next) => {

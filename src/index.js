@@ -1,3 +1,4 @@
+import { startStorageCleanup, stopStorageCleanup } from './services/storage-cleanup.service.js';
 import { startDispatchWatchdog, stopDispatchWatchdog } from './jobs/dispatch-watchdog.js';
 import { startPlanningWorker, stopPlanningWorker } from './jobs/planning-worker.js';
 // Main entry point for the EcoPin backend API server.
@@ -28,12 +29,14 @@ startAllSchedules();
 startSlaSchedule();
 startDispatchWatchdog();
 startPlanningWorker();
+startStorageCleanup();
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
     stopSlaSchedule();
     stopDispatchWatchdog();
     stopPlanningWorker();
+    stopStorageCleanup();
     console.log('SIGTERM signal received: closing HTTP server');
     server.close(() => {
         console.log('HTTP server closed');
@@ -44,6 +47,7 @@ process.on('SIGINT', () => {
     stopSlaSchedule();
     stopDispatchWatchdog();
     stopPlanningWorker();
+    stopStorageCleanup();
     console.log('SIGINT signal received: closing HTTP server');
     server.close(() => {
         console.log('HTTP server closed');

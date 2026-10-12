@@ -4,3 +4,5 @@ node_modules/
 # environment files
 env
 .env
+# Persistent private cleanup jobs
+.private/

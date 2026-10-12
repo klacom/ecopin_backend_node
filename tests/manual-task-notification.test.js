@@ -1,7 +1,7 @@
 import {jest} from '@jest/globals';
 const from=jest.fn(),rpc=jest.fn();
 jest.unstable_mockModule('../src/config/supabase.config.js',()=>({supabaseAdmin:{from,rpc}}));
-jest.unstable_mockModule('../src/config/index.js',()=>({CLEANUP_TASK_PHOTOS_STORAGE_PATH:'Cleanup Task Photos',BEFORE_AFTER_PHOTO_FILE_SIZE:1024}));
+jest.unstable_mockModule('../src/config/index.js',()=>({NEXT_PUBLIC_SUPABASE_URL:'https://synthetic.invalid',CLEANUP_TASK_PHOTOS_STORAGE_PATH:'Cleanup Task Photos',BEFORE_AFTER_PHOTO_FILE_SIZE:1024}));
 jest.unstable_mockModule('../src/services/photo_dedup.service.js',()=>({hashBuffer:jest.fn(),checkPhotoDuplicate:jest.fn()}));
 jest.unstable_mockModule('../src/modules/optimization/services/dispatchPlanner.service.js',()=>({generateDispatchPlan:jest.fn()}));
 jest.unstable_mockModule('../src/modules/optimization/services/dispatchCommit.service.js',()=>({commitAndRoutePlan:jest.fn()}));

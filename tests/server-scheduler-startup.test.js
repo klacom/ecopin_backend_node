@@ -8,6 +8,8 @@ test('normal server entrypoint starts and stops the SLA scheduler', async () => 
   const watchdogStop = jest.fn();
   const planningStart = jest.fn();
   const planningStop = jest.fn();
+  const cleanupStart=jest.fn(), cleanupStop=jest.fn();
+  jest.unstable_mockModule('../src/services/storage-cleanup.service.js',()=>({startStorageCleanup:cleanupStart,stopStorageCleanup:cleanupStop}));
   const listeners = new Map();
   jest.unstable_mockModule('../src/app.js', () => ({ default: { listen: jest.fn(() => server) } }));
   jest.unstable_mockModule('../src/config/index.js', () => ({ PORT: 3000, NODE_ENV: 'test', NEXT_PUBLIC_SUPABASE_URL: 'test' }));
@@ -22,10 +24,12 @@ test('normal server entrypoint starts and stops the SLA scheduler', async () => 
     expect(start).toHaveBeenCalledTimes(1);
     expect(watchdogStart).toHaveBeenCalledTimes(1);
     expect(planningStart).toHaveBeenCalledTimes(1);
+    expect(cleanupStart).toHaveBeenCalledTimes(1);
     listeners.get('SIGTERM')();
     expect(stop).toHaveBeenCalledTimes(1);
     expect(watchdogStop).toHaveBeenCalledTimes(1);
     expect(planningStop).toHaveBeenCalledTimes(1);
+    expect(cleanupStop).toHaveBeenCalledTimes(1);
     expect(server.close).toHaveBeenCalledTimes(1);
   } finally {
     on.mockRestore();

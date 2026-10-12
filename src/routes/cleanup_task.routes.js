@@ -6,6 +6,7 @@ import {
     getCleanupTaskById,
     uploadCleanupPhoto,
     deleteCleanupPhoto,
+    getCleanupPhotoMedia,
     markTaskComplete,
     getTasksByClusterId,
     assignCleanupTask,
@@ -41,9 +42,10 @@ router.get('/:id', getCleanupTaskById);
 // Assignment routes (officer only)
 router.patch('/:id/assign', authorize(ROLE_GROUPS.DESK_OPS), assignCleanupTask);
 
-// Photo upload routes
+// Photo routes
 router.post('/:taskId/photo', upload.single('image'), uploadCleanupPhoto);
 router.delete('/:taskId/photo', deleteCleanupPhoto);
+router.get('/:taskId/photo/:slot', getCleanupPhotoMedia);
 
 // Task completion (field crew only)
 router.patch('/:id/complete', markTaskComplete);
