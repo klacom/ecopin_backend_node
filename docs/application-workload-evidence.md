@@ -1,0 +1,15 @@
+# Representative application workloads
+
+Run `node scripts/benchmark-representative-scale.mjs` only against the private local recovery stack. It creates unique native Auth users and password-login sessions, 10,000 reports, 1,000 tasks, 5,000 explicit notifications plus native assignment notifications, and 1,000 receipts issued by canonical report-to-task assignment triggers. Cleanup removes only tagged records, generated receipts/audit events and fixture users. Do not use hosted Supabase for these fixtures.
+
+Seven measured flows: owner report page; officer moderation page; officer task page through the production backend router; assigned crew report detail through its production router; citizen unread notification page; safe public map viewport; attempted account deletion through the production admin router. The deletion intentionally returns HTTP 400 because the profile owns report history. This is an expected protected outcome, not a successful rich-account deletion. Native successful parent cascades are measured separately in `parent-lifecycle-wal-regression.sql`.
+
+The HTTP gate validates row ownership/filtering, bounded page sizes, canonical task association and the public map's safe projection. Direct receipt-table access is intentionally denied; the crew flow uses the actual report-detail route. SQL join evidence still measures native canonical receipts separately. Backend routes retain actual Auth, profile-role, suspension, rate-limit and error middleware. This harness does not render the full app or include every global HTTP middleware. Synthetic SQL-created accounts were rejected by the actual Auth check; the harness now uses native password-login sessions.
+
+Each flow has 20 sequential samples. A separate burst offers 100 concurrent virtual clients across the seven flows. The fixture server's in-memory rate counter is reset between measurement phases; its configured 100/IP/window limit remains enabled within the burst. The 100 clients share role sessions; this is not 100 distinct accounts or sustained production capacity.
+
+12 October local result: 100 offered concurrent requests, peak 42 backend requests (the other flows go directly to Supabase), zero unexpected errors, aggregate p95 1,239.16 ms. Sequential p95: owner 12.03 ms; moderation 22.00 ms; tasks 162.27 ms; crew detail 147.79 ms; notifications 16.88 ms; viewport 32.59 ms; protected parent deletion 129.81 ms. No production latency target is claimed from this one burst.
+
+Database snapshots: 18/27/27 connections before/during/after; deadlocks stayed zero. Snapshots do not prove configured pool bounds or CPU/IOPS/fanout targets. Actual Realtime fanout, resource/timeouts/pool evidence and existing unbounded application lists remain separate completion gates. The bounded requests here must not be cited as proof that every current caller paginates correctly.
+
+Full source evidence: `C:/dev/App-Builders-Hackathon/.ecopin-optimization/REPRESENTATIVE_SCALE_PERFORMANCE_BENCHMARK.json`. The old zero-WAL and static transport-cost attribution are superseded. Cleanup verification returned zero benchmark reports, tasks and native fixture users.

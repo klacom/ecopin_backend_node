@@ -1,7 +1,8 @@
 import { execSync, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import jwt from 'jsonwebtoken';
+import {createClient} from '@supabase/supabase-js';
+import {benchmarkApplicationFlows} from './benchmark-application-flows.mjs';
 
 const ROOT_PATH = 'C:/dev/App-Builders-Hackathon/.ecopin-optimization';
 const STATUS_PATH = `${ROOT_PATH}/.private/local-supabase-recovery/status.private.json`;
@@ -35,33 +36,25 @@ async function main() {
   console.log('Measurement conditions: PostgreSQL 17.11 / PostGIS 3.3.7 container, PostgREST/Kong API');
 
   const local = JSON.parse(await fs.readFile(STATUS_PATH, 'utf8'));
-  const jwtSecret = local.JWT_SECRET;
   const apiUrl = local.API_URL;
 
-  // Benchmark User Identifiers
-  const citizenId = 'bbbbbbbb-1111-4000-a000-000000000001';
-  const officerId = 'bbbbbbbb-2222-4000-a000-000000000002';
-  const crewId    = 'bbbbbbbb-3333-4000-a000-000000000003';
-
-  // Mint Real JWTs
-  const citizenJwt = jwt.sign({
-    aud: 'authenticated',
-    role: 'authenticated',
-    sub: citizenId,
-    email: 'bench_citizen@ecopin.test',
-    app_metadata: { provider: 'email' },
-    user_metadata: { role: 'citizen' }
-  }, jwtSecret, { expiresIn: '1h' });
-
-  const officerJwt = jwt.sign({
-    aud: 'authenticated',
-    role: 'authenticated',
-    sub: officerId,
-    email: 'bench_officer@ecopin.test',
-    app_metadata: { provider: 'email' },
-    user_metadata: { role: 'officer' }
-  }, jwtSecret, { expiresIn: '1h' });
-
+  if(new URL(apiUrl).hostname!=='127.0.0.1')throw new Error('Benchmark only the private local stack');
+  const authAdmin=createClient(apiUrl,local.SERVICE_ROLE_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
+  const provisioned=[];
+  async function provision(role){
+    const email=`load-${role}-${randomUUID()}@ecopin.test`,password=randomUUID()+'aA1!';
+    try {
+      const result=await authAdmin.auth.admin.createUser({email,password,email_confirm:true});if(result.error)throw result.error;
+      provisioned.push(result.data.user.id);
+      const profile=await authAdmin.from('profiles').upsert({id:result.data.user.id,role,full_name:`Native benchmark ${role}`});if(profile.error)throw profile.error;
+      const client=createClient(apiUrl,local.ANON_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
+      const login=await client.auth.signInWithPassword({email,password});if(login.error)throw login.error;
+      return {id:result.data.user.id,token:login.data.session.access_token};
+    }catch(error){for(const id of provisioned){await authAdmin.from('profiles').delete().eq('id',id);await authAdmin.auth.admin.deleteUser(id);}throw error;}
+  }
+  const citizen=await provision('citizen'),officer=await provision('officer'),crew=await provision('field_crew');
+  const citizenId=citizen.id,officerId=officer.id,crewId=crew.id;
+  const citizenJwt=citizen.token,officerJwt=officer.token,crewJwt=crew.token;
   const benchmarkTag = `BENCHMARK_${Date.now()}`;
   const telemetry = {
     benchmark_id: benchmarkTag,
@@ -85,13 +78,6 @@ async function main() {
     // 1. Setup users in auth.users and public.profiles
     await runPsql(`
       BEGIN;
-      INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at)
-      VALUES 
-        ('${citizenId}', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'bench_citizen@ecopin.test', 'encrypted', now(), '{"provider":"email"}', '{"role":"citizen"}', now(), now()),
-        ('${officerId}', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'bench_officer@ecopin.test', 'encrypted', now(), '{"provider":"email"}', '{"role":"officer"}', now(), now()),
-        ('${crewId}', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'bench_crew@ecopin.test', 'encrypted', now(), '{"provider":"email"}', '{"role":"field_crew"}', now(), now())
-      ON CONFLICT (id) DO NOTHING;
-
       UPDATE public.profiles SET role = 'citizen', full_name = 'Benchmark Citizen' WHERE id = '${citizenId}';
       UPDATE public.profiles SET role = 'officer', full_name = 'Benchmark Officer' WHERE id = '${officerId}';
       UPDATE public.profiles SET role = 'field_crew', full_name = 'Benchmark Crew Worker' WHERE id = '${crewId}';
@@ -152,24 +138,18 @@ async function main() {
     console.log('   -> Generating 1,000 field assignment receipts...');
     await runPsql(`
       WITH sample_tasks AS (
-        SELECT id as task_id, row_number() over () as rn FROM cleanup_tasks WHERE description LIKE '%${benchmarkTag}%' LIMIT 1000
-      ),
-      sample_reports AS (
-        SELECT id as report_id, row_number() over () as rn FROM reports WHERE description LIKE '%${benchmarkTag}%' LIMIT 1000
+        SELECT id task_id,row_number() OVER (ORDER BY id) rn FROM public.cleanup_tasks
+        WHERE description LIKE '%${benchmarkTag}%' AND route_status='ready'
+          AND status::text IN ('created','pending','in_progress')
+      ), sample_reports AS (
+        SELECT id report_id,row_number() OVER (ORDER BY id) rn FROM public.reports
+        WHERE description LIKE '%${benchmarkTag}%' AND validation_status='approved'
+          AND status::text IN ('unresolved','in_progress') ORDER BY id LIMIT 1000
       )
-      INSERT INTO public.field_assignment_receipts (
-        id, task_id, report_id, crew_id, assignment_generation, report_claim_generation, issued_at
-      )
-      SELECT
-        gen_random_uuid(),
-        st.task_id,
-        sr.report_id,
-        '${crewId}',
-        1,
-        1,
-        now() - ((st.rn % 7) || ' days')::interval
-      FROM sample_tasks st
-      JOIN sample_reports sr ON st.rn = sr.rn;
+      UPDATE public.reports r SET cleanup_task_id=t.task_id FROM sample_reports sr
+      JOIN sample_tasks t ON t.rn=(sr.rn+1)/2 WHERE r.id=sr.report_id;
+      DO $$BEGIN IF (SELECT count(*) FROM public.field_assignment_receipts WHERE crew_id='${crewId}')<>1000
+        THEN RAISE EXCEPTION 'Expected 1000 native canonical assignment receipts'; END IF; END $$;
     `);
 
     // 5. Bulk inject 5,000 notifications
@@ -202,6 +182,7 @@ async function main() {
         (SELECT count(*) FROM field_assignment_receipts WHERE crew_id = '${crewId}') as receipts;
     `);
     console.log(`   -> Active Benchmark Counts:\n${counts.trim()}`);
+    telemetry.application_flows=await benchmarkApplicationFlows({local,citizenId,officerId,crewId,citizenJwt,officerJwt,crewJwt,benchmarkTag,runPsql});
 
     // =========================================================================
     // P01: Owner Feed and Moderation Queue at Representative Scale
@@ -392,7 +373,7 @@ async function main() {
       p95_ms: parseFloat(p95.toFixed(2)),
       p99_ms: parseFloat(p99.toFixed(2)),
       mean_ms: parseFloat(mean.toFixed(2)),
-      analysis: 'Kong proxying, TLS/TCP handshake reuse, and PostgREST JSON serialization account for 6-16ms delta above direct PostgreSQL index scan execution (0.12-0.35ms).'
+      analysis: 'These are separate local HTTP end-to-end samples, not 100 concurrent clients. Application-flow concurrency is recorded separately. Transport, serialization and Auth costs are not individually attributed by this measurement.'
     };
 
     // =========================================================================
@@ -402,9 +383,10 @@ async function main() {
     await runPsql(`
       BEGIN;
       DELETE FROM public.field_assignment_receipts WHERE crew_id = '${crewId}';
-      DELETE FROM public.cleanup_tasks WHERE description LIKE '%${benchmarkTag}%';
+      DELETE FROM public.sweeper_audit_log WHERE entity_id IN (SELECT id::text FROM public.reports WHERE description LIKE '%${benchmarkTag}%' UNION ALL SELECT id::text FROM public.cleanup_tasks WHERE description LIKE '%${benchmarkTag}%');
       DELETE FROM public.notifications WHERE body LIKE '%${benchmarkTag}%';
       DELETE FROM public.reports WHERE description LIKE '%${benchmarkTag}%';
+      DELETE FROM public.cleanup_tasks WHERE description LIKE '%${benchmarkTag}%';
       DELETE FROM public.profiles WHERE id IN ('${citizenId}', '${officerId}', '${crewId}');
       DELETE FROM auth.users WHERE id IN ('${citizenId}', '${officerId}', '${crewId}');
       COMMIT;
@@ -420,9 +402,10 @@ async function main() {
     try {
       await runPsql(`
         DELETE FROM public.field_assignment_receipts WHERE crew_id = '${crewId}';
-        DELETE FROM public.cleanup_tasks WHERE description LIKE '%${benchmarkTag}%';
+        DELETE FROM public.sweeper_audit_log WHERE entity_id IN (SELECT id::text FROM public.reports WHERE description LIKE '%${benchmarkTag}%' UNION ALL SELECT id::text FROM public.cleanup_tasks WHERE description LIKE '%${benchmarkTag}%');
         DELETE FROM public.notifications WHERE body LIKE '%${benchmarkTag}%';
         DELETE FROM public.reports WHERE description LIKE '%${benchmarkTag}%';
+        DELETE FROM public.cleanup_tasks WHERE description LIKE '%${benchmarkTag}%';
         DELETE FROM public.profiles WHERE id IN ('${citizenId}', '${officerId}', '${crewId}');
         DELETE FROM auth.users WHERE id IN ('${citizenId}', '${officerId}', '${crewId}');
       `);
