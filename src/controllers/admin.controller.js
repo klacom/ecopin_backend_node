@@ -227,9 +227,10 @@ export const changeUserPassword = async (req, res, next) => {
     const { id } = req.params;
     const { password } = req.body;
 
-    if (!password) {
+    if (!password || password.length < 6) {
         return res.status(400).json({
-            message: 'Password is required'
+            message: 'Invalid password',
+            error: 'Password must be at least 6 characters long'
         });
     }
 
@@ -310,42 +311,6 @@ export const deleteUser = async (req, res, next) => {
 
         res.status(200).json({
             message: 'User deleted successfully'
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// Change user password
-export const changeUserPassword = async (req, res, next) => {
-    const { id } = req.params;
-    const { password } = req.body;
-
-    if (!password || password.length < 6) {
-        return res.status(400).json({
-            message: 'Invalid password',
-            error: 'Password must be at least 6 characters long'
-        });
-    }
-
-    try {
-        const { error } = await supabase.auth.admin.updateUserById(id, {
-            password: password
-        });
-
-        if (error) {
-            return res.status(400).json({
-                message: 'Failed to change password',
-                error: error.message
-            });
-        }
-
-        const ipAddress = req.ip || req.connection.remoteAddress;
-        const userAgent = req.get('user-agent');
-        await logAuditAction(req.user.id, 'profile_update', `Changed password for user ${id}`, ipAddress, userAgent);
-
-        res.status(200).json({
-            message: 'Password changed successfully'
         });
     } catch (error) {
         next(error);
