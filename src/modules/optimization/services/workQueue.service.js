@@ -48,7 +48,13 @@ export async function getWorkQueue(limit = 100, targetOutliersOnly = false) {
   const boundedLimit=Math.max(1,Math.min(200,Number.isFinite(limit)?limit:100));
   const query=targetOutliersOnly ? supabase.from('reports').select('id,issue_type,status,severity_score,deadline_at,lifecycle_state')
     .is('cluster_id',null).is('cleanup_task_id',null).in('lifecycle_state',['maturing','sla_breached']).eq('status','unresolved').order('deadline_at').limit(boundedLimit)
-    : supabase.from('clusters').select('id,issue_type,center,status,priority,priority_score,report_count,estimated_effort_minutes,recommended_task_type,created_at')
-    .in('status',['prioritized','queued','monitoring']).order('priority_score',{ascending:false}).limit(boundedLimit);
-  const {data,error}=await query;if(error) throw error;return data??[];
+    : supabase.from('clusters').select('id,issue_type,center,status,priority,priority_score,report_count,estimated_effort_minutes,recommended_task_type,created_at,reports(id,status,cleanup_task_id)')
+    .in('status',['new','unresolved','prioritized','queued','monitoring']).order('priority_score',{ascending:false}).limit(200);
+  const {data,error}=await query;if(error) throw error;
+  if (targetOutliersOnly) return data??[];
+  return (data??[]).filter(cluster => (cluster.reports??[]).some(report =>
+    !report.cleanup_task_id && !['resolved','completed','closed','rejected'].includes(report.status)) &&
+    !(cluster.reports??[]).some(report => report.cleanup_task_id &&
+      !['resolved','completed','closed','rejected'].includes(report.status)))
+    .slice(0,boundedLimit).map(({ reports: _reports, ...cluster }) => cluster);
 }

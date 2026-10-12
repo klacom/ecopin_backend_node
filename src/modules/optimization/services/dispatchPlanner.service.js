@@ -47,9 +47,13 @@ export async function generateDispatchPlan(userId, input = {}) {
     }));
   }
   const selected = selectPlanItems(candidates, crews, activeTasks, settings);
+  const capableCrewCount = crews.filter(crew => crew.availability_status === 'available' &&
+    crew.shift_start && crew.shift_end &&
+    (settings.mode === 'sweeper' ? crew.supports_sweeper : crew.supports_standard) &&
+    ((crew.member_profile_ids?.length ?? 0) > 0 || crew.team_lead_profile_id)).length;
   const { data: plan, error } = await supabase.rpc('save_dispatch_plan', {
     actor: userId, plan_mode: settings.mode, settings, items: selected.items,
-    available_crews: crews.length, capacity_minutes: selected.totalCapacityMinutes
+    available_crews: capableCrewCount, capacity_minutes: selected.totalCapacityMinutes
   });
   if (error) throw error;
   return { plan, selectedCount: selected.items.filter(item => item.is_selected).length,

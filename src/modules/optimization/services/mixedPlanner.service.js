@@ -81,13 +81,15 @@ export function validateMixedProposal(proposal, tasks, matrix, vehicles, setting
 
 export async function generateMixedDispatchPlan(actor, input, { jobId, workerToken }) {
   await prioritizeBacklog();
-  const [settingRows, snapshot, crews, activeTasks] = await Promise.all([
+  const [settingRows, snapshot, availableCrews, activeTasks] = await Promise.all([
     rows(db.from('optimization_settings').select('key,value')),
     rows(db.rpc('mixed_planning_snapshot')),
     rows(db.from('field_crews').select('*').eq('availability_status', 'available')),
     rows(db.from('cleanup_tasks').select('assigned_field_crew_id,assigned_crew_ids,status,estimated_duration_min')
       .not('status', 'in', '(completed,cancelled)'))
   ]);
+  const crews = availableCrews.filter(crew =>
+    (crew.member_profile_ids?.length ?? 0) > 0 || crew.team_lead_profile_id);
   const configured = Object.fromEntries(settingRows.map(row => [row.key, row.value]));
   const settings = { ...configured, ...resolvePlanSettings(input), mode: 'mixed' };
   for (const key of ['mixed_spatial_buffer_meters','mixed_max_reports_per_anchor','mixed_max_detour_minutes',
@@ -252,13 +254,22 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
   const generalistMinutes = generalists.reduce((sum, crew) => sum + crewCapacity(crew, settings), 0);
   const specialistMinutes = crews.filter(crew => crew.supports_sweeper && !crew.supports_standard)
     .reduce((sum, crew) => sum + crewCapacity(crew, settings), 0);
+  // Provisional anchor reservations can be rejected by the solver. Report only
+  // work that survived the final route validation.
+  const assignedMinutes = items.filter(item => item.is_selected).reduce((sum, item) =>
+    sum + Number(item.estimated_duration_minutes || 0), 0);
+  const generalistUsed = items.filter(item => item.is_selected &&
+    crewById.get(item.planned_crew_id)?.supports_standard).reduce((sum, item) =>
+    sum + Number(item.estimated_duration_minutes || 0), 0);
+  const specialistUsed = assignedMinutes - generalistUsed;
   const capacity = { availableCrews: vehicles.length, totalMinutes: Math.floor(generalistMinutes + specialistMinutes),
     generalist: { minutes: Math.floor(generalistMinutes), crews: generalists.length,
       maxTasks: generalists.reduce((sum, crew) => sum + (crew.max_tasks_per_shift ?? 10), 0),
-      used: Math.ceil(anchorSelection.capacityUtilized), reserved: reserve },
+      used: Math.ceil(generalistUsed), reserved: reserve },
     specialist: { minutes: Math.floor(specialistMinutes),
-      crews: crews.filter(crew => crew.supports_sweeper && !crew.supports_standard).length },
-    used: Math.ceil(anchorSelection.capacityUtilized) };
+      crews: crews.filter(crew => crew.supports_sweeper && !crew.supports_standard).length,
+      used: Math.ceil(specialistUsed) },
+    used: Math.ceil(assignedMinutes) };
   const routeProposal = { ...proposal, travel_time_matrix_min: travel,
     node_ids: [...vehicles.map(vehicle => vehicle.id), ...tasks.map(task => task.id)],
     task_locations: Object.fromEntries(tasks.map(task => [task.id, task.location])),

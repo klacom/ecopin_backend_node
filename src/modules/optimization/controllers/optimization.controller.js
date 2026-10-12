@@ -150,7 +150,7 @@ export const getPlanItems = async (req, res, next) => {
 export const getPlan = async (req, res, next) => {
   try {
     const { data: plan, error } = await supabase.from('dispatch_plans')
-      .select('id,mode,status,planned_date,created_at,settings_snapshot,capacity_breakdown,rejected_bundles,solver_diagnostics,planning_as_of')
+      .select('id,mode,status,planned_date,created_at,settings_snapshot,capacity_breakdown,rejected_bundles,solver_diagnostics,planning_as_of,total_capacity_minutes,total_crews_available,route_proposal')
       .eq('id', req.params.id).maybeSingle();
     if (error) throw error;
     if (!plan) return res.status(404).json({ message: 'Plan not found' });
@@ -167,7 +167,27 @@ export const getPlan = async (req, res, next) => {
     }
     for (const item of items ?? []) if (item.item_type === 'bundled_report')
       byKey.get(item.group_key)?.satellites.push(item);
-    res.json({ plan, items, groups, capacity: plan.capacity_breakdown ?? {},
+    const selected = (items ?? []).filter(item => item.is_selected);
+    const selectedMinutes = selected.reduce((sum, item) => sum + Number(item.estimated_duration_minutes || 0), 0);
+    const plannedCrews = new Set(selected.map(item => item.planned_crew_id).filter(Boolean));
+    const capacity = plan.mode === 'mixed' ? plan.capacity_breakdown ?? {} : {
+      availableCrews: plan.total_crews_available ?? 0,
+      totalMinutes: plan.total_capacity_minutes ?? 0,
+      generalist: { used: plan.mode === 'standard' ? selectedMinutes : 0,
+        minutes: plan.mode === 'standard' ? plan.total_capacity_minutes ?? 0 : 0,
+        reserved: 0 },
+      specialist: { used: plan.mode === 'sweeper' ? selectedMinutes : 0,
+        minutes: plan.mode === 'sweeper' ? plan.total_capacity_minutes ?? 0 : 0 },
+      used: selectedMinutes
+    };
+    const proposedRoutes = (plan.route_proposal?.routes ?? []).filter(route => route.stops?.length).map(route => ({
+      crewId: route.vehicle_id,
+      distanceMeters: Number(route.total_distance_m || 0),
+      durationMinutes: Number(route.total_duration_min || 0)
+    }));
+    const { route_proposal: _routeProposal, ...publicPlan } = plan;
+    res.json({ plan: publicPlan, items, groups, capacity, plannedCrewCount: plannedCrews.size,
+      proposedRoutes,
       rejectedBundles: plan.rejected_bundles ?? [], settings: plan.settings_snapshot });
   } catch (error) { next(error); }
 };

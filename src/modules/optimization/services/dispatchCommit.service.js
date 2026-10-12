@@ -7,6 +7,11 @@ async function result(query) { const { data, error } = await query; if (error) t
 export async function commitAndRoutePlan(planId, actor) {
   const plan = await result(db.from('dispatch_plans').select('mode,route_proposal,settings_snapshot')
     .eq('id', planId).single());
+  const { count, error: countError } = await db.from('dispatch_plan_items')
+    .select('id', { count: 'exact', head: true }).eq('dispatch_plan_id', planId)
+    .eq('is_selected', true).neq('item_type', 'bundled_report');
+  if (countError) throw countError;
+  if (!count) return { tasks: [], results: [], run: null, routing_status: 'empty' };
   if (plan.mode === 'mixed') return commitMixedAndRoute(planId, actor, plan);
   const committed = await result(db.rpc('commit_dispatch_plan', { plan_id: planId, actor }));
   if (!committed.tasks.length) return { ...committed, run: null, routing_status: 'empty' };

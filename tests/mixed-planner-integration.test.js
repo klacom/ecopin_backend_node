@@ -16,6 +16,8 @@ const crew = { id: crewId, availability_status: 'available', supports_standard: 
   speed_factor: 1, service_time_factor: 1, max_tasks_per_shift: 10,
   max_volume_m3: 5, max_weight_kg: 1000, starting_volume_m3: 1, starting_weight_kg: 100,
   certifications: [], hazmat_certified: false };
+const unstaffedCrew = { ...crew, id: '00000000-0000-0000-0000-000000000031',
+  member_profile_ids: [], team_lead_profile_id: null };
 const settingsRows = Object.entries({ swmo_depot: { latitude: 14, longitude: 121 },
   mixed_spatial_buffer_meters: 1500, mixed_max_reports_per_anchor: 5,
   mixed_max_detour_minutes: 30, solver_time_limit_seconds: 2,
@@ -26,7 +28,7 @@ let saved;
 const db = {
   from: table => ({ select: () => ({
     then: resolve => resolve({ data: table === 'optimization_settings' ? settingsRows : [], error: null }),
-    eq: () => Promise.resolve({ data: table === 'field_crews' ? [crew] : [], error: null }),
+    eq: () => Promise.resolve({ data: table === 'field_crews' ? [crew, unstaffedCrew] : [], error: null }),
     not: () => Promise.resolve({ data: [], error: null })
   }) }),
   rpc: async (name, args) => {
@@ -54,6 +56,7 @@ test('one bounded solve creates a draft with distinct anchored satellites and lo
   { jobId: 'job-1', workerToken: 'worker-1' });
   expect(result.plan.id).toBe('plan-1');
   expect(saved.capacity.generalist).toMatchObject({ crews: 1, minutes: 495 });
+  expect(saved.capacity.availableCrews).toBe(1);
   expect(saved.items[0].estimated_duration_minutes).toBe(55);
   expect(saved.items.map(item => ({ type: item.item_type, selected: item.is_selected, reason: item.reason })))
     .toEqual([{ type: 'cluster', selected: true, reason: 'selected' },
@@ -67,6 +70,18 @@ test('one bounded solve creates a draft with distinct anchored satellites and lo
   expect(saved.items[1].load_snapshot).toEqual({ volume_m3: 1.4, weight_kg: 140 });
   expect(saved.proposal.node_ids).toEqual([crewId, `cluster:${clusterId}`, `satellite:${reportId}`]);
   expect(matrix).toHaveBeenCalledTimes(1);
+});
+
+test('solver-dropped work does not consume displayed draft capacity', async () => {
+  solve.mockImplementationOnce(async payload => ({ contract_version: 'v5', status: 'success',
+    routes: [{ vehicle_id: crewId, stops: [] }],
+    unassigned: payload.tasks.map(task => ({ task_id: task.id, reason: 'unknown_load' })),
+    solver_diagnostics: { candidate_nodes: payload.tasks.length } }));
+  await generateMixedDispatchPlan('officer', { mode: 'mixed' },
+    { jobId: 'job-dropped', workerToken: 'worker-dropped' });
+  expect(saved.items.every(item => !item.is_selected)).toBe(true);
+  expect(saved.capacity.used).toBe(0);
+  expect(saved.capacity.generalist.used).toBe(0);
 });
 
 test('unused Mixed reserve admits an unselected anchor in the same solver call', async () => {
