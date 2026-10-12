@@ -1,3 +1,4 @@
+import mediaRoutes from './routes/media.routes.js';
 // Main application file for the EcoPin backend API server. Sets up Express, middleware, and routes.
 
 import express, { json, urlencoded } from 'express';
@@ -123,6 +124,7 @@ app.get('/health', async (req, res) => {
 });
 
 // Routes
+app.use('/api/media', mediaRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/clusters', clusterRoutes);

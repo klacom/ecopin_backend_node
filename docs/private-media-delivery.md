@@ -1,0 +1,11 @@
+# Authenticated private image delivery
+
+Task-photo uploads persist `storage://<encoded bucket>/<object path>` references rather than signed URLs. The strict resolver also accepts existing public/authenticated/signed Supabase URLs from the configured project, discarding their query credentials. It rejects foreign hosts, unexpected buckets, malformed paths and traversal.
+
+`GET /api/media/storage?bucket=...&path=...` authenticates the caller, checks suspension, and downloads through Supabase using that caller's JWT plus the anon/publishable key. It never uses the service key for delivery or falls back to a public/signed URL. Bytes use private/no-store caching, Authorization variance and sandbox/nosniff headers. The older task-photo endpoint delegates to the same delivery path.
+
+Web galleries now resolve private references to authenticated byte requests and render temporary object URLs. Expired access tokens get one retry through the existing refresh API. Abandoned responses cannot replace the current image, and object URLs are revoked. Existing external/public images keep their existing behavior. Mobile photo widgets download private bytes with the native session, refresh once after 401, cancel abandoned requests, clear bytes on auth/source changes and preserve existing public-image caching/placeholders.
+
+Verified locally: backend 32 suites / 224 tests; actual Storage/Auth/media router 25 checks including stable reference persistence and current-readiness revocation; web resolver 4 tests plus 7 public-map tests and a successful 38-route production build; mobile resolver 3 tests and scoped widget/resolver analysis. Full mobile regression suite was blocked by C: disk exhaustion, not recorded as passed. Browser rendering and native mobile widget rendering with real media are still completion gates.
+
+Cloudinary URLs used by existing report/evidence pipelines are preserved; this change does not make those external assets private. Remaining delivery/authorization work includes the other private bucket matrices, overwrite permissions, rendered client verification, and final hosted rollout. Preserve the private recovery workspace and source files when freeing build space.

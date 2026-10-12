@@ -24,6 +24,7 @@ const pngHeader = Buffer.from([
   0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82 // IEND
 ]);
 
+let mediaServer;
 const results = [];
 const createdUsers=[];let fixtureTask,fixtureReport;const fixturePaths=[];const additionalReports=[];
 function record(testName, passed, detail = '') {
@@ -34,6 +35,13 @@ function record(testName, passed, detail = '') {
 
 async function main() {
   console.log('--- Real Storage HTTP API & Image Bytes Verification ---');
+  process.env.NEXT_PUBLIC_SUPABASE_URL=local.API_URL;
+  process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY=local.SERVICE_ROLE_KEY;
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY=local.ANON_KEY;
+  const {default:express}=await import('express');
+  const {default:mediaRoutes}=await import('../src/routes/media.routes.js');
+  const app=express();app.use('/api/media',mediaRoutes);
+  mediaServer=app.listen(0,'127.0.0.1');await new Promise(resolve=>mediaServer.once('listening',resolve));mediaServer.unref();
 
   // 1. Create test users and credentials in auth.users & public.profiles
   const crewId = randomUUID();
@@ -276,6 +284,24 @@ async function main() {
   const recreated=await adminClient.from('reports').insert({id:reportId,user_id:citizenUser.user.id,title:'Storage Byte Test Report',issue_type:'waste',location:'POINT(121.05 14.55)',validation_status:'approved'});
   if(recreated.error) throw recreated.error;
   record('Stale advisory report_ids cannot grant photo access',(await readAs(citizenToken))!==200);
+  const canonical=`storage://${encodeURIComponent('Cleanup Task Photos')}/${filePath}`;
+  const current=(await adminClient.from('cleanup_tasks').select('fc_version').eq('id',taskId).single()).data;
+  const attached=await adminClient.rpc('set_task_photo',{task_id:taskId,actor:crewUser.user.id,slot:'before',url:canonical,photo_hash:createHash('sha256').update(pngHeader).digest('hex'),expected_version:current.fc_version});
+  if(attached.error)throw attached.error;
+  record('Actual photo RPC stores a stable reference without expiration',attached.data.status==='success'&&attached.data.server_record.before_photo_url===canonical);
+  const mediaUrl=`http://127.0.0.1:${mediaServer.address().port}/api/media/storage?bucket=${encodeURIComponent('Cleanup Task Photos')}&path=${encodeURIComponent(filePath)}`;
+  const proxy=await fetch(mediaUrl,{headers:{Authorization:`Bearer ${crewToken}`}});
+  record('Actual backend media router serves authorized bytes',proxy.status===200&&Buffer.from(await proxy.arrayBuffer()).equals(pngHeader));
+  record('Backend bytes prohibit browser caching',proxy.headers.get('cache-control')==='private, no-store');
+  record('Backend media router denies anonymous callers',(await fetch(mediaUrl)).status===401);
+  record('Backend media router denies unrelated crew',(await fetch(mediaUrl,{headers:{Authorization:`Bearer ${foreignCrewToken}`}})).status!==200);
+  const readiness=await adminClient.from('cleanup_tasks').update({route_status:'needs_replan'}).eq('id',taskId);
+  if(readiness.error)throw readiness.error;
+  record('Backend media router rechecks current task readiness',(await fetch(mediaUrl,{headers:{Authorization:`Bearer ${crewToken}`}})).status!==200);
+  const ready=await adminClient.from('cleanup_tasks').update({route_status:'ready'}).eq('id',taskId);if(ready.error)throw ready.error;
+  const stored=(await adminClient.from('cleanup_tasks').select('fc_version').eq('id',taskId).single()).data;
+  const detached=await adminClient.rpc('set_task_photo',{task_id:taskId,actor:crewUser.user.id,slot:'before',url:null,photo_hash:null,expected_version:stored.fc_version});
+  if(detached.error||detached.data.status!=='success')throw new Error('Fixture photo detach failed');
   // 7. Test Deletion & Replacement
   console.log('\n[Action] Testing deletion authorization...');
   // Foreign crew delete rejected
@@ -315,6 +341,7 @@ async function main() {
 }
 
 try {await main();} finally {
+  mediaServer?.close();
   const ensure=result=>{if(result.error) throw new Error(`Fixture cleanup failed: ${result.error.code??'UNKNOWN'}`)};
   ensure(await adminClient.storage.from('Cleanup Task Photos').remove(fixturePaths));
   for(const id of additionalReports){ensure(await adminClient.from('field_assignment_receipts').delete().eq('report_id',id));ensure(await adminClient.from('reports').delete().eq('id',id));}
