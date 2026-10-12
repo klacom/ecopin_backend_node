@@ -27,6 +27,7 @@ const pngHeader = Buffer.from([
 let mediaServer;
 const results = [];
 const createdUsers=[];let fixtureTask,fixtureReport;const fixturePaths=[];const additionalReports=[];
+const matrixObjects=[];
 function record(testName, passed, detail = '') {
   results.push({ test: testName, status: passed ? 'PASS' : 'FAIL', detail });
   console.log(`[${passed ? 'PASS' : 'FAIL'}] ${testName}${detail ? ' - ' + detail : ''}`);
@@ -154,6 +155,45 @@ async function main() {
     validation_status: 'approved'
   });
   if (reportInsertErr) throw reportInsertErr;
+
+  // Exercise actual HTTP byte mutations for every private bucket and role.
+  const actors={crew:crewClient,foreignCrew:foreignCrewClient,owner:citizenClient,foreignOwner:foreignCitizenClient,
+    anonymous:createClient(local.API_URL,local.ANON_KEY,{auth:{persistSession:false,autoRefreshToken:false}})};
+  for(const role of ['officer','admin']){
+    const email=`matrix-${role}-${randomUUID()}@ecopin.test`;
+    const user=await adminClient.auth.admin.createUser({email,password:defaultPassword,email_confirm:true});
+    if(user.error)throw user.error;createdUsers.push(user.data.user.id);
+    const profile=await adminClient.from('profiles').upsert({id:user.data.user.id,full_name:`Matrix ${role}`,role});if(profile.error)throw profile.error;
+    actors[role]=createClient(local.API_URL,local.ANON_KEY,{global:{headers:{Authorization:`Bearer ${await login(email)}`}},auth:{persistSession:false,autoRefreshToken:false}});
+  }
+  for(const bucket of ['Cleanup Task Photos','Report Cleanup','Report Evidence']){
+    const prefix=bucket==='Cleanup Task Photos'?`${taskId}/before`:bucket==='Report Cleanup'?`${reportId}/before`:citizenUser.user.id;
+    const path=`${prefix}/${randomUUID()}.png`;matrixObjects.push({bucket,path});
+    const seed=await adminClient.storage.from(bucket).upload(path,pngHeader,{contentType:'image/png'});if(seed.error)throw seed.error;
+    const publicRead=await fetch(`${local.API_URL}/storage/v1/object/public/${encodeURIComponent(bucket)}/${path}`);
+    record(`${bucket}: public endpoint denies anonymous bytes`,publicRead.status!==200);
+    for(const [role,client] of Object.entries(actors)){
+      const canRead=['owner','officer','admin'].includes(role)||(role==='crew'&&bucket!=='Report Evidence');
+      const canWrite=['officer','admin'].includes(role)||(bucket==='Report Evidence'?role==='owner':role==='crew');
+      const read=await client.storage.from(bucket).download(path);
+      record(`${bucket}: ${role} read ${canRead?'allowed':'denied'}`,canRead?(!read.error&&Buffer.from(await read.data.arrayBuffer()).equals(pngHeader)):!!read.error);
+      const uploadPath=`${prefix}/${randomUUID()}.png`;matrixObjects.push({bucket,path:uploadPath});
+      const upload=await client.storage.from(bucket).upload(uploadPath,pngHeader,{contentType:'image/png'});
+      record(`${bucket}: ${role} insert ${canWrite?'allowed':'denied'}`,canWrite?!upload.error:!!upload.error);
+      const changed=Buffer.concat([pngHeader,Buffer.from('replacement')]);
+      const upsert=await client.storage.from(bucket).upload(path,changed,{contentType:'image/png',upsert:true});
+      record(`${bucket}: ${role} direct overwrite denied`,!!upsert.error);
+      const update=await client.storage.from(bucket).update(path,changed,{contentType:'image/png'});
+      record(`${bucket}: ${role} direct update denied`,!!update.error);
+      const unchanged=await adminClient.storage.from(bucket).download(path);
+      record(`${bucket}: ${role} denied overwrite preserves bytes`,!unchanged.error&&Buffer.from(await unchanged.data.arrayBuffer()).equals(pngHeader));
+      const deleted=await client.storage.from(bucket).remove([uploadPath]);
+      const remaining=await adminClient.storage.from(bucket).download(uploadPath);
+      record(`${bucket}: ${role} delete respects authority`,canWrite?(!deleted.error&&!!remaining.error):!!remaining.error);
+      // A denied delete may return success with zero rows; verify existing bytes.
+      if(!canWrite){await client.storage.from(bucket).remove([path]);const retained=await adminClient.storage.from(bucket).download(path);record(`${bucket}: ${role} cannot delete existing bytes`,!retained.error&&Buffer.from(await retained.data.arrayBuffer()).equals(pngHeader));}
+    }
+  }
 
   // 3. Test Upload via Storage API
   const photoUuid = randomUUID();
@@ -344,6 +384,7 @@ try {await main();} finally {
   mediaServer?.close();
   const ensure=result=>{if(result.error) throw new Error(`Fixture cleanup failed: ${result.error.code??'UNKNOWN'}`)};
   ensure(await adminClient.storage.from('Cleanup Task Photos').remove(fixturePaths));
+  for(const bucket of ['Cleanup Task Photos','Report Cleanup','Report Evidence']){const paths=matrixObjects.filter(object=>object.bucket===bucket).map(object=>object.path);if(paths.length)ensure(await adminClient.storage.from(bucket).remove(paths));}
   for(const id of additionalReports){ensure(await adminClient.from('field_assignment_receipts').delete().eq('report_id',id));ensure(await adminClient.from('reports').delete().eq('id',id));}
   if(fixtureReport){ensure(await adminClient.from('field_assignment_receipts').delete().eq('report_id',fixtureReport));ensure(await adminClient.from('reports').delete().eq('id',fixtureReport));}
   if(fixtureTask)ensure(await adminClient.from('cleanup_tasks').delete().eq('id',fixtureTask));
