@@ -9,7 +9,7 @@ export function resolvePlanSettings(input = {}) {
     if (typeof settings[key] !== 'number' || !Number.isFinite(settings[key]) || settings[key] < min || settings[key] > max) throw badInput(`Invalid ${key}`);
   }
   if (!Number.isInteger(settings.max_tasks_per_shift)) throw badInput('max_tasks_per_shift must be an integer');
-  if (!['DRIVING', 'BICYCLE', 'WALKING'].includes(settings.travel_mode)) throw badInput('Invalid travel_mode');
+  if (!['DRIVING', 'BICYCLE', 'WALKING', 'MOTORCYCLE'].includes(settings.travel_mode)) throw badInput('Invalid travel_mode');
   if (settings.zone_ids?.length) throw badInput('Zone filtering requires a configured spatial zone model');
   for (const key of ['cluster_ids','report_ids']) {
     if (settings[key] !== undefined && (!Array.isArray(settings[key]) || settings[key].length>200 || !settings[key].every(id => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))) throw badInput(`Invalid ${key}`);
@@ -40,7 +40,7 @@ function shiftMinutes(crew) {
 }
 
 export function selectPlanItems(candidates, crews, activeTasks, settings) {
-  const travel = { DRIVING: 25, BICYCLE: 15, WALKING: 10 }[settings.travel_mode];
+  const travel = { DRIVING: 25, MOTORCYCLE: 20, BICYCLE: 15, WALKING: 10 }[settings.travel_mode] ?? 25;
   const capable = crews.filter(crew => crew.availability_status === 'available' && crew.shift_start && crew.shift_end && (settings.mode === 'sweeper' ? crew.supports_sweeper : crew.supports_standard) && ((crew.member_profile_ids?.length ?? 0) > 0 || crew.team_lead_profile_id));
   const budgets = capable.map(crew => {
     const members = [...(crew.member_profile_ids ?? []), crew.team_lead_profile_id].filter(Boolean);
@@ -54,7 +54,17 @@ export function selectPlanItems(candidates, crews, activeTasks, settings) {
       .sort((a, b) => b.budget.remaining - a.budget.remaining || a.budget.crew.id.localeCompare(b.budget.crew.id));
     const chosen = eligible[0];
     if (chosen) { chosen.budget.remaining -= chosen.minutes; chosen.budget.count++; }
-    return { ...candidate, crew_snapshot: chosen ? { speed_factor: Number(chosen.budget.crew.speed_factor), service_time_factor: Number(chosen.budget.crew.service_time_factor) } : {}, is_selected: Boolean(chosen), planned_crew_id: chosen?.budget.crew.id ?? null, estimated_work_minutes: Math.ceil(candidate.service_minutes * Number(chosen?.budget.crew.service_time_factor ?? 1)), estimated_duration_minutes: chosen?.minutes ?? Math.ceil(candidate.service_minutes + travel), reason: chosen ? 'selected' : capable.length ? 'insufficient_capacity' : 'no_capable_crew' };
+    return {
+      ...candidate,
+      crew_snapshot: chosen ? { speed_factor: Number(chosen.budget.crew.speed_factor), service_time_factor: Number(chosen.budget.crew.service_time_factor) } : {},
+      is_selected: Boolean(chosen),
+      status: chosen ? 'scheduled' : 'backlog',
+      operational_label: chosen ? 'Scheduled for dispatch' : capable.length ? 'Shift full · queued for next shift' : 'No qualified crew available on shift',
+      planned_crew_id: chosen?.budget.crew.id ?? null,
+      estimated_work_minutes: Math.ceil(candidate.service_minutes * Number(chosen?.budget.crew.service_time_factor ?? 1)),
+      estimated_duration_minutes: chosen?.minutes ?? Math.ceil(candidate.service_minutes + travel),
+      reason: chosen ? 'selected' : capable.length ? 'insufficient_capacity' : 'no_capable_crew'
+    };
   });
   return { items, totalCapacityMinutes: Math.floor(budgets.reduce((sum, budget) => sum + budget.total, 0)), capacityUtilized: budgets.reduce((sum, budget) => sum + budget.total - budget.remaining, 0) };
 }

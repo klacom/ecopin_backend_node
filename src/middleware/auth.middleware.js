@@ -1,15 +1,22 @@
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
 import { checkSuspension, expireOldStrikes } from "./strike.middleware.js";
+import { getCachedUser, setCachedUser } from "../services/auth-cache.service.js";
 
 export const authenticate = async (req, res, next) => {
     const authHeader = req.headers.authorization;
 
-    
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'No token provided' });
     }
 
     const token = authHeader.split(' ')[1];
+
+    // Check fast in-memory cache first to eliminate repeated Supabase Auth/DB lookups
+    const cachedUser = getCachedUser(token);
+    if (cachedUser) {
+        req.user = cachedUser;
+        return next();
+    }
 
     try {
         // 1. Verify the JWT and get the user
@@ -34,6 +41,9 @@ export const authenticate = async (req, res, next) => {
             user.full_name = profile.full_name;
         }
 
+        // Cache the verified user and role
+        setCachedUser(token, user);
+
         // Attach user and role to request object
         req.user = user;
 
@@ -50,6 +60,13 @@ export const optionalAuthenticate = async (req, res, next) => {
         return next();
     }
     const token = authHeader.split(' ')[1];
+
+    const cachedUser = getCachedUser(token);
+    if (cachedUser) {
+        req.user = cachedUser;
+        return next();
+    }
+
     try {
         const { data: { user }, error: authError } = await supabase.auth.getUser(token);
         if (authError || !user) return next();
@@ -66,6 +83,8 @@ export const optionalAuthenticate = async (req, res, next) => {
             user.role = profile.role;
             user.full_name = profile.full_name;
         }
+
+        setCachedUser(token, user);
         req.user = user;
         next();
     } catch (error) {

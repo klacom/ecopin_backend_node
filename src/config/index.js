@@ -16,8 +16,15 @@ export const SUPABASE_SERVICE_ROLE_KEY = process.env.NEXT_PUBLIC_SERVICE_ROLE_KE
 export const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 export const JWT_SECRET = process.env.JWT_SECRET;
 export const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
-export const RATE_LIMIT_WINDOW_MS = process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000;
-export const RATE_LIMIT_MAX_REQUESTS = process.env.RATE_LIMIT_MAX_REQUESTS || 100;
+export const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || (15 * 60 * 1000), 10);
+export const RATE_LIMIT_MAX_REQUESTS = parseInt(
+    process.env.RATE_LIMIT_MAX_REQUESTS || (NODE_ENV === 'production' ? '150' : '2500'),
+    10
+);
+export const OPS_RATE_LIMIT_MAX_REQUESTS = parseInt(
+    process.env.OPS_RATE_LIMIT_MAX_REQUESTS || (NODE_ENV === 'production' ? '600' : '5000'),
+    10
+);
 export const MIN_PASSWORD_LENGTH = 8;
 
 export const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';

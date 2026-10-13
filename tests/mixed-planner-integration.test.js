@@ -25,11 +25,12 @@ const settingsRows = Object.entries({ swmo_depot: { latitude: 14, longitude: 121
   mcda_weights: { severity: 0.4, urgency: 0.25, report_count: 0.15, waiting_time: 0.15, weather: 0.05 } })
   .map(([key, value]) => ({ key, value }));
 let saved;
+let activeTasksMock = [];
 const db = {
   from: table => ({ select: () => ({
     then: resolve => resolve({ data: table === 'optimization_settings' ? settingsRows : [], error: null }),
     eq: () => Promise.resolve({ data: table === 'field_crews' ? [crew, unstaffedCrew] : [], error: null }),
-    not: () => Promise.resolve({ data: [], error: null })
+    not: () => Promise.resolve({ data: table === 'cleanup_tasks' ? activeTasksMock : [], error: null })
   }) }),
   rpc: async (name, args) => {
     if (name === 'mixed_planning_snapshot') return { data: snapshot, error: null };
@@ -109,3 +110,63 @@ test('unused Mixed reserve admits an unselected anchor in the same solver call',
     snapshot.satellites = originalSatellites;
   }
 });
+
+test('TomTom Matrix provider failure triggers resilient geometric fallback without failing plan', async () => {
+  const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    matrix.mockRejectedValueOnce(new Error('TomTom 503 Service Unavailable'));
+    const result = await generateMixedDispatchPlan('officer', { mode: 'mixed' },
+      { jobId: 'job-fallback', workerToken: 'worker-fallback' });
+    expect(result.plan.id).toBe('plan-1');
+    expect(result.diagnostics.matrix_fallback_used).toBe(true);
+    expect(saved.items.some(item => item.is_selected)).toBe(true);
+    expect(saved.items[0]).toHaveProperty('status', 'scheduled');
+    expect(saved.items[0]).toHaveProperty('operational_label', 'Scheduled for dispatch');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[MixedPlanner] TomTom Distance Matrix unavailable'),
+      'TomTom 503 Service Unavailable'
+    );
+  } finally {
+    warnSpy.mockRestore();
+  }
+});
+
+test('rainy weather condition auto-scales service time by 1.15x buffer', async () => {
+  const result = await generateMixedDispatchPlan('officer', { mode: 'mixed', weather_condition: 'rainy' },
+    { jobId: 'job-rain', workerToken: 'worker-rain' });
+  expect(result.plan.id).toBe('plan-1');
+  expect(result.diagnostics.weather_adjustment).toEqual({ condition: 'rainy', multiplier: 1.15 });
+  expect(saved.settings.weather_condition).toBe('rainy');
+  expect(saved.settings.weather_multiplier).toBe(1.15);
+  // Anchor effort: 30 * 1.15 = 35; travel: 25 -> duration: 60
+  expect(saved.items[0].estimated_duration_minutes).toBe(60);
+});
+
+test('active tasks deduct remaining vehicle task capacity, time budget and physical load', async () => {
+  activeTasksMock = [{
+    assigned_field_crew_id: crewId,
+    status: 'pending',
+    estimated_duration_min: 116,
+    estimated_volume_m3: 0.5,
+    estimated_weight_kg: 50
+  }];
+  try {
+    await generateMixedDispatchPlan('officer', { mode: 'mixed' },
+      { jobId: 'job-active-tasks', workerToken: 'worker-active-tasks' });
+    const vehicle = solve.mock.lastCall[0].vehicles.find(v => v.id === crewId);
+    expect(vehicle).toBeDefined();
+    // Crew has max 10 tasks, 1 active task -> 9 remaining
+    expect(vehicle.max_tasks).toBe(9);
+    // Total budget 495 min - 116 busy min = 379 min remaining
+    expect(vehicle.remaining_budget_min).toBe(379);
+    expect(vehicle.effective_budget_min).toBe(364);
+    // Shift start: 480 (08:00), break: 60, buffer: 15 -> end = 480 + 60 + 364 = 904
+    expect(vehicle.shift_end_min).toBe(904);
+    // Starting load increases by busy load: 1 + 0.5 = 1.5, 100 + 50 = 150
+    expect(vehicle.starting_volume_m3).toBe(1.5);
+    expect(vehicle.starting_weight_kg).toBe(150);
+  } finally {
+    activeTasksMock = [];
+  }
+});
+

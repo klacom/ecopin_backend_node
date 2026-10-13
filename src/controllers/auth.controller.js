@@ -5,6 +5,7 @@ import { supabase, supabaseAdmin } from "../config/supabase.config.js";
 import { MOBILE_REDIRECT_URL } from "../config/index.js";
 import { generateVerificationToken, sendVerificationEmail } from "../services/email.service.js";
 import { createHash } from 'node:crypto';
+import { invalidateToken } from "../services/auth-cache.service.js";
 
 // Helper function to log audit action
 export const logAuditAction = async (userId, actionType, actionDetails, ipAddress = null, userAgent = null) => {
@@ -212,6 +213,10 @@ export const getMe = async (req, res, next) => {
  
 export const logout = async (req, res, next) => {
     try {
+        const authHeader = req.headers.authorization;
+        if (authHeader?.startsWith('Bearer ')) {
+            invalidateToken(authHeader.split(' ')[1]);
+        }
         const ipAddress = req.ip || req.connection.remoteAddress;
         const userAgent = req.get('user-agent');
         if (req.user && req.user.id) {

@@ -1,6 +1,7 @@
 import { supabaseAdmin as db } from '../../../config/supabase.config.js';
 import { generateRouteForCrew } from './routeGenerator.service.js';
 import { assignTasksToCrews } from './crewAssigner.service.js';
+import { disassemblePlan } from './planDisassembly.service.js';
 
 async function result(query) { const { data, error } = await query; if (error) throw error; return data; }
 
@@ -40,7 +41,8 @@ export async function commitAndRoutePlan(planId, actor) {
     return { ...committed, tasks, run: { id: published.run_id }, routing_status: 'ready' };
   } catch (error) {
     await result(db.rpc('finish_plan_routing', { plan_id: planId, actor, token: lease.token, failure: error.message }));
-    return { ...committed, run: null, routing_status: 'needs_replan', warning: error.message };
+    await disassemblePlan(planId, actor).catch(err => console.error('[Auto-Disassemble Error]', err));
+    return { ...committed, tasks: [], run: null, routing_status: 'failed', warning: error.message };
   }
 }
 
@@ -64,6 +66,7 @@ async function commitMixedAndRoute(planId, actor, plan) {
   } catch (error) {
     await result(db.rpc('finish_plan_routing', { plan_id: planId, actor,
       token: lease.token, failure: error.message }));
-    return { ...committed, run: null, routing_status: 'needs_replan', warning: error.message };
+    await disassemblePlan(planId, actor).catch(err => console.error('[Auto-Disassemble Error]', err));
+    return { ...committed, tasks: [], run: null, routing_status: 'failed', warning: error.message };
   }
 }

@@ -8,6 +8,7 @@ import {
     getReportById,
     uploadEvidence,
     getReportEvidence,
+    getBatchReportEvidence,
     upload,
     mediaUpload,
     updateReportStatus,
@@ -40,6 +41,7 @@ router.get('/public', getPublicReports);
 
 // Optionally authenticated routes
 router.get('/:reportId/evidence', optionalAuthenticate, getReportEvidence);
+router.post('/batch-evidence', optionalAuthenticate, getBatchReportEvidence);
 
 // All other report routes require authentication
 router.use(authenticate);

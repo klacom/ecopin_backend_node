@@ -11,7 +11,10 @@ async function rpc(name, args, client = db) {
 }
 
 export async function enqueuePlan(actor, input, idempotencyKey) {
-  const settings = resolvePlanSettings(input);
+  const settings = {
+    ...resolvePlanSettings(input),
+    environment: process.env.NODE_ENV || 'development'
+  };
   return rpc('enqueue_plan_generation', {
     actor, plan_mode: settings.mode, settings, request_key: idempotencyKey ?? null
   });
@@ -36,7 +39,8 @@ export async function readPlanJob(id, actor) {
 export async function processNextPlanningJob({ generate = generateDispatchPlan,
   generateMixed = generateMixedDispatchPlan, client = db } = {}) {
   const workerToken = randomUUID();
-  const job = await rpc('claim_plan_generation', { worker_id: workerToken }, client);
+  const workerEnv = process.env.NODE_ENV || 'development';
+  const job = await rpc('claim_plan_generation', { worker_id: workerToken, worker_env: workerEnv }, client);
   if (!job) return false;
   try {
     const result = job.mode === 'mixed'

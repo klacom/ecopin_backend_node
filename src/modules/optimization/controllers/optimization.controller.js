@@ -5,8 +5,10 @@ import { prioritizeBacklog, getWorkQueue } from '../services/workQueue.service.j
 import { dispatchClusters } from '../services/dispatch.service.js';
 import { commitAndRoutePlan } from '../services/dispatchCommit.service.js';
 import { generateDispatchPlan } from '../services/dispatchPlanner.service.js';
-import { enqueuePlan, readPlanJob } from '../services/planJobs.service.js';
+import { enqueuePlan, readPlanJob, processNextPlanningJob } from '../services/planJobs.service.js';
 import { processTaskFeedback } from '../services/taskFeedback.service.js';
+import { metresBetween } from '../services/geoTime.js';
+import { previewPlanDisassembly as svcPreviewDisassembly, disassemblePlan as svcDisassemblePlan } from '../services/planDisassembly.service.js';
 
 // Phase 2: Work Queue Endpoints
 export const prioritizeQueue = async (req, res, next) => {
@@ -45,6 +47,7 @@ export const generatePlan = async (req, res, next) => {
   try {
     const { settings = {} } = req.body;
     const job = await enqueuePlan(req.user.id, settings, req.get('Idempotency-Key'));
+    void processNextPlanningJob().catch(err => console.error('Immediate job processing error:', err));
     res.status(202).json(job);
   } catch (error) { next(error); }
 };
@@ -180,11 +183,111 @@ export const getPlan = async (req, res, next) => {
         minutes: plan.mode === 'sweeper' ? plan.total_capacity_minutes ?? 0 : 0 },
       used: selectedMinutes
     };
-    const proposedRoutes = (plan.route_proposal?.routes ?? []).filter(route => route.stops?.length).map(route => ({
-      crewId: route.vehicle_id,
-      distanceMeters: Number(route.total_distance_m || 0),
-      durationMinutes: Number(route.total_duration_min || 0)
-    }));
+    const depotSetting = plan.settings_snapshot?.depot;
+    const depotLat = Number(depotSetting?.lat ?? depotSetting?.latitude ?? 14.561433);
+    const depotLng = Number(depotSetting?.lng ?? depotSetting?.longitude ?? 121.075636);
+
+    const { data: dbCrews } = await supabase.from('field_crews').select('id, name');
+    const crewNameMap = new Map((dbCrews ?? []).map(c => [c.id, c.name]));
+
+    const taskLocations = plan.route_proposal?.task_locations ?? {};
+    const travelMatrix = plan.route_proposal?.travel_time_matrix_min;
+    const nodeIds = plan.route_proposal?.node_ids ?? [];
+    const nodeIndexMap = new Map(nodeIds.map((id, index) => [id, index]));
+
+    const proposedRoutes = (plan.route_proposal?.routes ?? []).filter(route => route.stops?.length).map((route, routeIdx) => {
+      const waypoints = [];
+      waypoints.push({
+        id: `depot-start-${route.vehicle_id}`,
+        sequence_order: 0,
+        latitude: depotLat,
+        longitude: depotLng,
+        waypoint_type: 'depot_start',
+        distance_from_previous_meters: 0,
+        estimated_time_from_previous_min: 0,
+      });
+
+      let prevLoc = { lat: depotLat, lng: depotLng };
+      let prevNodeId = route.vehicle_id;
+
+      (route.stops ?? []).forEach((stop, stopIdx) => {
+        const loc = taskLocations[stop.task_id];
+        const lat = Number(loc?.lat);
+        const lng = Number(loc?.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+        let distMeters = 0;
+        try {
+          distMeters = Math.ceil(metresBetween(prevLoc, { lat, lng }));
+        } catch (_) {}
+
+        const fromIdx = nodeIndexMap.get(prevNodeId);
+        const toIdx = nodeIndexMap.get(stop.task_id);
+        const durMin = (fromIdx != null && toIdx != null && travelMatrix?.[fromIdx]?.[toIdx] != null)
+          ? Math.ceil(travelMatrix[fromIdx][toIdx])
+          : Math.ceil(distMeters / 500);
+
+        const matchedItem = (items ?? []).find(it => it.group_key === stop.task_id || it.report_id === stop.task_id.replace(/^(satellite|sweeper):/, ''));
+
+        waypoints.push({
+          id: `stop-${route.vehicle_id}-${stopIdx + 1}`,
+          sequence_order: stopIdx + 1,
+          latitude: lat,
+          longitude: lng,
+          cleanup_task_id: stop.task_id,
+          waypoint_type: 'task',
+          cleanup_tasks: {
+            id: stop.task_id,
+            task_type: stop.task_id.startsWith('satellite:') || stop.task_id.startsWith('sweeper:') ? 'Scouting' : 'Cleanup',
+            report_ids: matchedItem?.report_ids ?? []
+          },
+          distance_from_previous_meters: distMeters,
+          estimated_time_from_previous_min: durMin
+        });
+
+        prevLoc = { lat, lng };
+        prevNodeId = stop.task_id;
+      });
+
+      let returnDistMeters = 0;
+      try {
+        returnDistMeters = Math.ceil(metresBetween(prevLoc, { lat: depotLat, lng: depotLng }));
+      } catch (_) {}
+
+      const lastFromIdx = nodeIndexMap.get(prevNodeId);
+      const depotIdx = nodeIndexMap.get(route.vehicle_id);
+      const returnDurMin = (lastFromIdx != null && depotIdx != null && travelMatrix?.[lastFromIdx]?.[depotIdx] != null)
+        ? Math.ceil(travelMatrix[lastFromIdx][depotIdx])
+        : Math.ceil(returnDistMeters / 500);
+
+      waypoints.push({
+        id: `depot-end-${route.vehicle_id}`,
+        sequence_order: waypoints.length,
+        latitude: depotLat,
+        longitude: depotLng,
+        waypoint_type: 'depot_end',
+        distance_from_previous_meters: returnDistMeters,
+        estimated_time_from_previous_min: returnDurMin
+      });
+
+      const totalDist = Number(route.total_distance_m) || waypoints.reduce((sum, w) => sum + (w.distance_from_previous_meters || 0), 0);
+      const totalDur = Number(route.total_duration_min) || waypoints.reduce((sum, w) => sum + (w.estimated_time_from_previous_min || 0), 0);
+      const crewName = crewNameMap.get(route.vehicle_id) || `Crew ${routeIdx + 1}`;
+
+      return {
+        id: route.vehicle_id,
+        crewId: route.vehicle_id,
+        vehicle_id: route.vehicle_id,
+        field_crews: { id: route.vehicle_id, name: crewName },
+        task_count: (route.stops ?? []).length,
+        distanceMeters: totalDist,
+        total_distance_meters: totalDist,
+        durationMinutes: totalDur,
+        total_duration_min: totalDur,
+        waypoints,
+        isDraft: true
+      };
+    });
     const { route_proposal: _routeProposal, ...publicPlan } = plan;
     res.json({ plan: publicPlan, items, groups, capacity, plannedCrewCount: plannedCrews.size,
       proposedRoutes,
@@ -244,6 +347,20 @@ export const discardOptimization = async (req, res, next) => {
     if (updateError) throw updateError;
     
     res.status(200).json({ message: 'Optimization discarded', run: discardedRun });
+  } catch (error) { next(error); }
+};
+
+export const previewPlanDisassembly = async (req, res, next) => {
+  try {
+    const preview = await svcPreviewDisassembly(req.params.id);
+    res.status(200).json(preview);
+  } catch (error) { next(error); }
+};
+
+export const disassemblePlan = async (req, res, next) => {
+  try {
+    const result = await svcDisassemblePlan(req.params.id, req.user.id);
+    res.status(200).json(result);
   } catch (error) { next(error); }
 };
 
@@ -524,4 +641,72 @@ export const clearDispatchBlock = async (req,res,next) => {
     const {data,error}=await supabase.rpc('clear_dispatch_block',{block_id:req.params.id,actor:req.user.id,notes:req.body.notes});
     if(error) throw error;res.json(data);
   } catch(error){next(error);}
+};
+
+export const getOptimizationOptions = async (req, res, next) => {
+  try {
+    const { data: settingsRows, error: settingsError } = await supabase
+      .from('optimization_settings')
+      .select('key, value');
+    if (settingsError) throw settingsError;
+
+    const settingsMap = Object.fromEntries(
+      (settingsRows || []).map(r => [r.key, r.value])
+    );
+
+    const { data: crewVehicles } = await supabase
+      .from('field_crews')
+      .select('vehicle_type')
+      .not('vehicle_type', 'is', null);
+
+    const activeVehicleTypes = Array.from(
+      new Set((crewVehicles || []).map(c => c.vehicle_type).filter(Boolean))
+    );
+
+    const options = {
+      travel_modes: [
+        { value: 'WALKING', label: 'Walking' },
+        { value: 'BICYCLE', label: 'Bicycle' },
+        { value: 'MOTORCYCLE', label: 'Motorcycle' },
+        { value: 'DRIVING', label: 'Vehicle' }
+      ],
+      task_types: [
+        'Cleanup',
+        'Investigation',
+        'Verification',
+        'Emergency Response',
+        'Reinspection',
+        'Monitoring',
+        'Escalation',
+        'Deferred'
+      ],
+      overtime_options: [
+        { label: '+0 min', value: 0 },
+        { label: '+15 min', value: 15 },
+        { label: '+30 min', value: 30 },
+        { label: '+60 min', value: 60 }
+      ],
+      break_durations: [0, 15, 30, 60, 90],
+      workflow_targets: [
+        { value: 'standard', label: 'Clusters' },
+        { value: 'sweeper', label: 'Sweepers' },
+        { value: 'mixed', label: 'Mixed' }
+      ],
+      vehicle_types: activeVehicleTypes.length ? activeVehicleTypes : ['compactor', 'pickup', 'tricycle', 'motorcycle', 'walking'],
+      depot: settingsMap.swmo_depot || {
+        name: 'SWMO Depot (PLP Center)',
+        latitude: 14.561616769364207,
+        longitude: 121.07466280460359
+      },
+      defaults: {
+        travel_mode: 'DRIVING',
+        break_duration_min: 60,
+        overtime_tolerance_min: 15,
+        max_tasks_per_shift: 15,
+        capacity_utilization: 1.0
+      }
+    };
+
+    res.status(200).json(options);
+  } catch (error) { next(error); }
 };

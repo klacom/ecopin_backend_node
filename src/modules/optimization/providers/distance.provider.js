@@ -8,11 +8,11 @@ export async function getDistanceAndDuration(lat1, lon1, lat2, lon2, provider = 
   signal?.throwIfAborted();
   if (provider === 'haversine') {
     const distance_meters = haversine(lat1, lon1, lat2, lon2);
-    return { distance_meters, duration_min: distance_meters / ({ DRIVING: 500, BICYCLE: 250, WALKING: 80 }[travelMode] ?? 500), approximate: true };
+    return { distance_meters, duration_min: distance_meters / ({ DRIVING: 500, MOTORCYCLE: 580, BICYCLE: 250, WALKING: 80 }[travelMode] ?? 500), approximate: true };
   }
   if (provider !== 'tomtom') throw new Error('Unsupported distance provider');
   if (!process.env.TOMTOM_API_KEY) throw new Error('TomTom routing is not configured');
-  const response = await fetch(`https://api.tomtom.com/routing/1/calculateRoute/${lat1},${lon1}:${lat2},${lon2}/json?key=${encodeURIComponent(process.env.TOMTOM_API_KEY)}&traffic=true&travelMode=${{ DRIVING: 'car', BICYCLE: 'bicycle', WALKING: 'pedestrian' }[travelMode] ?? 'car'}`, {
+  const response = await fetch(`https://api.tomtom.com/routing/1/calculateRoute/${lat1},${lon1}:${lat2},${lon2}/json?key=${encodeURIComponent(process.env.TOMTOM_API_KEY)}&traffic=true&travelMode=${{ DRIVING: 'car', MOTORCYCLE: 'motorcycle', BICYCLE: 'bicycle', WALKING: 'pedestrian' }[travelMode] ?? 'car'}`, {
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000)
   });
   if (!response.ok) throw new Error(`Routing provider returned ${response.status}`);

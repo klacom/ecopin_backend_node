@@ -1,6 +1,7 @@
 import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
 import { prioritizeBacklog } from './workQueue.service.js';
 import { resolvePlanSettings, selectPlanItems, reportPriority } from './planningPolicy.js';
+import { getLiveWeatherCondition } from './weather.service.js';
 
 async function rows(query) {
   const { data, error } = await query;
@@ -11,7 +12,11 @@ async function rows(query) {
 export async function generateDispatchPlan(userId, input = {}) {
   const settings = resolvePlanSettings(input);
   if (settings.mode === 'mixed') throw new Error('Mixed plans must run through the asynchronous planning job');
-  await prioritizeBacklog();
+  const weather = input.weather_condition ?? (process.env.NODE_ENV === 'test' ? 'normal' : await getLiveWeatherCondition().catch(() => 'normal'));
+  await prioritizeBacklog(weather === 'severe' ? 'storm' : weather === 'rainy' ? 'heavy_rain' : 'normal');
+  const weatherMultiplier = weather === 'severe' ? 1.30 : weather === 'rainy' ? 1.15 : 1.0;
+  settings.weather_condition = weather;
+  settings.weather_multiplier = weatherMultiplier;
   const [crews, activeTasks, workTimes, weightsRows, blocks] = await Promise.all([
     rows(supabase.from('field_crews').select('*').eq('availability_status', 'available')),
     rows(supabase.from('cleanup_tasks').select('assigned_field_crew_id, assigned_crew_ids, status, estimated_duration_min').not('status', 'in', '(completed,cancelled)')),
@@ -32,7 +37,7 @@ export async function generateDispatchPlan(userId, input = {}) {
       .map(cluster => ({
         item_type: 'cluster', cluster_id: cluster.id, report_id: null, group_key: 'cluster:' + cluster.id,
         report_ids: (cluster.reports ?? []).filter(report => !['resolved', 'completed', 'closed', 'rejected'].includes(report.status)).map(report => report.id),
-        service_minutes: Math.max(1, cluster.estimated_effort_minutes ?? 60), priority_score: cluster.priority_score ?? 0
+        service_minutes: Math.max(1, Math.ceil((cluster.estimated_effort_minutes ?? 60) * weatherMultiplier)), priority_score: cluster.priority_score ?? 0
       })).filter(candidate => candidate.report_ids.length && !candidate.report_ids.some(id => blockedReports.has(id)));
   } else {
     const reports = await rows(supabase.from('reports')
@@ -42,7 +47,7 @@ export async function generateDispatchPlan(userId, input = {}) {
     const serviceTimes = new Map(workTimes.map(row => [row.report_type, row.work_time_minutes]));
     candidates = reports.filter(report => !blockedReports.has(report.id) && (!settings.report_ids || settings.report_ids.includes(report.id))).map(report => ({
       lifecycle_state: report.lifecycle_state, item_type: 'report', cluster_id: null, report_id: report.id, group_key: 'report:' + report.id,
-      report_ids: [report.id], service_minutes: serviceTimes.get(report.issue_type) ?? 30,
+      report_ids: [report.id], service_minutes: Math.max(1, Math.ceil((serviceTimes.get(report.issue_type) ?? 30) * weatherMultiplier)),
       priority_score: reportPriority(report, weightsRows[0]?.value)
     }));
   }

@@ -21,6 +21,7 @@ test('Mixed job has one generation and one terminal completion; no HTTP request 
   expect(await processNextPlanningJob({ client, generateMixed })).toBe(true);
   expect(generateMixed).toHaveBeenCalledTimes(1);
   expect(calls.map(call => call.name)).toEqual(['claim_plan_generation', 'finish_plan_generation']);
+  expect(calls[0].args.worker_env).toBe(process.env.NODE_ENV || 'development');
   expect(calls[1].args.result_plan_id).toBe('plan-1');
   expect(calls[1].args.worker_id).toBe(calls[0].args.worker_id);
 });

@@ -70,3 +70,33 @@ test('provisional detour and candidate-node caps fail closed', () => {
     { report_id: 'next', reason: 'deferred_by_compute_limit' }
   ]));
 });
+
+test('unestimated sweeper reports fall back to municipal archetypes and avoid unknown_load', () => {
+  const unestimatedCandidate = {
+    id: 'unestimated_sweeper',
+    location: at(14.001),
+    lifecycle_state: 'maturing',
+    created_at: '2026-10-08T00:00:00Z',
+    base_priority_score: 85,
+    estimated_volume_m3: null,
+    estimated_weight_kg: null
+  };
+  const unestimatedGroup = [{
+    group_key: 'cluster:unestimated',
+    centre: at(14),
+    successorCentre: at(14.03),
+    estimated_volume_m3: null,
+    estimated_weight_kg: null,
+    crew: { vehicle_type: 'compactor' }
+  }];
+  const result = bundleReports({
+    groups: unestimatedGroup,
+    candidates: [unestimatedCandidate],
+    settings,
+    workMinutes: () => 10,
+    remainingMinutes: 100
+  });
+  expect(result.rejected.some(item => item.reason === 'unknown_load')).toBe(false);
+  expect(result.assignments[0].satellites.map(item => item.report.id)).toContain('unestimated_sweeper');
+});
+

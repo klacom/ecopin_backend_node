@@ -7,7 +7,10 @@ const report = { item_type: 'report', report_id: 'r2', group_key: 'report:r2', r
 test('Mixed is an accepted bounded planning mode', () => {
   expect(resolvePlanSettings({ mode: 'mixed' }).mode).toBe('mixed');
 });
-test.each([{ break_duration_min: -1 }, { overtime_tolerance_min: Infinity }, { max_tasks_per_shift: 0 }, { capacity_utilization: 2 }])('reject invalid planning settings %o', value => {
+test('MOTORCYCLE is an accepted valid travel mode', () => {
+  expect(resolvePlanSettings({ travel_mode: 'MOTORCYCLE' }).travel_mode).toBe('MOTORCYCLE');
+});
+test.each([{ break_duration_min: -1 }, { overtime_tolerance_min: Infinity }, { max_tasks_per_shift: 0 }, { capacity_utilization: 2 }, { travel_mode: 'SPACESHIP' }])('reject invalid planning settings %o', value => {
   expect(() => resolvePlanSettings(value)).toThrow();
 });
 test('standard fleet cannot receive sweeper reports', () => {
@@ -44,6 +47,11 @@ test('breached Sweeper reports precede higher-scored maturing reports', () => {
     { ...report, lifecycle_state: 'maturing', priority_score: 100 },
     { ...report, group_key: 'report:breached', lifecycle_state: 'sla_breached', priority_score: 1 }
   ], [{ ...crew, supports_sweeper: true }], [], resolvePlanSettings({ mode: 'sweeper' }));
-  expect(result.items[0]).toMatchObject({ group_key: 'report:breached', is_selected: true });
-  expect(result.items[1]).toMatchObject({ is_selected: false, reason: 'insufficient_capacity' });
+  expect(result.items[0]).toMatchObject({ group_key: 'report:breached', is_selected: true, status: 'scheduled', operational_label: 'Scheduled for dispatch' });
+  expect(result.items[1]).toMatchObject({ is_selected: false, reason: 'insufficient_capacity', status: 'backlog', operational_label: 'Shift full · queued for next shift' });
+});
+
+test('unselected candidate when no capable crew is available carries proper domain status', () => {
+  const result = selectPlanItems([report], [{ ...crew, supports_sweeper: false }], [], resolvePlanSettings({ mode: 'sweeper' }));
+  expect(result.items[0]).toMatchObject({ is_selected: false, reason: 'no_capable_crew', status: 'backlog', operational_label: 'No qualified crew available on shift' });
 });

@@ -36,3 +36,11 @@ test('walking routes use walking travel duration rather than driving duration', 
   expect(walk.duration_min).toBeGreaterThan(drive.duration_min * 6);
   expect(walk.distance_meters).toBe(drive.distance_meters);
 });
+
+test('motorcycle routes calculate expected agile duration', async () => {
+  const { getDistanceAndDuration } = await import('../src/modules/optimization/providers/distance.provider.js');
+  const drive = await getDistanceAndDuration(14,121,14.01,121,'haversine',undefined,'DRIVING');
+  const moto = await getDistanceAndDuration(14,121,14.01,121,'haversine',undefined,'MOTORCYCLE');
+  expect(moto.duration_min).toBeLessThanOrEqual(drive.duration_min);
+});
+

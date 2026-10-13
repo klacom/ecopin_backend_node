@@ -12,7 +12,7 @@ export function fleetSettings(input, creating = false) {
   if (creating && (typeof result.name!=='string'||!result.name.trim())) invalid('Crew name required');
   for (const key of ['supports_standard','supports_sweeper','hazmat_certified'])
     if (result[key]!==undefined && typeof result[key]!=='boolean') invalid(`Invalid ${key}`);
-  if (result.vehicle_type!==undefined && !['compactor','pickup','tricycle','motorcycle','hazmat_unit'].includes(result.vehicle_type))
+  if (result.vehicle_type!==undefined && !['compactor','pickup','tricycle','motorcycle','hazmat_unit','walking','bicycle'].includes(result.vehicle_type))
     invalid('Invalid vehicle type');
   if (result.certifications!==undefined && (!Array.isArray(result.certifications) ||
     result.certifications.length>20 || result.certifications.some(value => typeof value!=='string' || value.length>80)))

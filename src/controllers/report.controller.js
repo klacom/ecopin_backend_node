@@ -504,6 +504,67 @@ export const getReportEvidence = async (req, res, next) => {
     }
 };
 
+export const getBatchReportEvidence = async (req, res, next) => {
+    const rawIds = Array.isArray(req.body?.reportIds) ? req.body.reportIds : [];
+    if (!rawIds.length) {
+        return res.status(200).json({});
+    }
+
+    const reportIds = [...new Set(rawIds)].slice(0, 100);
+    const results = {};
+
+    try {
+        await Promise.all(reportIds.map(async (reportId) => {
+            try {
+                const access = await readReportForViewer(supabase, reportId, req.user);
+                if (!access || !canReadReportEvidence(access)) {
+                    results[reportId] = [];
+                    return;
+                }
+
+                const prefix = `report_evidence/${reportId}`;
+                const [imageResources, videoResources] = await Promise.all([
+                    cloudinary.api.resources({
+                        type: 'upload',
+                        prefix,
+                        max_results: 100,
+                        resource_type: 'image'
+                    }).catch(() => ({ resources: [] })),
+                    cloudinary.api.resources({
+                        type: 'upload',
+                        prefix,
+                        max_results: 100,
+                        resource_type: 'video'
+                    }).catch(() => ({ resources: [] }))
+                ]);
+
+                const allResources = [...(imageResources.resources || []), ...(videoResources.resources || [])];
+                results[reportId] = allResources.map(resource => {
+                    const fullPublicId = resource.public_id;
+                    const parts = fullPublicId.split('/');
+                    const fileName = parts[parts.length - 1] + (resource.format ? '.' + resource.format : '');
+                    return {
+                        name: fileName,
+                        url: resource.secure_url,
+                        size: resource.bytes,
+                        public_id: resource.public_id,
+                        createdAt: resource.created_at,
+                        resource_type: resource.resource_type
+                    };
+                });
+            } catch (err) {
+                console.error(`Error fetching batch evidence for report ${reportId}:`, err.message);
+                results[reportId] = [];
+            }
+        }));
+
+        res.status(200).json(results);
+    } catch (error) {
+        console.error('Error in getBatchReportEvidence:', error);
+        next(error);
+    }
+};
+
 export const createReport = async (req, res, next) => {
     const {
         title,
