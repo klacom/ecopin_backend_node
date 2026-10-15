@@ -526,11 +526,42 @@ export const getFieldCrews = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-export const updateCrewMembers = async (req,res,next) => {
+export const updateCrewMembers = async (req, res, next) => {
   try {
-    const {data,error}=await supabase.rpc('change_field_crew_member',{crew_id:req.params.id,actor:req.user.id,member_id:req.body.user_id,action:req.body.action});
-    if(error) throw error;res.json(data);
-  } catch(error){next(error);}
+    const { user_id, action } = req.body;
+    const crew_id = req.params.id;
+
+    if (!crew_id) {
+      return res.status(400).json({ message: 'Crew ID is required in URL path' });
+    }
+    if (!user_id) {
+      return res.status(400).json({ message: 'user_id is required in request body' });
+    }
+    if (!action || !['add', 'remove'].includes(action)) {
+      return res.status(400).json({ message: 'action must be either "add" or "remove"' });
+    }
+
+    const { data, error } = await supabase.rpc('change_field_crew_member', {
+      crew_id,
+      actor: req.user.id,
+      member_id: user_id,
+      action
+    });
+
+    if (error) {
+      return res.status(400).json({
+        message: error.message || error.details || 'Failed to update crew member',
+        error: error.message
+      });
+    }
+
+    return res.status(200).json(data);
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      message: error.message || 'Failed to update crew member',
+      error: error.message
+    });
+  }
 };
 
 export const getUnassignedMembers = async (req, res, next) => {
@@ -544,13 +575,16 @@ export const getUnassignedMembers = async (req, res, next) => {
 
     if (profilesError) return res.status(400).json({ message: 'Failed to fetch field crew users' });
 
-    // Get all assigned member IDs across all crews
+    // Get all assigned member IDs across all crews (including team leads)
     const { data: crews } = await supabase
       .from('field_crews')
-      .select('member_profile_ids');
+      .select('member_profile_ids, team_lead_profile_id');
 
     const assignedIds = new Set(
-      (crews || []).flatMap(c => c.member_profile_ids || [])
+      (crews || []).flatMap(c => [
+        ...(c.member_profile_ids || []),
+        c.team_lead_profile_id
+      ]).filter(Boolean)
     );
 
     const unassigned = (fcUsers || []).filter(u => !assignedIds.has(u.id));

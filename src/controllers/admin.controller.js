@@ -380,29 +380,103 @@ export const updateSystemSettings = async (req, res, next) => {
     }
 };
 
-// Get audit logs
-export const getAuditLogs = async (req, res, next) => {
+// Get system logs (authentication, security, session activity)
+export const getSystemLogs = async (req, res, next) => {
     const { page = 1, limit = 50, action_type = '', user_id = '', start_date = '', end_date = '' } = req.query;
     const offset = (page - 1) * limit;
 
     try {
         let query = supabase
-            .from('audit_logs')
+            .from('system_logs')
             .select('*', { count: 'exact' })
             .range(offset, offset + limit - 1)
             .order('created_at', { ascending: false });
 
-        // Apply action type filter
         if (action_type) {
             query = query.eq('action_type', action_type);
         }
 
-        // Apply user filter
         if (user_id) {
             query = query.eq('user_id', user_id);
         }
 
-        // Apply date range filter
+        if (start_date) {
+            query = query.gte('created_at', start_date);
+        }
+        if (end_date) {
+            query = query.lte('created_at', end_date);
+        }
+
+        const { data, error, count } = await query;
+
+        if (error) {
+            return res.status(400).json({
+                message: 'Failed to fetch system logs',
+                error: error.message
+            });
+        }
+
+        // Fetch user profiles & emails efficiently
+        const uniqueUserIds = [...new Set((data || []).map(l => l.user_id).filter(Boolean))];
+        const profileMap = new Map();
+
+        if (uniqueUserIds.length > 0) {
+            const { data: profs } = await supabase
+                .from('profiles')
+                .select('id, full_name, role')
+                .in('id', uniqueUserIds);
+
+            (profs || []).forEach(p => profileMap.set(p.id, { full_name: p.full_name, role: p.role, email: 'N/A' }));
+
+            // Attempt batch auth user retrieval
+            await Promise.all(uniqueUserIds.map(async (uid) => {
+                try {
+                    const { data: authUser } = await supabase.auth.admin.getUserById(uid);
+                    if (authUser?.user?.email) {
+                        const existing = profileMap.get(uid) || { full_name: 'Unknown', role: 'user' };
+                        profileMap.set(uid, { ...existing, email: authUser.user.email });
+                    }
+                } catch (_) {}
+            }));
+        }
+
+        const logs = (data || []).map(log => ({
+            ...log,
+            profiles: profileMap.get(log.user_id) || { full_name: 'System User', email: 'N/A' }
+        }));
+
+        res.status(200).json({
+            logs,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: count || 0,
+                totalPages: Math.ceil((count || 0) / limit)
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Get operational audit logs (tracking who did what to which entity)
+export const getOperationalAuditLogs = async (req, res, next) => {
+    const { page = 1, limit = 20, event_type = '', entity_type = '', search = '', start_date = '', end_date = '' } = req.query;
+    const offset = (page - 1) * limit;
+
+    try {
+        let query = supabase
+            .from('sweeper_audit_log')
+            .select('*', { count: 'exact' })
+            .range(offset, offset + limit - 1)
+            .order('created_at', { ascending: false });
+
+        if (event_type) {
+            query = query.eq('event_type', event_type);
+        }
+        if (entity_type) {
+            query = query.eq('entity_type', entity_type);
+        }
         if (start_date) {
             query = query.gte('created_at', start_date);
         }
@@ -419,46 +493,37 @@ export const getAuditLogs = async (req, res, next) => {
             });
         }
 
-        // Fetch related user profile data for each log
-        const logs = await Promise.all(data.map(async (log) => {
-            // Fetch user profile
-            let displayProfile = {
-                full_name: 'Unknown',
-                email: 'N/A'
-            };
-
-            try {
-                const { data: profile } = await supabase
-                    .from('profiles')
-                    .select('full_name')
-                    .eq('id', log.user_id)
-                    .single();
-
-                if (profile) {
-                    displayProfile.full_name = profile.full_name;
-                }
-            } catch (profileError) {
-                console.error('Failed to fetch profile for user:', log.user_id, profileError);
+        // Fetch user profiles for user_ids that are valid UUIDs
+        const userIds = [...new Set((data || []).map(l => l.user_id).filter(id => id && id !== 'system' && id !== 'admin'))];
+        const profileMap = new Map();
+        if (userIds.length > 0) {
+            const { data: profs } = await supabase
+                .from('profiles')
+                .select('id, full_name, role')
+                .in('id', userIds);
+            for (const p of (profs || [])) {
+                profileMap.set(p.id, p);
             }
+        }
 
-            // Fetch email from auth.users
-            try {
-                const { data: authUser } = await supabase.auth.admin.getUserById(log.user_id);
-                if (authUser?.user?.email) {
-                    displayProfile.email = authUser.user.email;
-                }
-            } catch (authError) {
-                console.error('Failed to fetch auth user for:', log.user_id, authError);
-            }
-
+        const logs = (data || []).map(log => {
+            const userProfile = profileMap.get(log.user_id);
+            const userName = userProfile?.full_name || (log.user_id === 'system' ? 'System' : (log.user_id === 'admin' ? 'Administrator' : log.user_id));
             return {
-                ...log,
-                profiles: displayProfile
+                id: log.id,
+                event_type: log.event_type,
+                entity_type: log.entity_type,
+                entity_id: log.entity_id,
+                user_id: log.user_id,
+                user_name: userName,
+                event_data: log.event_data,
+                created_at: log.created_at
             };
-        }));
+        });
 
         res.status(200).json({
             logs,
+            data: logs,
             pagination: {
                 page: parseInt(page),
                 limit: parseInt(limit),
@@ -470,6 +535,9 @@ export const getAuditLogs = async (req, res, next) => {
         next(error);
     }
 };
+
+// Alias for backwards compatibility
+export const getAuditLogs = getOperationalAuditLogs;
 
 // Get system statistics
 export const getSystemStats = async (req, res, next) => {

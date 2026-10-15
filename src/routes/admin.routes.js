@@ -11,6 +11,7 @@ import {
     getSystemSettings,
     updateSystemSettings,
     getAuditLogs,
+    getSystemLogs,
     getSystemStats,
     getTimeoutMinutes
 } from '../controllers/admin.controller.js';
@@ -38,7 +39,10 @@ router.delete('/users/:id', authorize(['admin']), deleteUser);
 router.get('/settings', authorize(['admin']), getSystemSettings);
 router.patch('/settings', authorize(['admin']), updateSystemSettings);
 
-// Audit logs (admin only)
+// System logs (authentication, session activity, admin only)
+router.get('/system-logs', authorize(['admin']), getSystemLogs);
+
+// Operational audit logs (who, what, target, timestamp, admin only)
 router.get('/audit-logs', authorize(['admin']), getAuditLogs);
 
 // System statistics (accessible by admin and officer)

@@ -8,9 +8,8 @@ import {
 } from '../services/configuration.service.js';
 
 export async function getConfig(req, res) {
-  // Assuming req.user contains the authenticated user details
-  if (req.user?.role !== 'admin' && req.user?.role !== 'system_administrator') {
-    return res.status(403).json({ error: 'Access denied: Admin role required' });
+  if (req.user?.role !== 'admin' && req.user?.role !== 'system_administrator' && req.user?.role !== 'officer') {
+    return res.status(403).json({ error: 'Access denied: Desk officer or Admin role required' });
   }
 
   try {
@@ -20,10 +19,18 @@ export async function getConfig(req, res) {
       getAllWorkTimes()
     ]);
 
+    const workTimesMap = {};
+    for (const w of (workTimes || [])) {
+      if (w.report_type) {
+        workTimesMap[w.report_type] = w.work_time_minutes;
+      }
+    }
+
     res.json({
       slaThreshold,
       shiftDuration,
-      workTimes
+      defaultShiftDuration: shiftDuration,
+      workTimes: workTimesMap
     });
   } catch (error) {
     console.error('Error fetching configuration:', error);

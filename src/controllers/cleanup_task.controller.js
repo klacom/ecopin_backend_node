@@ -199,27 +199,152 @@ export const getTasksByClusterId = async (req, res, next) => {
   }
 };
 
-// Assign cleanup task to field crew members
-export const assignCleanupTask = async (req,res) => {
-  res.status(409).json({message:'Assignments are published atomically from dispatch plans. Cancel with a classified outcome and generate a new plan to change crews.'});
+// Assign cleanup task to a field crew team entity
+export const assignCleanupTask = async (req, res, next) => {
+    const { id } = req.params;
+    const crewId = req.body.crew_id || req.body.assigned_field_crew_id || (Array.isArray(req.body.assigned_crew_ids) && req.body.assigned_crew_ids.length > 0 ? req.body.assigned_crew_ids[0] : null);
+    const userId = req.user.id;
+
+    try {
+        const { data: currentTask, error: fetchError } = await supabase
+            .from('cleanup_tasks')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        if (fetchError || !currentTask) {
+            return res.status(404).json({
+                message: 'Cleanup task not found',
+                error: fetchError?.message
+            });
+        }
+
+        let updateData = {
+            last_assigned_at: new Date().toISOString()
+        };
+
+        let newMemberIds = [];
+
+        if (crewId) {
+            // Find crew entity
+            const { data: crew, error: crewError } = await supabase
+                .from('field_crews')
+                .select('*')
+                .eq('id', crewId)
+                .single();
+
+            if (crewError || !crew) {
+                return res.status(404).json({
+                    message: 'Field crew not found',
+                    error: crewError?.message
+                });
+            }
+
+            const rawMembers = [...(crew.member_profile_ids || []), crew.team_lead_profile_id].filter(Boolean);
+            newMemberIds = [...new Set(rawMembers)];
+
+            updateData.assigned_field_crew_id = crew.id;
+            updateData.assigned_crew_ids = newMemberIds;
+            updateData.assigned_by = userId;
+
+            if (!currentTask.assigned_at) {
+                updateData.assigned_at = new Date().toISOString();
+            }
+
+            if (currentTask.status === 'created') {
+                updateData.status = 'pending';
+            }
+        } else {
+            // Unassign crew
+            updateData.assigned_field_crew_id = null;
+            updateData.assigned_crew_ids = null;
+
+            if (currentTask.status === 'pending') {
+                updateData.status = 'created';
+            }
+        }
+
+        const { data: taskData, error: updateError } = await supabase
+            .from('cleanup_tasks')
+            .update(updateData)
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (updateError) {
+            return res.status(400).json({
+                message: 'Failed to assign cleanup task',
+                error: updateError.message
+            });
+        }
+
+        // Notify newly assigned members
+        if (newMemberIds.length > 0) {
+            for (const memberId of newMemberIds) {
+                try {
+                    await supabase
+                        .from('notifications')
+                        .insert({
+                            user_id: memberId,
+                            report_id: null,
+                            cleanup_task_id: id,
+                            type: 'task_assigned',
+                            title: 'Task Assigned',
+                            body: `Your crew has been assigned to cleanup task: ${taskData.title}`
+                        });
+                } catch (notifErr) {
+                    console.error('Failed to notify crew member:', memberId, notifErr);
+                }
+            }
+        }
+
+        res.status(200).json({
+            message: 'Cleanup task assigned successfully',
+            task: taskData
+        });
+    } catch (error) {
+        next(error);
+    }
 };
 
 export const getAvailableCrew = async (req, res, next) => {
     try {
-        const { data, error } = await supabase
-            .from('profiles')
-            .select('id, full_name, avatar_url')
-            .eq('role', 'field_crew')
-            .order('full_name', { ascending: true });
+        const { data: crews, error } = await supabase
+            .from('field_crews')
+            .select('*')
+            .order('name', { ascending: true });
 
         if (error) {
             return res.status(400).json({
-                message: 'Failed to fetch available crew',
+                message: 'Failed to fetch available crews',
                 error: error.message
             });
         }
 
-        res.status(200).json(data);
+        const enriched = await Promise.all((crews || []).map(async (crew) => {
+            const memberIds = crew.member_profile_ids || [];
+            let members = [];
+            if (memberIds.length > 0) {
+                const { data: profiles } = await supabase
+                    .from('profiles')
+                    .select('id, full_name, avatar_url')
+                    .in('id', memberIds);
+                members = profiles || [];
+            }
+            return {
+                id: crew.id,
+                name: crew.name,
+                full_name: crew.name,
+                shift_start: crew.shift_start,
+                shift_end: crew.shift_end,
+                availability_status: crew.availability_status,
+                max_tasks_per_shift: crew.max_tasks_per_shift,
+                member_count: members.length,
+                members
+            };
+        }));
+
+        res.status(200).json(enriched);
     } catch (error) {
         next(error);
     }

@@ -1053,12 +1053,21 @@ export const updateReportStatus = async (req, res, next) => {
     const user_id = req.user.id;
 
     try {
-        // Get current status for audit log
+        // Get current status and photos for verification
         const { data: currentReport } = await supabase
             .from('reports')
-            .select('status')
+            .select('status, before_photo_url, after_photo_url, issue_type')
             .eq('id', id)
             .single();
+
+        if (status === 'resolved' || status === 'waiting_for_feedback') {
+            const isScouting = currentReport?.issue_type === 'scouting' || currentReport?.issue_type === 'acknowledge_only';
+            if (!isScouting && (!currentReport?.before_photo_url || !currentReport?.after_photo_url)) {
+                return res.status(400).json({
+                    message: 'Before and after photos are required before resolving this report.'
+                });
+            }
+        }
 
         const { data, error } = await supabase
             .from('reports')
@@ -1088,7 +1097,7 @@ export const updateReportStatus = async (req, res, next) => {
 
 export const updateReportValidation = async (req, res, next) => {
     const { id } = req.params;
-    const { validation_status } = req.body;
+    const { validation_status, rejection_reason } = req.body;
     const user_id = req.user.id;
 
     try {
@@ -1104,9 +1113,14 @@ export const updateReportValidation = async (req, res, next) => {
             updated_at: new Date().toISOString()
         };
 
-        // Record the rejection timestamp when an officer manually rejects a report.
+        // Record the rejection timestamp and reason when manually rejected
         if (validation_status === 'rejected') {
             updateData.rejected_at = new Date().toISOString();
+            if (rejection_reason !== undefined) {
+                updateData.rejection_reason = rejection_reason;
+            }
+        } else {
+            updateData.rejection_reason = null;
         }
 
         const { data, error } = await supabase
@@ -1125,12 +1139,15 @@ export const updateReportValidation = async (req, res, next) => {
 
         // Create notification for the report owner if rejected
         if (validation_status === 'rejected' && currentReport?.user_id) {
+            const message = rejection_reason
+                ? `Your report has been rejected: ${rejection_reason}`
+                : 'Your report has been rejected.';
             await createNotification(
                 currentReport.user_id,
                 id,
                 'rejected',
                 'Report Rejected',
-                'Your report has been rejected.'
+                message
             );
         }
 
@@ -1499,9 +1516,16 @@ export const lguResolveReport = async (req, res, next) => {
     try {
         const { data: currentReport } = await supabase
             .from('reports')
-            .select('user_id')
+            .select('user_id, before_photo_url, after_photo_url, issue_type')
             .eq('id', id)
             .single();
+
+        const isScouting = currentReport?.issue_type === 'scouting' || currentReport?.issue_type === 'acknowledge_only';
+        if (!isScouting && (!currentReport?.before_photo_url || !currentReport?.after_photo_url)) {
+            return res.status(400).json({
+                message: 'Before and after photos are required before resolving this report.'
+            });
+        }
 
         const { data, error } = await supabase
             .from('reports')

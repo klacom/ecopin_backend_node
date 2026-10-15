@@ -11,7 +11,7 @@ import { invalidateToken } from "../services/auth-cache.service.js";
 export const logAuditAction = async (userId, actionType, actionDetails, ipAddress = null, userAgent = null) => {
     try {
         await supabaseAdmin
-            .from('audit_logs')
+            .from('system_logs')
             .insert({
                 user_id: userId,
                 action_type: actionType,
@@ -20,7 +20,7 @@ export const logAuditAction = async (userId, actionType, actionDetails, ipAddres
                 user_agent: userAgent
             });
     } catch (error) {
-        console.error('Failed to log audit action:', error);
+        console.error('Failed to log system audit action:', error);
         // Don't throw error - logging is secondary to main operation
     }
 };
