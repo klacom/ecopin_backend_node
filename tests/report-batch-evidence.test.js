@@ -97,4 +97,23 @@ describe('POST /api/reports/batch-evidence', () => {
     expect(res.body['unauthorized-rep']).toEqual([]);
     expect(mockCloudinaryResources).not.toHaveBeenCalled();
   });
+
+  test('serves repeated requests from in-memory cache without hitting Cloudinary', async () => {
+    mockReadReportForViewer.mockImplementation(async (supabase, id) => ({
+      report: { id, location_precision: 'exact' }
+    }));
+    mockCanReadReportEvidence.mockReturnValue(true);
+
+    const req = {
+      body: { reportIds: ['rep-1'] },
+      user: { id: 'officer-1', role: 'officer' }
+    };
+    const res = response();
+
+    await getBatchReportEvidence(req, res, jest.fn());
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body['rep-1']).toHaveLength(1);
+    expect(mockCloudinaryResources).not.toHaveBeenCalled();
+  });
 });
