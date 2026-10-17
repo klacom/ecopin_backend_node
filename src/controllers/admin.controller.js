@@ -579,6 +579,11 @@ export const getSystemStats = async (req, res, next) => {
             return acc;
         }, {}) || {};
 
+        // Get total system logs count
+        const { count: totalSystemLogs } = await supabase
+            .from('system_logs')
+            .select('*', { count: 'exact', head: true });
+
         // Get total audit logs count
         const { count: totalAuditLogs } = await supabase
             .from('audit_logs')
@@ -594,7 +599,10 @@ export const getSystemStats = async (req, res, next) => {
                 byStatus: statusCounts
             },
             auditLogs: {
-                total: totalAuditLogs || 0
+                total: totalSystemLogs ?? totalAuditLogs ?? 0
+            },
+            systemLogs: {
+                total: totalSystemLogs || 0
             }
         });
     } catch (error) {

@@ -440,16 +440,36 @@ export const uploadEvidence = async (req, res, next) => {
     }
 };
 
+// Server-side in-memory cache for report evidence to prevent Cloudinary rate limits and bottlenecking
+const evidenceServerCache = new Map(); // reportId -> { data, expiresAt }
+const EVIDENCE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+export const invalidateEvidenceCache = (reportId) => {
+    if (reportId) {
+        evidenceServerCache.delete(String(reportId));
+    }
+};
+
+export const clearEvidenceServerCache = () => {
+    evidenceServerCache.clear();
+};
+
 export const getReportEvidence = async (req, res, next) => {
     const { reportId } = req.params;
 
     try {
         console.log('Fetching evidence for report:', reportId);
 
-        const access = await readReportForViewer(supabase,reportId,req.user);
-        if (!access) return res.status(404).json({message:'Report not found'});
+        // 1. Check in-memory cache FIRST before touching Supabase or Cloudinary
+        const cached = evidenceServerCache.get(String(reportId));
+        if (cached && cached.expiresAt > Date.now()) {
+            return res.status(200).json(cached.data);
+        }
+
+        const access = await readReportForViewer(supabase, reportId, req.user);
+        if (!access) return res.status(404).json({ message: 'Report not found' });
         if (!canReadReportEvidence(access)) {
-            return res.status(403).json({message:'Evidence requires authorized report access'});
+            return res.status(403).json({ message: 'Evidence requires authorized report access' });
         }
 
         const prefix = `report_evidence/${reportId}`;
@@ -497,6 +517,11 @@ export const getReportEvidence = async (req, res, next) => {
             };
         });
 
+        evidenceServerCache.set(String(reportId), {
+            data: evidence,
+            expiresAt: Date.now() + EVIDENCE_CACHE_TTL
+        });
+
         console.log('Returning evidence count:', evidence.length);
         res.status(200).json(evidence);
     } catch (error) {
@@ -515,14 +540,59 @@ export const getBatchReportEvidence = async (req, res, next) => {
     const results = {};
 
     try {
-        await Promise.all(reportIds.map(async (reportId) => {
-            try {
-                const access = await readReportForViewer(supabase, reportId, req.user);
-                if (!access || !canReadReportEvidence(access)) {
-                    results[reportId] = [];
-                    return;
-                }
+        // 1. Resolve all items already in cache (0 Supabase / Cloudinary calls)
+        const missingIds = [];
+        for (const id of reportIds) {
+            const cached = evidenceServerCache.get(String(id));
+            if (cached && cached.expiresAt > Date.now()) {
+                results[id] = cached.data;
+            } else {
+                missingIds.push(id);
+            }
+        }
 
+        if (missingIds.length === 0) {
+            return res.status(200).json(results);
+        }
+
+        // 2. Batch-check permissions for missing items in a SINGLE Supabase query
+        const authorizedIds = new Set();
+        if (req.user?.id) {
+            await Promise.all(missingIds.map(async (id) => {
+                try {
+                    const access = await readReportForViewer(supabase, id, req.user);
+                    if (canReadReportEvidence(access)) {
+                        authorizedIds.add(id);
+                    }
+                } catch {
+                    // skip
+                }
+            }));
+        } else {
+            // Public viewer: ONE SINGLE query to Supabase using .in() instead of N individual queries!
+            const { data: publicReports, error: pubError } = await supabase
+                .from('public_reports')
+                .select('id, location_precision')
+                .in('id', missingIds);
+
+            if (!pubError && Array.isArray(publicReports)) {
+                for (const row of publicReports) {
+                    if (row.location_precision === 'exact') {
+                        authorizedIds.add(row.id);
+                    }
+                }
+            }
+        }
+
+        for (const id of missingIds) {
+            if (!authorizedIds.has(id)) {
+                results[id] = [];
+            }
+        }
+
+        // 3. Fetch evidence from Cloudinary for authorized missing IDs
+        await Promise.all([...authorizedIds].map(async (reportId) => {
+            try {
                 const prefix = `report_evidence/${reportId}`;
                 const [imageResources, videoResources] = await Promise.all([
                     cloudinary.api.resources({
@@ -540,7 +610,7 @@ export const getBatchReportEvidence = async (req, res, next) => {
                 ]);
 
                 const allResources = [...(imageResources.resources || []), ...(videoResources.resources || [])];
-                results[reportId] = allResources.map(resource => {
+                const mapped = allResources.map(resource => {
                     const fullPublicId = resource.public_id;
                     const parts = fullPublicId.split('/');
                     const fileName = parts[parts.length - 1] + (resource.format ? '.' + resource.format : '');
@@ -553,6 +623,13 @@ export const getBatchReportEvidence = async (req, res, next) => {
                         resource_type: resource.resource_type
                     };
                 });
+
+                evidenceServerCache.set(String(reportId), {
+                    data: mapped,
+                    expiresAt: Date.now() + EVIDENCE_CACHE_TTL
+                });
+
+                results[reportId] = mapped;
             } catch (err) {
                 console.error(`Error fetching batch evidence for report ${reportId}:`, err.message);
                 results[reportId] = [];
