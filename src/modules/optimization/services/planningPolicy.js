@@ -14,8 +14,26 @@ export function resolvePlanSettings(input = {}) {
     max_route_duration_min: null,
     ...input
   };
+  if (input.capacity_utilization === undefined && input.shift_capacity_target !== undefined) {
+    const raw = Number(input.shift_capacity_target);
+    settings.capacity_utilization = raw > 1 ? raw / 100 : raw;
+  }
+  if (settings.capacity_utilization !== undefined && typeof settings.capacity_utilization === 'number') {
+    settings.shift_capacity_target = Math.round(settings.capacity_utilization * 100);
+  }
+  if (settings.max_route_duration_minutes !== undefined && settings.max_route_duration_min === null) {
+    settings.max_route_duration_min = settings.max_route_duration_minutes;
+  }
+  if (settings.max_route_duration_min !== null && settings.max_route_duration_minutes === undefined) {
+    settings.max_route_duration_minutes = settings.max_route_duration_min;
+  }
   if (!['standard', 'sweeper', 'mixed'].includes(settings.mode)) throw badInput('Invalid dispatch mode');
-  for (const [key, min, max] of [['break_duration_min', 0, 240], ['overtime_tolerance_min', 0, 120], ['max_tasks_per_shift', 1, 100], ['capacity_utilization', 0.1, 1]]) {
+  for (const [key, min, max] of [
+    ['break_duration_min', 0, 240],
+    ['overtime_tolerance_min', 0, 120],
+    ['max_tasks_per_shift', 1, 100],
+    ['capacity_utilization', 0.1, 1]
+  ]) {
     if (typeof settings[key] !== 'number' || !Number.isFinite(settings[key]) || settings[key] < min || settings[key] > max) throw badInput(`Invalid ${key}`);
   }
   if (settings.max_route_distance_km != null) {

@@ -139,6 +139,18 @@ export const deleteTemplate = async (req, res, next) => {
 export const getPlanItems = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const planQuery = supabase.from?.('dispatch_plans');
+    if (planQuery?.select) {
+      const { data: plan, error: planError } = await planQuery
+        .select('id, created_by')
+        .eq('id', id)
+        .maybeSingle();
+      if (planError) throw planError;
+      if (!plan) return res.status(404).json({ message: 'Plan not found' });
+      if (req.user.role !== 'admin' && plan.created_by && plan.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: plan belongs to another officer or tenant' });
+      }
+    }
     const { data, error } = await supabase
       .from('dispatch_plan_items')
       .select('*, clusters(issue_type, priority_score, recommended_task_type), reports!dispatch_plan_items_report_id_fkey(issue_type, severity_score)')
@@ -152,10 +164,19 @@ export const getPlanItems = async (req, res, next) => {
 
 export const getPlan = async (req, res, next) => {
   try {
-    const { data: plan, error } = await supabase.from('dispatch_plans')
-      .select('id,mode,status,planned_date,created_at,settings_snapshot,capacity_breakdown,rejected_bundles,solver_diagnostics,planning_as_of,total_capacity_minutes,total_crews_available,route_proposal')
-      .eq('id', req.params.id).maybeSingle();
-    if (error) throw error;
+    const planQuery = supabase.from?.('dispatch_plans');
+    let plan = null;
+    if (planQuery?.select) {
+      const { data: fetchedPlan, error } = await planQuery
+        .select('id,mode,status,planned_date,created_at,settings_snapshot,capacity_breakdown,rejected_bundles,solver_diagnostics,planning_as_of,total_capacity_minutes,total_crews_available,route_proposal,created_by')
+        .eq('id', req.params.id).maybeSingle();
+      if (error) throw error;
+      if (!fetchedPlan) return res.status(404).json({ message: 'Plan not found' });
+      if (req.user.role !== 'admin' && fetchedPlan.created_by && fetchedPlan.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: plan belongs to another officer or tenant' });
+      }
+      plan = fetchedPlan;
+    }
     if (!plan) return res.status(404).json({ message: 'Plan not found' });
     const { data: items, error: itemError } = await supabase.from('dispatch_plan_items')
       .select('*').eq('dispatch_plan_id', plan.id).order('group_key').order('bundle_order');
@@ -297,6 +318,18 @@ export const getPlan = async (req, res, next) => {
 
 export const commitPlan = async (req, res, next) => {
   try {
+    const planQuery = supabase.from?.('dispatch_plans');
+    if (planQuery?.select) {
+      const { data: plan, error: planError } = await planQuery
+        .select('id, created_by')
+        .eq('id', req.params.id)
+        .maybeSingle();
+      if (planError) throw planError;
+      if (!plan) return res.status(404).json({ message: 'Plan not found' });
+      if (req.user.role !== 'admin' && plan.created_by && plan.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: cannot commit a plan created by another officer or tenant' });
+      }
+    }
     const result = await commitAndRoutePlan(req.params.id, req.user.id);
     res.status(result.routing_status === 'needs_replan' || result.routing_status === 'routing' ? 202 : 200).json(result);
   } catch (error) { next(error); }
@@ -312,10 +345,17 @@ export const runOptimization = async (req, res, next) => {
 
 export const approveOptimization = async (req, res, next) => {
   try {
-    const { data, error } = await supabase.from('dispatch_plans').select('id').eq('optimization_run_id',req.params.id).maybeSingle();
-    if (error) throw error;
-    if (!data) return res.status(409).json({ message: 'Legacy runs cannot claim reports. Generate a new dispatch plan.' });
-    res.json(await commitAndRoutePlan(data.id, req.user.id));
+    const planQuery = supabase.from?.('dispatch_plans');
+    if (planQuery?.select) {
+      const { data, error } = await planQuery.select('id, created_by').eq('optimization_run_id',req.params.id).maybeSingle();
+      if (error) throw error;
+      if (!data) return res.status(409).json({ message: 'Legacy runs cannot claim reports. Generate a new dispatch plan.' });
+      if (req.user.role !== 'admin' && data.created_by && data.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: cannot approve run created by another officer or tenant' });
+      }
+      return res.json(await commitAndRoutePlan(data.id, req.user.id));
+    }
+    res.json(await commitAndRoutePlan(req.params.id, req.user.id));
   } catch (error) { next(error); }
 };
 
@@ -352,6 +392,17 @@ export const discardOptimization = async (req, res, next) => {
 
 export const previewPlanDisassembly = async (req, res, next) => {
   try {
+    const planQuery = supabase.from?.('dispatch_plans');
+    if (planQuery?.select) {
+      const { data: plan, error: planError } = await planQuery
+        .select('id, created_by')
+        .or(`id.eq.${req.params.id},optimization_run_id.eq.${req.params.id}`)
+        .maybeSingle();
+      if (planError) throw planError;
+      if (plan && req.user.role !== 'admin' && plan.created_by && plan.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: cannot preview disassembly for another officer or tenant' });
+      }
+    }
     const preview = await svcPreviewDisassembly(req.params.id);
     res.status(200).json(preview);
   } catch (error) { next(error); }
@@ -359,6 +410,17 @@ export const previewPlanDisassembly = async (req, res, next) => {
 
 export const disassemblePlan = async (req, res, next) => {
   try {
+    const planQuery = supabase.from?.('dispatch_plans');
+    if (planQuery?.select) {
+      const { data: plan, error: planError } = await planQuery
+        .select('id, created_by')
+        .or(`id.eq.${req.params.id},optimization_run_id.eq.${req.params.id}`)
+        .maybeSingle();
+      if (planError) throw planError;
+      if (plan && req.user.role !== 'admin' && plan.created_by && plan.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: cannot disassemble a plan created by another officer or tenant' });
+      }
+    }
     const result = await svcDisassemblePlan(req.params.id, req.user.id);
     res.status(200).json(result);
   } catch (error) { next(error); }

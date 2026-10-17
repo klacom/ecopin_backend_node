@@ -6,6 +6,7 @@ import { MOBILE_REDIRECT_URL } from "../config/index.js";
 import { generateVerificationToken, sendVerificationEmail } from "../services/email.service.js";
 import { createHash } from 'node:crypto';
 import { invalidateToken } from "../services/auth-cache.service.js";
+import { verifyJwtToken } from "../services/jwt-verifier.service.js";
 
 // Helper function to log audit action
 export const logAuditAction = async (userId, actionType, actionDetails, ipAddress = null, userAgent = null) => {
@@ -88,8 +89,8 @@ export const register = async (req, res, next) => {
         }
 
         // Log user creation
-        const ipAddress = req.ip || req.connection.remoteAddress;
-        const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
         await logAuditAction(data.user.id, 'user_created', 'User registered', ipAddress, userAgent);
 
         res.status(201).json({
@@ -106,8 +107,8 @@ export const register = async (req, res, next) => {
 
 export const login = async (req, res, next) => {
     const { email, password } = req.body;
-    const ipAddress = req.ip || req.connection.remoteAddress;
-    const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.[ 'user-agent'] || null);
 
     try {
         const { data, error } = await supabase.auth.signInWithPassword({
@@ -217,8 +218,8 @@ export const logout = async (req, res, next) => {
         if (authHeader?.startsWith('Bearer ')) {
             invalidateToken(authHeader.split(' ')[1]);
         }
-        const ipAddress = req.ip || req.connection.remoteAddress;
-        const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
         if (req.user && req.user.id) {
             await logAuditAction(req.user.id, 'logout', 'User logged out', ipAddress, userAgent);
         }
@@ -261,8 +262,8 @@ export const forgotPassword = async (req, res, next) => {
 
 export const resetPassword = async (req, res, next) => {
     const { token, password } = req.body;
-    const ipAddress = req.ip || req.connection.remoteAddress;
-    const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
 
     try {
         const { data, error } = await supabaseAdmin.auth.updateUser(token, {
@@ -287,8 +288,8 @@ export const resetPassword = async (req, res, next) => {
 
 export const changePassword = async (req, res, next) => {
     const { current_password, new_password } = req.body;
-    const ipAddress = req.ip || req.connection.remoteAddress;
-    const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
 
     try {
         // First verify current password by attempting to sign in
@@ -327,8 +328,8 @@ export const changePassword = async (req, res, next) => {
 
 export const forceChangePassword = async (req, res, next) => {
     const { new_password } = req.body;
-    const ipAddress = req.ip || req.connection.remoteAddress;
-    const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
 
     if (!new_password) {
         return res.status(400).json({ message: 'New password is required' });
@@ -353,6 +354,12 @@ export const forceChangePassword = async (req, res, next) => {
             .update({ require_password_change: false })
             .eq('id', req.user.id);
 
+        // Invalidate current temporary token from fast cache upon password change
+        const authHeader = req.headers.authorization;
+        if (authHeader?.startsWith('Bearer ')) {
+            invalidateToken(authHeader.split(' ')[1]);
+        }
+
         // Log password change event
         await logAuditAction(req.user.id, 'password_change', `User changed password upon login`, ipAddress, userAgent);
 
@@ -362,7 +369,7 @@ export const forceChangePassword = async (req, res, next) => {
     }
 };
 
-// Lightweight session validation - JWT only, no database operations
+// Lightweight session validation - cryptographically verifies JWT signature, algorithm allowlist (HS256), issuer, and expiry
 export const validateSession = async (req, res, next) => {
     try {
         const authHeader = req.headers.authorization;
@@ -373,24 +380,16 @@ export const validateSession = async (req, res, next) => {
 
         const token = authHeader.split(' ')[1];
 
-        // Decode and validate JWT only (no database lookup for free tier optimization)
-        try {
-            const parts = token.split('.');
-            if (parts.length !== 3) {
-                return res.status(401).json({ valid: false, message: 'Invalid token format' });
-            }
-
-            const payload = JSON.parse(atob(parts[1]));
-            const currentTime = Math.floor(Date.now() / 1000);
-
-            if (payload.exp && payload.exp < currentTime) {
-                return res.status(401).json({ valid: false, expired: true, message: 'Token expired' });
-            }
-
-            res.status(200).json({ valid: true, message: 'Session valid' });
-        } catch (jwtError) {
-            return res.status(401).json({ valid: false, message: 'Invalid token format' });
+        const verification = verifyJwtToken(token);
+        if (!verification.valid) {
+            return res.status(401).json({
+                valid: false,
+                expired: verification.expired || false,
+                message: verification.message || 'Session validation failed'
+            });
         }
+
+        res.status(200).json({ valid: true, message: 'Session valid', user: verification.payload });
     } catch (error) {
         res.status(401).json({ valid: false, message: 'Session validation failed' });
     }

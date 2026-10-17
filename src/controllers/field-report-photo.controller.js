@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { supabaseAdmin as db } from '../config/supabase.config.js';
 import { uploadFromBuffer, deleteFromCloudinary } from '../services/cloudinary.service.js';
 import { hashBuffer } from '../services/photo_dedup.service.js';
+import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
+
 
 async function assignedReport(id, actor, expectedVersion) {
   if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
@@ -33,6 +35,7 @@ export async function uploadFieldReportPhoto(req, res, next) {
   const slot = req.body.photo_type;
   const version = Number(req.body.base_version);
   if (!['before','after'].includes(slot) || !req.file || req.body.base_version === undefined || !Number.isSafeInteger(version)) return res.status(400).json({ message: 'Image, photo_type and base_version are required' });
+  validateUploadedPhotoBuffer(req.file.buffer, req.file.mimetype);
   try {
     const report = await assignedReport(id, req.user.id, version);
     const hash = hashBuffer(req.file.buffer);

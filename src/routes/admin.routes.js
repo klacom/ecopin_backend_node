@@ -13,8 +13,23 @@ import {
     getAuditLogs,
     getSystemLogs,
     getSystemStats,
-    getTimeoutMinutes
+    getTimeoutMinutes,
+    getAuditArchiveStatus,
+    executeAuditArchive,
+    getDisasterRecoveryStatusHandler,
+    verifyStorageReplicationHandler,
+    executeDisasterRecoveryDrillHandler,
+    getInfrastructureEncryptionStatusHandler,
+    verifyDomainTlsHandler,
+    getApmStatusHandler,
+    testApmAlertHandler,
+    getEnvironmentAuditHandler,
+    verifyPreviewIsolationHandler,
+    getGitHistoryAuditHandler,
+    verifyGitCleanlinessHandler
 } from '../controllers/admin.controller.js';
+
+
 
 const router = Router();
 
@@ -42,8 +57,33 @@ router.patch('/settings', authorize(['admin']), updateSystemSettings);
 // System logs (authentication, session activity, admin only)
 router.get('/system-logs', authorize(['admin']), getSystemLogs);
 
-// Operational audit logs (who, what, target, timestamp, admin only)
+// Operational audit logs & WORM archival (who, what, target, timestamp, admin only)
+router.get('/audit-logs/archive-status', authorize(['admin']), getAuditArchiveStatus);
+router.post('/audit-logs/archive', authorize(['admin']), executeAuditArchive);
 router.get('/audit-logs', authorize(['admin']), getAuditLogs);
+
+// Disaster Recovery & Storage Bucket Cross-Region Replication (admin only)
+router.get('/disaster-recovery/status', authorize(['admin']), getDisasterRecoveryStatusHandler);
+router.post('/disaster-recovery/verify-replication', authorize(['admin']), verifyStorageReplicationHandler);
+router.post('/disaster-recovery/drill', authorize(['admin']), executeDisasterRecoveryDrillHandler);
+
+// Platform Encryption at Rest & Transport Security (admin only, WT-50)
+router.get('/infrastructure/encryption-status', authorize(['admin']), getInfrastructureEncryptionStatusHandler);
+router.post('/infrastructure/verify-domain-tls', authorize(['admin']), verifyDomainTlsHandler);
+
+// Production APM Monitoring, PII Scrubbing & Critical Alert Delivery (admin only, WT-47)
+router.get('/infrastructure/apm-status', authorize(['admin']), getApmStatusHandler);
+router.post('/infrastructure/test-apm-alert', authorize(['admin']), testApmAlertHandler);
+
+// Staging & Preview Deployment Environment Access Controls & Isolation Audit (admin only, WT-42)
+router.get('/infrastructure/environment-audit', authorize(['admin']), getEnvironmentAuditHandler);
+router.post('/infrastructure/verify-preview-isolation', authorize(['admin']), verifyPreviewIsolationHandler);
+
+// Git Remote History, Deleted Branches & Repository Visibility Audit (admin only, WT-36)
+router.get('/infrastructure/git-history-audit', authorize(['admin']), getGitHistoryAuditHandler);
+router.post('/infrastructure/verify-git-cleanliness', authorize(['admin']), verifyGitCleanlinessHandler);
+
+
 
 // System statistics (accessible by admin and officer)
 router.get('/stats', authorize(ROLE_GROUPS.STATS_VIEWERS), getSystemStats);

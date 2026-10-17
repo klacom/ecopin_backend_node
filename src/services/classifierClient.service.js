@@ -121,14 +121,44 @@ export const classifyImage = async (imageBuffer, originalName = 'image.jpg', mim
     }
 };
 
+export const ALLOWED_CLASSIFIER_CATEGORIES = Object.freeze([
+    'waste',
+    'flooding',
+    'pollution',
+    'infrastructure',
+    'illegal_logging',
+    'others'
+]);
+
+export const ALLOWED_PREDICTED_CLASSES = Object.freeze([
+    'VALID',
+    'INVALID',
+    'waste',
+    'pollution',
+    'flooding'
+]);
+
+function sanitizeCategory(category) {
+    if (typeof category !== 'string') return null;
+    const normalized = category.trim().toLowerCase();
+    return ALLOWED_CLASSIFIER_CATEGORIES.includes(normalized) ? normalized : null;
+}
+
+function sanitizePredictedClass(predictedClass) {
+    if (typeof predictedClass !== 'string') return null;
+    const normalized = predictedClass.trim();
+    return ALLOWED_PREDICTED_CLASSES.includes(normalized) ? normalized : null;
+}
+
 /**
  * Maps an Experiment 3.2 classifier result (VALID/INVALID + decision field)
  * to a VALIDATION_STATUS used by the EcoPin backend.
  *
- * The inference service already encodes the full decision logic including
- * the manual-review confidence zone, so we prefer its `decision` field.
- * A fallback using confidence + threshold is applied if the `decision` field
- * is absent (e.g. a legacy response).
+ * Model outputs are treated as untrusted data:
+ * - decision is strictly allowlisted to APPROVED, REJECTED, or MANUAL_REVIEW
+ * - predicted_category is validated against ALLOWED_CLASSIFIER_CATEGORIES
+ * - auto_classification is validated against ALLOWED_PREDICTED_CLASSES
+ * - arbitrary strings or anomalous structures safely default to MANUAL_REVIEW
  */
 export const mapClassifierToValidation = (classifierResult) => {
     if (!classifierResult || !classifierResult.ok) {
@@ -143,12 +173,14 @@ export const mapClassifierToValidation = (classifierResult) => {
     }
 
     const { predicted_class, confidence, decision } = classifierResult;
+    const safeCategory = sanitizeCategory(classifierResult.predicted_category);
+    const safeAutoClass = sanitizePredictedClass(predicted_class);
 
     _log('mapClassifierToValidation:');
     _log('  predicted_class    :', predicted_class);
     _log('  confidence         :', confidence);
     _log('  decision           :', decision ?? '(none — using fallback path)');
-    _log('  predicted_category :', classifierResult.predicted_category ?? '(null)');
+    _log('  predicted_category :', safeCategory ?? '(null)');
 
     // --- Exp 3.2 path: use the decision field emitted by the inference service ---
     if (decision) {
@@ -156,8 +188,8 @@ export const mapClassifierToValidation = (classifierResult) => {
             const mapped = {
                 status: VALIDATION_STATUS.APPROVED,
                 rejection_reason: null,
-                auto_classification: predicted_class,
-                predicted_category: classifierResult.predicted_category ?? null,
+                auto_classification: safeAutoClass,
+                predicted_category: safeCategory,
             };
             _log('  → mapped status :', mapped.status, '| category:', mapped.predicted_category);
             return mapped;
@@ -166,7 +198,7 @@ export const mapClassifierToValidation = (classifierResult) => {
             const mapped = {
                 status: VALIDATION_STATUS.REJECTED,
                 rejection_reason: 'Image classified as INVALID by automated validation (Exp 3.2).',
-                auto_classification: predicted_class,
+                auto_classification: safeAutoClass,
                 predicted_category: null, // Rejected images don't get a category
             };
             _log('  → mapped status :', mapped.status, '| category: null (rejected)');
@@ -176,8 +208,8 @@ export const mapClassifierToValidation = (classifierResult) => {
         const mapped = {
             status: VALIDATION_STATUS.MANUAL_REVIEW,
             rejection_reason: null,
-            auto_classification: predicted_class,
-            predicted_category: classifierResult.predicted_category ?? null,
+            auto_classification: safeAutoClass,
+            predicted_category: safeCategory,
         };
         _log('  → mapped status :', mapped.status, '| category:', mapped.predicted_category);
         return mapped;
@@ -185,8 +217,9 @@ export const mapClassifierToValidation = (classifierResult) => {
 
     // --- Fallback path: binary VALID/INVALID without explicit decision field ---
     _log('  (fallback path — no decision field)');
-    if (predicted_class === 'VALID' || predicted_class === 'INVALID') {
-        const probValid    = predicted_class === 'VALID' ? confidence : 1.0 - confidence;
+    if (safeAutoClass === 'VALID' || safeAutoClass === 'INVALID') {
+        const numConfidence = (typeof confidence === 'number' && Number.isFinite(confidence)) ? confidence : 0;
+        const probValid    = safeAutoClass === 'VALID' ? numConfidence : 1.0 - numConfidence;
         const inReviewZone = probValid >= REVIEW_LO && probValid <= REVIEW_HI;
         _log(`  probValid=${probValid.toFixed(4)}  inReviewZone=${inReviewZone}  threshold=${THRESHOLD}`);
 
@@ -194,8 +227,8 @@ export const mapClassifierToValidation = (classifierResult) => {
             const mapped = {
                 status: VALIDATION_STATUS.MANUAL_REVIEW,
                 rejection_reason: null,
-                auto_classification: predicted_class,
-                predicted_category: classifierResult.predicted_category ?? null,
+                auto_classification: safeAutoClass,
+                predicted_category: safeCategory,
             };
             _log('  → mapped status :', mapped.status);
             return mapped;
@@ -204,8 +237,8 @@ export const mapClassifierToValidation = (classifierResult) => {
             const mapped = {
                 status: VALIDATION_STATUS.APPROVED,
                 rejection_reason: null,
-                auto_classification: predicted_class,
-                predicted_category: classifierResult.predicted_category ?? null,
+                auto_classification: safeAutoClass,
+                predicted_category: safeCategory,
             };
             _log('  → mapped status :', mapped.status);
             return mapped;
@@ -213,7 +246,7 @@ export const mapClassifierToValidation = (classifierResult) => {
         const mapped = {
             status: VALIDATION_STATUS.REJECTED,
             rejection_reason: 'Image classified as INVALID by automated validation.',
-            auto_classification: predicted_class,
+            auto_classification: safeAutoClass,
             predicted_category: null,
         };
         _log('  → mapped status :', mapped.status);
@@ -225,7 +258,7 @@ export const mapClassifierToValidation = (classifierResult) => {
     return {
         status: VALIDATION_STATUS.MANUAL_REVIEW,
         rejection_reason: null,
-        auto_classification: predicted_class,
+        auto_classification: null,
         predicted_category: null,
     };
 };

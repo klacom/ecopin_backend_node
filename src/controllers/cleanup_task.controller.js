@@ -10,6 +10,8 @@ import multer from 'multer';
 import {reportPage} from '../services/report-access.service.js';
 import { BEFORE_AFTER_PHOTO_FILE_SIZE } from "../config/index.js";
 import { hashBuffer, checkPhotoDuplicate } from '../services/photo_dedup.service.js';
+import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
+
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -144,6 +146,7 @@ export const uploadCleanupPhoto = async (req,res,next) => {
   try {
     const {taskId}=req.params;const {photo_type}=req.body;
     if(!['before','after'].includes(photo_type)||!req.file) return res.status(400).json({message:'An image and before/after photo_type are required'});
+    validateUploadedPhotoBuffer(req.file.buffer, req.file.mimetype);
     const task=await photoTask(taskId,req.user);
     const incomingHash=hashBuffer(req.file.buffer);
     const {isDuplicate}=await checkPhotoDuplicate('cleanup_tasks',taskId,photo_type,incomingHash);
@@ -241,6 +244,13 @@ export const assignCleanupTask = async (req, res, next) => {
             return res.status(404).json({
                 message: 'Cleanup task not found',
                 error: fetchError?.message
+            });
+        }
+
+        const isTaskOwner = currentTask.created_by === userId || currentTask.lgu_user_id === userId;
+        if (req.user.role !== 'admin' && (currentTask.created_by || currentTask.lgu_user_id) && !isTaskOwner) {
+            return res.status(403).json({
+                message: 'Access denied: cannot assign cleanup task belonging to another LGU or officer'
             });
         }
 
@@ -384,6 +394,21 @@ export const updateCleanupTaskTitle = async (req, res, next) => {
     }
 
     try {
+        const { data: currentTask, error: fetchError } = await supabase
+            .from('cleanup_tasks')
+            .select('id, created_by, lgu_user_id')
+            .eq('id', id)
+            .maybeSingle();
+
+        if (fetchError || !currentTask) {
+            return res.status(404).json({ message: 'Cleanup task not found' });
+        }
+
+        const isTaskOwner = currentTask.created_by === req.user.id || currentTask.lgu_user_id === req.user.id;
+        if (req.user.role !== 'admin' && (currentTask.created_by || currentTask.lgu_user_id) && !isTaskOwner) {
+            return res.status(403).json({ message: 'Access denied: cannot modify task belonging to another LGU or officer' });
+        }
+
         const { data, error } = await supabase
             .from('cleanup_tasks')
             .update({ title: title.trim() })
