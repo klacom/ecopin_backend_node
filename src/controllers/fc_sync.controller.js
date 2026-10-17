@@ -1,4 +1,5 @@
 import { supabaseAdmin as db } from '../config/supabase.config.js';
+import { notifyOfficers } from '../services/officer-notification.service.js';
 
 // Assignment authority, version comparison, write, audit and replay cache share one transaction.
 export const batchFcSync = async (req, res, next) => {
@@ -31,6 +32,17 @@ export const batchFcSync = async (req, res, next) => {
           actor: req.user.id, operation_id: op.operation_id, operation_type: op.operation_type,
           entity_id: op.entity_id, entity_type: op.entity_type, payload: op.payload, base_version: op.base_version ?? 0
         });
+
+      if (!error && isFieldFailure && data?.status === 'applied') {
+        const failureReason = op.payload?.reason_code || 'Issue encountered';
+        const notes = op.payload?.notes || '';
+        notifyOfficers({
+          type: 'general',
+          title: 'Field Crew Unable to Work Site',
+          body: `Crew reported "${failureReason}": ${notes}`
+        }).catch(err => console.error('[batchFcSync] Failed to notify officers of task failure:', err));
+      }
+
       results.push(error ? { operation_id: op.operation_id, status: 'failed', error_message: error.message, server_record: null } : data);
     }
     return res.json({ results });

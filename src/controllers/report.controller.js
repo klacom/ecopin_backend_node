@@ -14,6 +14,7 @@ import { uploadFromBuffer, deleteFromCloudinary, uploadVideoFromBuffer } from '.
 import { calculateSeverity } from '../services/severity.service.js';
 import { classifyReportHazard } from '../services/hazard-classifier.service.js';
 import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
+import { notifyOfficers } from '../services/officer-notification.service.js';
 
 // Helper function to determine issue type from text
 const determineIssueTypeFromText = (title, description) => {
@@ -565,6 +566,36 @@ export const getBatchReportEvidence = async (req, res, next) => {
     }
 };
 
+export const validateReportImage = async (req, res, next) => {
+    try {
+        const imageFile = req.file || (req.files && req.files['image'] ? req.files['image'][0] : null);
+        if (!imageFile) {
+            return res.status(400).json({ error: 'No image file provided for validation' });
+        }
+        const classifierResult = await classifyImage(
+            imageFile.buffer,
+            imageFile.originalname,
+            imageFile.mimetype
+        );
+        if (!classifierResult.ok) {
+            return res.status(502).json({ error: classifierResult.error || 'Classifier service unavailable' });
+        }
+        const mapped = mapClassifierToValidation(classifierResult);
+        return res.json({
+            ok: true,
+            predicted_class: classifierResult.predicted_class,
+            confidence: classifierResult.confidence,
+            decision: classifierResult.decision,
+            validation_status: mapped.status,
+            predicted_category: classifierResult.predicted_category,
+            is_valid: classifierResult.decision !== 'REJECTED' && classifierResult.predicted_class === 'VALID'
+        });
+    } catch (err) {
+        console.error('[validateReportImage] Error:', err);
+        return res.status(500).json({ error: err.message });
+    }
+};
+
 export const createReport = async (req, res, next) => {
     const {
         title,
@@ -574,15 +605,22 @@ export const createReport = async (req, res, next) => {
         on_private_property,
         scale_level,
         obstruction_level,
+        photo_lat,
+        photo_lng,
+        photo_accuracy,
+        photo_captured_at,
+        photo_source,
+        is_mocked,
     } = req.body;
     const user_id = req.user.id;
 
-    // Check for media files (image or video)
+    // Check for media files (image, clean_image for ML, or video)
     const imageFiles = req.files && req.files['image'] ? req.files['image'] : [];
+    const cleanImageFiles = req.files && req.files['clean_image'] ? req.files['clean_image'] : [];
     const videoFile = req.files && req.files['video'] ? req.files['video'][0] : null;
 
     // Require at least one media type
-    if (imageFiles.length === 0 && !videoFile) {
+    if (imageFiles.length === 0 && cleanImageFiles.length === 0 && !videoFile) {
         return res.status(400).json({
             message: 'Please provide either an image or a video.'
         });
@@ -627,6 +665,76 @@ export const createReport = async (req, res, next) => {
         // Determine initial issue type from text to avoid pending state
         const initialIssueType = determineIssueTypeFromText(title, description);
 
+        // Photo location verification
+        let locationVerificationStatus = 'unverified_gallery';
+        let photoDistanceMeters = null;
+
+        let parsedPhotoLat = photo_lat ? parseFloat(photo_lat) : null;
+        let parsedPhotoLng = photo_lng ? parseFloat(photo_lng) : null;
+        const parsedPhotoAccuracy = photo_accuracy ? parseFloat(photo_accuracy) : 15;
+        const mockDetected = is_mocked === 'true' || is_mocked === true;
+
+        // If no explicit photo GPS was provided from device, check EXIF tags from first image
+        if ((parsedPhotoLat == null || parsedPhotoLng == null) && imageFiles.length > 0) {
+            try {
+                const parser = exifParser.create(imageFiles[0].buffer);
+                const exifResult = parser.parse();
+                if (exifResult.tags?.GPSLatitude && exifResult.tags?.GPSLongitude) {
+                    const toDecimal = (degrees, minutes, seconds, direction) => {
+                        let decimal = degrees + (minutes / 60) + (seconds / 3600);
+                        if (direction === 'S' || direction === 'W') decimal = -decimal;
+                        return decimal;
+                    };
+                    parsedPhotoLat = toDecimal(
+                        exifResult.tags.GPSLatitude[0],
+                        exifResult.tags.GPSLatitude[1],
+                        exifResult.tags.GPSLatitude[2],
+                        exifResult.tags.GPSLatitudeRef
+                    );
+                    parsedPhotoLng = toDecimal(
+                        exifResult.tags.GPSLongitude[0],
+                        exifResult.tags.GPSLongitude[1],
+                        exifResult.tags.GPSLongitude[2],
+                        exifResult.tags.GPSLongitudeRef
+                    );
+                }
+            } catch (exifErr) {
+                // Ignore EXIF parsing error
+            }
+        }
+
+        if (parsedPhotoLat != null && parsedPhotoLng != null && !isNaN(parsedPhotoLat) && !isNaN(parsedPhotoLng)) {
+            // Haversine formula
+            const R = 6371e3; // Earth radius in meters
+            const reportLat = parseFloat(latitude);
+            const reportLng = parseFloat(longitude);
+            const phi1 = (reportLat * Math.PI) / 180;
+            const phi2 = (parsedPhotoLat * Math.PI) / 180;
+            const deltaPhi = ((parsedPhotoLat - reportLat) * Math.PI) / 180;
+            const deltaLambda = ((parsedPhotoLng - reportLng) * Math.PI) / 180;
+
+            const a =
+                Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+                Math.cos(phi1) * Math.cos(phi2) *
+                Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            photoDistanceMeters = Math.round(R * c);
+
+            if (mockDetected) {
+                locationVerificationStatus = 'location_mismatch';
+            } else if (photoDistanceMeters <= (75 + parsedPhotoAccuracy)) {
+                locationVerificationStatus = 'verified_on_site';
+            } else if (photoDistanceMeters <= 300) {
+                locationVerificationStatus = 'nearby_approximate';
+            } else {
+                locationVerificationStatus = 'location_mismatch';
+            }
+        } else if (photo_source === 'camera') {
+            locationVerificationStatus = 'nearby_approximate';
+        } else {
+            locationVerificationStatus = 'unverified_gallery';
+        }
+
         const { data: report, error } = await supabase
             .from('reports')
             .insert({
@@ -642,7 +750,15 @@ export const createReport = async (req, res, next) => {
                 status: onPrivateProperty ? 'pending_owner_consent' : 'unresolved',
                 validation_status: validationStatus,
                 scale_level: scale_level || 'medium',
-                obstruction_level: obstruction_level || 'none'
+                obstruction_level: obstruction_level || 'none',
+                photo_lat: parsedPhotoLat,
+                photo_lng: parsedPhotoLng,
+                photo_accuracy: parsedPhotoAccuracy,
+                photo_captured_at: photo_captured_at || new Date().toISOString(),
+                photo_source: photo_source || (imageFiles.length > 0 ? 'unknown' : null),
+                is_mocked: mockDetected,
+                location_verification_status: locationVerificationStatus,
+                photo_distance_meters: photoDistanceMeters,
             })
             .select()
             .single();
@@ -788,17 +904,18 @@ export const createReport = async (req, res, next) => {
                     }
                 }
 
-                // Run EfficientNet classifier on all images in background if images are present
-                if (imageFiles.length > 0) {
+                // Run classifier on clean images if provided to prevent watermark interference, otherwise imageFiles
+                const classificationImages = cleanImageFiles.length > 0 ? cleanImageFiles : imageFiles;
+                if (classificationImages.length > 0) {
                     console.log(`[Classifier] ══════════════════════════════════════════`);
                     console.log(`[Classifier] Starting classification for report ${report.id}`);
-                    console.log(`[Classifier]   images to classify : ${imageFiles.length}`);
+                    console.log(`[Classifier]   images to classify : ${classificationImages.length} (clean=${cleanImageFiles.length > 0})`);
                     console.log(`[Classifier]   target             : ${CLASSIFIER_SERVICE_URL}/classify`);
                     console.log(`[Classifier] ══════════════════════════════════════════`);
 
                     const imageResults = [];
-                    for (let i = 0; i < imageFiles.length; i++) {
-                        const imageFile = imageFiles[i];
+                    for (let i = 0; i < classificationImages.length; i++) {
+                        const imageFile = classificationImages[i];
                         const sizeKB = (imageFile.buffer.byteLength / 1024).toFixed(1);
                         console.log(`[Classifier] ──────────────────────────────────────`);
                         console.log(`[Classifier] → SEND image [${i + 1}/${imageFiles.length}]`);
@@ -947,11 +1064,10 @@ export const createReport = async (req, res, next) => {
                     }
                 }
 
-                // Record the rejection timestamp when the AI rejects the report.
+                // Record rejection reason in notes for schema compatibility
                 if (finalValidationStatus === VALIDATION_STATUS.REJECTED) {
-                    updatePayload.rejected_at = new Date().toISOString();
                     if (finalRejectionReason) {
-                        updatePayload.rejection_reason = finalRejectionReason;
+                        updatePayload.notes = finalRejectionReason;
                     }
                 }
 
@@ -973,14 +1089,29 @@ export const createReport = async (req, res, next) => {
 
                 console.log(`[DATABASE-UPDATE] Final payload: ${JSON.stringify(updatePayload)}`);
 
-                const { error: dbError } = await supabase
+                let { error: dbError } = await supabase
                     .from('reports')
                     .update(updatePayload)
                     .eq('id', report.id);
 
                 if (dbError) {
-                    console.error(`[DATABASE-UPDATE] FAILED report=${report.id}, error=${dbError.message}`);
-                    throw new Error(`Database update failed: ${dbError.message}`);
+                    console.error(`[DATABASE-UPDATE] Primary update failed for report=${report.id}, error=${dbError.message}. Retrying with safe core payload...`);
+                    // Resilient fallback: ensure validation_status and issue_type are updated even if extended columns differ
+                    const safePayload = {
+                        validation_status: finalValidationStatus,
+                        issue_type: updatePayload.issue_type || 'waste',
+                        notes: finalRejectionReason || updatePayload.notes || null,
+                        updated_at: new Date().toISOString()
+                    };
+                    const { error: retryError } = await supabase
+                        .from('reports')
+                        .update(safePayload)
+                        .eq('id', report.id);
+
+                    if (retryError) {
+                        console.error(`[DATABASE-UPDATE] FAILED safe retry report=${report.id}, error=${retryError.message}`);
+                        throw new Error(`Database update failed: ${retryError.message}`);
+                    }
                 } else {
                     console.log(`[DATABASE-UPDATE] SUCCESS report=${report.id}`);
                 }
@@ -1010,6 +1141,24 @@ export const createReport = async (req, res, next) => {
                         'Report Under Review',
                         'Your report has been flagged for manual review.'
                     ).catch(err => console.error('Failed to send manual review notification:', err));
+
+                    // Notify officers that a report requires manual review
+                    notifyOfficers({
+                        reportId: report.id,
+                        type: 'pending_validation',
+                        title: 'Report Flagged for Manual Review',
+                        body: `Report "${report.title || 'Untitled'}" requires manual review (${finalRejectionReason || 'unclear AI validation'}).`
+                    }).catch(err => console.error('Failed to notify officers for manual review:', err));
+                }
+
+                // Notify officers of newly approved incoming reports
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
+                    notifyOfficers({
+                        reportId: report.id,
+                        type: 'approved',
+                        title: 'New Validated Report',
+                        body: `New report "${report.title || 'Untitled'}" has been validated and added to the queue.`
+                    }).catch(err => console.error('Failed to notify officers for approved report:', err));
                 }
                 // Trigger clustering
                 await clusterReports();
@@ -1113,14 +1262,11 @@ export const updateReportValidation = async (req, res, next) => {
             updated_at: new Date().toISOString()
         };
 
-        // Record the rejection timestamp and reason when manually rejected
+        // Record rejection reason in notes for schema compatibility
         if (validation_status === 'rejected') {
-            updateData.rejected_at = new Date().toISOString();
             if (rejection_reason !== undefined) {
-                updateData.rejection_reason = rejection_reason;
+                updateData.notes = rejection_reason;
             }
-        } else {
-            updateData.rejection_reason = null;
         }
 
         const { data, error } = await supabase

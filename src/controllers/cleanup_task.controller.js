@@ -36,14 +36,39 @@ export const createCleanupTask = async (req,res,next) => {
 export const createCustomCleanupTask = async (req,res,next) => {
   try {
     if (!Array.isArray(req.body.report_ids)||!req.body.report_ids.length) return res.status(400).json({message:'report_ids are required'});
-    if(!Array.isArray(req.body.assigned_crew_ids??[])) return res.status(400).json({message:'assigned_crew_ids must be an array'});
+    
+    let fieldCrewId = req.body.field_crew_id || req.body.assigned_field_crew_id || req.body.crew_id || null;
+    let crewMemberIds = Array.isArray(req.body.assigned_crew_ids) ? [...req.body.assigned_crew_ids] : [];
+
+    if (fieldCrewId && crewMemberIds.length === 0) {
+      const { data: crew } = await supabase
+        .from('field_crews')
+        .select('*')
+        .eq('id', fieldCrewId)
+        .single();
+      if (crew) {
+        const rawMembers = [...(crew.member_profile_ids || []), crew.team_lead_profile_id].filter(Boolean);
+        crewMemberIds = [...new Set(rawMembers)];
+      }
+    }
+
+    if(!Array.isArray(crewMemberIds)) return res.status(400).json({message:'assigned_crew_ids must be an array'});
     const {data,error}=await supabase.rpc('create_manual_cleanup_task',{
       actor:req.user.id,selected_report_ids:req.body.report_ids,task_title:req.body.title,
-      task_description:req.body.description??null,crew_member_ids:req.body.assigned_crew_ids??[],
+      task_description:req.body.description??null,crew_member_ids:crewMemberIds,
       task_priority:req.body.priority??null
     });
     if(error) throw error;
     if(data.status==='conflict') return res.status(409).json({message:'Selected reports changed or are blocked; refresh before creating a task',...data});
+
+    if (fieldCrewId && data.task?.id) {
+      await supabase
+        .from('cleanup_tasks')
+        .update({ assigned_field_crew_id: fieldCrewId })
+        .eq('id', data.task.id);
+      data.task.assigned_field_crew_id = fieldCrewId;
+    }
+
     res.status(201).json({message:'Custom cleanup task created successfully',task:data.task});
   } catch(error){next(error);}
 };

@@ -28,7 +28,8 @@ import {
     fetchAgencyResponses,
     logAgencyResponse,
     updateReportDetails,
-    syncReportMedia
+    syncReportMedia,
+    validateReportImage
 } from '../controllers/report.controller.js';
 import { batchSyncReports } from '../controllers/sync.controller.js';
 import { authenticate, optionalAuthenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
@@ -42,6 +43,7 @@ router.get('/public', getPublicReports);
 // Optionally authenticated routes
 router.get('/:reportId/evidence', optionalAuthenticate, getReportEvidence);
 router.post('/batch-evidence', optionalAuthenticate, getBatchReportEvidence);
+router.get('/:id', optionalAuthenticate, getReportById);
 
 // All other report routes require authentication
 router.use(authenticate);
@@ -49,12 +51,14 @@ router.use(authenticate);
 // Add suspension check for protected routes
 router.use(checkUserSuspension);
 
+// Pre-validation endpoint for clean photos
+router.post('/validate-image', mediaUpload.single('image'), validateReportImage);
+
 // Routes that don't need LGU/admin role first
 router.post('/sync/batch', batchSyncReports);
 router.post('/sync/media/:idempotency_key', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), syncReportMedia);
-router.post('/', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), createReport);
+router.post('/', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'clean_image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), createReport);
 router.get('/my', getMyReports);
-router.get('/:id', getReportById);
 router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), uploadEvidence);
 router.patch('/:id/close', citizenCloseReport); // Citizen can close their own report
 router.post('/:id/create-new', createReportFromRejected); // Create new report from rejected
