@@ -1030,8 +1030,10 @@ export const createReport = async (req, res, next) => {
                             manual_review: 0
                         };
 
-                        // Tally category votes from non-rejected images.
+                        // Tally category, scale & obstruction votes from non-rejected images.
                         const categoryCounts = {};
+                        const scaleCounts = {};
+                        const obstructionCounts = {};
 
                         for (const result of imageResults) {
                             const mapped = mapClassifierToValidation(result);
@@ -1043,6 +1045,20 @@ export const createReport = async (req, res, next) => {
                             if (mapped.predicted_category) {
                                 categoryCounts[mapped.predicted_category] =
                                     (categoryCounts[mapped.predicted_category] || 0) + 1;
+                            }
+
+                            // Accumulate scale votes (weighted by confidence if available)
+                            if (mapped.predicted_scale) {
+                                const weight = mapped.scale_confidence ?? 1.0;
+                                scaleCounts[mapped.predicted_scale] =
+                                    (scaleCounts[mapped.predicted_scale] || 0) + weight;
+                            }
+
+                            // Accumulate obstruction votes (weighted by confidence if available)
+                            if (mapped.predicted_obstruction) {
+                                const weight = mapped.obstruction_confidence ?? 1.0;
+                                obstructionCounts[mapped.predicted_obstruction] =
+                                    (obstructionCounts[mapped.predicted_obstruction] || 0) + weight;
                             }
                         }
 
@@ -1059,7 +1075,10 @@ export const createReport = async (req, res, next) => {
                             finalRejectionReason = 'Mixed or unclear image validation results.';
                         }
 
-                        // Pick the majority-voted category (only when not fully rejected).
+                        let finalScaleLevel = report.scale_level || null;
+                        let finalObstructionLevel = report.obstruction_level || null;
+
+                        // Pick majority-voted category, scale & obstruction (only when not fully rejected).
                         if (finalValidationStatus !== VALIDATION_STATUS.REJECTED) {
                             const categoryEntries = Object.entries(categoryCounts);
                             if (categoryEntries.length > 0) {
@@ -1068,7 +1087,6 @@ export const createReport = async (req, res, next) => {
                                 console.log(`[Classifier] Majority category: ${finalIssueType} (counts: ${JSON.stringify(categoryCounts)})`);
                             } else {
                                 console.log(`[Classifier] No category votes collected — trying fallback`);
-                                // If no category votes but validation succeeded, try to use the first image's category
                                 if (imageResults.length > 0 && imageResults[0].predicted_category) {
                                     finalIssueType = imageResults[0].predicted_category;
                                     console.log(`[Classifier] Using first image's category as fallback: ${finalIssueType}`);
@@ -1076,8 +1094,22 @@ export const createReport = async (req, res, next) => {
                                     console.log(`[Classifier] No AI category available, will use text-based fallback`);
                                 }
                             }
+
+                            const scaleEntries = Object.entries(scaleCounts);
+                            if (scaleEntries.length > 0) {
+                                scaleEntries.sort((a, b) => b[1] - a[1]);
+                                finalScaleLevel = scaleEntries[0][0];
+                                console.log(`[Classifier] Predicted scale: ${finalScaleLevel} (weights: ${JSON.stringify(scaleCounts)})`);
+                            }
+
+                            const obstructionEntries = Object.entries(obstructionCounts);
+                            if (obstructionEntries.length > 0) {
+                                obstructionEntries.sort((a, b) => b[1] - a[1]);
+                                finalObstructionLevel = obstructionEntries[0][0];
+                                console.log(`[Classifier] Predicted obstruction: ${finalObstructionLevel} (weights: ${JSON.stringify(obstructionCounts)})`);
+                            }
                         } else {
-                            console.log(`[Classifier] Report rejected — skipping category assignment`);
+                            console.log(`[Classifier] Report rejected — skipping category, scale, and obstruction assignment`);
                         }
 
                         console.log(`[Classifier] ══════════════════════════════════════════`);
@@ -1127,10 +1159,27 @@ export const createReport = async (req, res, next) => {
                     console.log(`[DATABASE-UPDATE] Fallback issue_type: ${updatePayload.issue_type}`);
                 }
 
+                // Automated scale assignment from ML model
+                if (finalScaleLevel) {
+                    updatePayload.scale_level = finalScaleLevel;
+                    console.log(`[DATABASE-UPDATE] Using AI-determined scale_level: ${finalScaleLevel}`);
+                }
+
+                // Automated obstruction assignment from ML model
+                if (finalObstructionLevel) {
+                    updatePayload.obstruction_level = finalObstructionLevel;
+                    console.log(`[DATABASE-UPDATE] Using AI-determined obstruction_level: ${finalObstructionLevel}`);
+                }
+
                 // Severity calculation for approved reports
                 if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
                     try {
-                        const reportForSeverity = { ...report, issue_type: updatePayload.issue_type };
+                        const reportForSeverity = {
+                            ...report,
+                            issue_type: updatePayload.issue_type,
+                            scale_level: updatePayload.scale_level || report.scale_level || 'medium',
+                            obstruction_level: updatePayload.obstruction_level || report.obstruction_level || 'none'
+                        };
                         const severityResult = await calculateSeverity(reportForSeverity);
                         updatePayload.severity_score = severityResult.severityScore;
                         updatePayload.severity_level = severityResult.severityLevel;
@@ -2138,6 +2187,8 @@ export const syncReportMedia = async (req, res, next) => {
                     if (imageResults.length > 0) {
                         const statusCounts = { approved: 0, rejected: 0, manual_review: 0 };
                         const categoryCounts = {};
+                        const scaleCounts = {};
+                        const obstructionCounts = {};
 
                         for (const result of imageResults) {
                             const mapped = mapClassifierToValidation(result);
@@ -2147,6 +2198,16 @@ export const syncReportMedia = async (req, res, next) => {
 
                             if (mapped.predicted_category) {
                                 categoryCounts[mapped.predicted_category] = (categoryCounts[mapped.predicted_category] || 0) + 1;
+                            }
+
+                            if (mapped.predicted_scale) {
+                                const weight = mapped.scale_confidence ?? 1.0;
+                                scaleCounts[mapped.predicted_scale] = (scaleCounts[mapped.predicted_scale] || 0) + weight;
+                            }
+
+                            if (mapped.predicted_obstruction) {
+                                const weight = mapped.obstruction_confidence ?? 1.0;
+                                obstructionCounts[mapped.predicted_obstruction] = (obstructionCounts[mapped.predicted_obstruction] || 0) + weight;
                             }
                         }
 
@@ -2160,6 +2221,9 @@ export const syncReportMedia = async (req, res, next) => {
                             finalRejectionReason = 'Mixed or unclear image validation results.';
                         }
 
+                        let finalScaleLevel = report.scale_level || null;
+                        let finalObstructionLevel = report.obstruction_level || null;
+
                         if (finalValidationStatus !== VALIDATION_STATUS.REJECTED) {
                             const categoryEntries = Object.entries(categoryCounts);
                             if (categoryEntries.length > 0) {
@@ -2167,6 +2231,18 @@ export const syncReportMedia = async (req, res, next) => {
                                 finalIssueType = categoryEntries[0][0];
                             } else if (imageResults.length > 0 && imageResults[0].predicted_category) {
                                 finalIssueType = imageResults[0].predicted_category;
+                            }
+
+                            const scaleEntries = Object.entries(scaleCounts);
+                            if (scaleEntries.length > 0) {
+                                scaleEntries.sort((a, b) => b[1] - a[1]);
+                                finalScaleLevel = scaleEntries[0][0];
+                            }
+
+                            const obstructionEntries = Object.entries(obstructionCounts);
+                            if (obstructionEntries.length > 0) {
+                                obstructionEntries.sort((a, b) => b[1] - a[1]);
+                                finalObstructionLevel = obstructionEntries[0][0];
                             }
                         }
 
@@ -2195,9 +2271,22 @@ export const syncReportMedia = async (req, res, next) => {
                     updatePayload.issue_type = determineIssueTypeFromText(report.title, report.description);
                 }
 
+                if (finalScaleLevel) {
+                    updatePayload.scale_level = finalScaleLevel;
+                }
+
+                if (finalObstructionLevel) {
+                    updatePayload.obstruction_level = finalObstructionLevel;
+                }
+
                 if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
                     try {
-                        const reportForSeverity = { ...report, issue_type: updatePayload.issue_type };
+                        const reportForSeverity = {
+                            ...report,
+                            issue_type: updatePayload.issue_type,
+                            scale_level: updatePayload.scale_level || report.scale_level || 'medium',
+                            obstruction_level: updatePayload.obstruction_level || report.obstruction_level || 'none'
+                        };
                         const severityResult = await calculateSeverity(reportForSeverity);
                         updatePayload.severity_score = severityResult.severityScore;
                         updatePayload.severity_level = severityResult.severityLevel;

@@ -95,19 +95,29 @@ export const classifyImage = async (imageBuffer, originalName = 'image.jpg', mim
         _log('  decision           :', result.decision);
         _log('  in_review_zone     :', result.in_review_zone);
         _log('  predicted_category :', result.predicted_category ?? '(null — rejected)');
+        _log('  predicted_scale    :', result.predicted_scale ?? '(null)');
+        _log('  predicted_obstruction :', result.predicted_obstruction ?? '(null)');
         _log('  inference_ms       :', result.inference_ms ?? 'n/a');
         _log('──────────────────────────────────────────────');
 
         return {
             ok: true,
-            predicted_class:    result.predicted_class,
-            confidence:         result.confidence,
-            probabilities:      result.probabilities,
+            predicted_class:           result.predicted_class,
+            confidence:                result.confidence,
+            probabilities:             result.probabilities,
             // Exp 3.2 fields
-            decision:           result.decision,
-            in_review_zone:     result.in_review_zone,
+            decision:                  result.decision,
+            in_review_zone:            result.in_review_zone,
             // Zero-shot category (null when image is REJECTED)
-            predicted_category: result.predicted_category ?? null,
+            predicted_category:        result.predicted_category ?? null,
+            // Zero-shot scale (null when image is REJECTED)
+            predicted_scale:           result.predicted_scale ?? null,
+            scale_confidence:          result.scale_confidence ?? null,
+            scale_probabilities:       result.scale_probabilities ?? null,
+            // Zero-shot obstruction (null when image is REJECTED)
+            predicted_obstruction:     result.predicted_obstruction ?? null,
+            obstruction_confidence:    result.obstruction_confidence ?? null,
+            obstruction_probabilities: result.obstruction_probabilities ?? null,
         };
     } catch (err) {
         clearTimeout(timeout);
@@ -158,8 +168,14 @@ export const mapClassifierToValidation = (classifierResult) => {
                 rejection_reason: null,
                 auto_classification: predicted_class,
                 predicted_category: classifierResult.predicted_category ?? null,
+                predicted_scale: classifierResult.predicted_scale ?? null,
+                scale_confidence: classifierResult.scale_confidence ?? null,
+                scale_probabilities: classifierResult.scale_probabilities ?? null,
+                predicted_obstruction: classifierResult.predicted_obstruction ?? null,
+                obstruction_confidence: classifierResult.obstruction_confidence ?? null,
+                obstruction_probabilities: classifierResult.obstruction_probabilities ?? null,
             };
-            _log('  → mapped status :', mapped.status, '| category:', mapped.predicted_category);
+            _log('  → mapped status :', mapped.status, '| category:', mapped.predicted_category, '| scale:', mapped.predicted_scale, '| obstruction:', mapped.predicted_obstruction);
             return mapped;
         }
         if (decision === 'REJECTED') {
@@ -168,6 +184,12 @@ export const mapClassifierToValidation = (classifierResult) => {
                 rejection_reason: 'Image classified as INVALID by automated validation (Exp 3.2).',
                 auto_classification: predicted_class,
                 predicted_category: null, // Rejected images don't get a category
+                predicted_scale: null,
+                scale_confidence: null,
+                scale_probabilities: null,
+                predicted_obstruction: null,
+                obstruction_confidence: null,
+                obstruction_probabilities: null,
             };
             _log('  → mapped status :', mapped.status, '| category: null (rejected)');
             return mapped;
@@ -178,8 +200,14 @@ export const mapClassifierToValidation = (classifierResult) => {
             rejection_reason: null,
             auto_classification: predicted_class,
             predicted_category: classifierResult.predicted_category ?? null,
+            predicted_scale: classifierResult.predicted_scale ?? null,
+            scale_confidence: classifierResult.scale_confidence ?? null,
+            scale_probabilities: classifierResult.scale_probabilities ?? null,
+            predicted_obstruction: classifierResult.predicted_obstruction ?? null,
+            obstruction_confidence: classifierResult.obstruction_confidence ?? null,
+            obstruction_probabilities: classifierResult.obstruction_probabilities ?? null,
         };
-        _log('  → mapped status :', mapped.status, '| category:', mapped.predicted_category);
+        _log('  → mapped status :', mapped.status, '| category:', mapped.predicted_category, '| scale:', mapped.predicted_scale, '| obstruction:', mapped.predicted_obstruction);
         return mapped;
     }
 
