@@ -3,10 +3,30 @@ function badInput(message) { const error = new Error(message); error.statusCode 
 
 export function resolvePlanSettings(input = {}) {
   if (!input || Array.isArray(input) || typeof input !== 'object') throw badInput('settings must be an object');
-  const settings = { mode: 'standard', travel_mode: 'DRIVING', break_duration_min: 60, overtime_tolerance_min: 15, max_tasks_per_shift: 15, capacity_utilization: 1, ...input };
+  const settings = {
+    mode: 'standard',
+    travel_mode: 'DRIVING',
+    break_duration_min: 60,
+    overtime_tolerance_min: 15,
+    max_tasks_per_shift: 15,
+    capacity_utilization: 1,
+    max_route_distance_km: null,
+    max_route_duration_min: null,
+    ...input
+  };
   if (!['standard', 'sweeper', 'mixed'].includes(settings.mode)) throw badInput('Invalid dispatch mode');
   for (const [key, min, max] of [['break_duration_min', 0, 240], ['overtime_tolerance_min', 0, 120], ['max_tasks_per_shift', 1, 100], ['capacity_utilization', 0.1, 1]]) {
     if (typeof settings[key] !== 'number' || !Number.isFinite(settings[key]) || settings[key] < min || settings[key] > max) throw badInput(`Invalid ${key}`);
+  }
+  if (settings.max_route_distance_km != null) {
+    if (typeof settings.max_route_distance_km !== 'number' || !Number.isFinite(settings.max_route_distance_km) || settings.max_route_distance_km <= 0 || settings.max_route_distance_km > 500) {
+      throw badInput('Invalid max_route_distance_km');
+    }
+  }
+  if (settings.max_route_duration_min != null) {
+    if (typeof settings.max_route_duration_min !== 'number' || !Number.isFinite(settings.max_route_duration_min) || settings.max_route_duration_min <= 0 || settings.max_route_duration_min > 1440) {
+      throw badInput('Invalid max_route_duration_min');
+    }
   }
   if (!Number.isInteger(settings.max_tasks_per_shift)) throw badInput('max_tasks_per_shift must be an integer');
   if (!['DRIVING', 'BICYCLE', 'WALKING', 'MOTORCYCLE'].includes(settings.travel_mode)) throw badInput('Invalid travel_mode');
@@ -41,19 +61,48 @@ function shiftMinutes(crew) {
 
 export function selectPlanItems(candidates, crews, activeTasks, settings) {
   const travel = { DRIVING: 25, MOTORCYCLE: 20, BICYCLE: 15, WALKING: 10 }[settings.travel_mode] ?? 25;
+  const avgDistanceKmPerLeg = { DRIVING: 6, MOTORCYCLE: 5, BICYCLE: 3, WALKING: 1.5 }[settings.travel_mode] ?? 5;
   const capable = crews.filter(crew => crew.availability_status === 'available' && crew.shift_start && crew.shift_end && (settings.mode === 'sweeper' ? crew.supports_sweeper : crew.supports_standard) && ((crew.member_profile_ids?.length ?? 0) > 0 || crew.team_lead_profile_id));
   const budgets = capable.map(crew => {
     const members = [...(crew.member_profile_ids ?? []), crew.team_lead_profile_id].filter(Boolean);
     const busy = activeTasks.filter(task => !['completed', 'cancelled'].includes(task.status) && (task.assigned_field_crew_id === crew.id || task.assigned_crew_ids?.some(id => members.includes(id))));
     const total = Math.max(0, (shiftMinutes(crew) - settings.break_duration_min + settings.overtime_tolerance_min) * settings.capacity_utilization);
-    return { crew, total, remaining: Math.max(0, total - busy.reduce((sum, task) => sum + (task.estimated_duration_min ?? 60), 0)), count: busy.length, cap: Math.min(crew.max_tasks_per_shift ?? 10, settings.max_tasks_per_shift) };
+    return {
+      crew,
+      total,
+      remaining: Math.max(0, total - busy.reduce((sum, task) => sum + (task.estimated_duration_min ?? 60), 0)),
+      accumulated_travel_min: 0,
+      accumulated_distance_km: 0,
+      count: busy.length,
+      cap: Math.min(crew.max_tasks_per_shift ?? 10, settings.max_tasks_per_shift)
+    };
   });
   const items = [...candidates].sort((a, b) => Number(b.lifecycle_state === 'sla_breached') - Number(a.lifecycle_state === 'sla_breached') || b.priority_score - a.priority_score || a.group_key.localeCompare(b.group_key)).map(candidate => {
-    const eligible = budgets.map(budget => ({ budget, minutes: Math.ceil(candidate.service_minutes * Number(budget.crew.service_time_factor) + travel / Number(budget.crew.speed_factor)) }))
-      .filter(({ budget, minutes }) => budget.remaining >= minutes && budget.count < budget.cap)
+    const eligible = budgets.map(budget => {
+      const travelMins = Math.ceil(travel / Number(budget.crew.speed_factor));
+      const workMins = Math.ceil(candidate.service_minutes * Number(budget.crew.service_time_factor));
+      const totalMins = workMins + travelMins;
+      const nextTravelMin = budget.accumulated_travel_min + travelMins;
+      const nextDistanceKm = budget.accumulated_distance_km + avgDistanceKmPerLeg;
+      const withinDistance = settings.max_route_distance_km == null || nextDistanceKm <= settings.max_route_distance_km;
+      const withinTravelTime = settings.max_route_duration_min == null || nextTravelMin <= settings.max_route_duration_min;
+      return {
+        budget,
+        minutes: totalMins,
+        travelMins,
+        distanceKm: avgDistanceKmPerLeg,
+        withinLimits: withinDistance && withinTravelTime
+      };
+    })
+      .filter(({ budget, minutes, withinLimits }) => budget.remaining >= minutes && budget.count < budget.cap && withinLimits)
       .sort((a, b) => b.budget.remaining - a.budget.remaining || a.budget.crew.id.localeCompare(b.budget.crew.id));
     const chosen = eligible[0];
-    if (chosen) { chosen.budget.remaining -= chosen.minutes; chosen.budget.count++; }
+    if (chosen) {
+      chosen.budget.remaining -= chosen.minutes;
+      chosen.budget.accumulated_travel_min += chosen.travelMins;
+      chosen.budget.accumulated_distance_km += chosen.distanceKm;
+      chosen.budget.count++;
+    }
     return {
       ...candidate,
       crew_snapshot: chosen ? { speed_factor: Number(chosen.budget.crew.speed_factor), service_time_factor: Number(chosen.budget.crew.service_time_factor) } : {},

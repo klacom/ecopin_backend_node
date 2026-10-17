@@ -1,6 +1,6 @@
 import { getDistanceAndDuration } from '../providers/distance.provider.js';
 import { metresBetween } from './geoTime.js';
-export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provider = 'haversine', { locations, speedFactor = 1, travelMode = 'DRIVING', signal, distance = getDistanceAndDuration } = {}) {
+export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provider = 'haversine', { locations, speedFactor = 1, travelMode = 'DRIVING', signal, distance = getDistanceAndDuration, maxRouteDistanceKm = null, maxRouteDurationMin = null } = {}) {
   if (!locations || !Number.isFinite(speedFactor) || speedFactor<=0) throw new Error('Verified task locations and speed factor required');
   const waypoints = [{ sequence_order: 0, latitude: depot.latitude, longitude: depot.longitude, cleanup_task_id: null,
     waypoint_type: 'depot_start', distance_from_previous_meters: 0, estimated_time_from_previous_min: 0 }];
@@ -20,9 +20,28 @@ export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provid
       estimated_time_from_previous_min: Math.ceil(leg.duration_min / speedFactor), polyline: leg.polyline ?? null });
     previous = stop;
   }
-  return { crew_id: crewId, task_ids: orderedTaskIds, waypoints, approximate,
-    totalDistance: waypoints.reduce((sum,w) => sum+w.distance_from_previous_meters,0),
-    totalTime: waypoints.reduce((sum,w) => sum+w.estimated_time_from_previous_min,0) };
+  const totalDistance = waypoints.reduce((sum,w) => sum+w.distance_from_previous_meters,0);
+  const totalTime = waypoints.reduce((sum,w) => sum+w.estimated_time_from_previous_min,0);
+  const maxDistanceMeters = maxRouteDistanceKm ? maxRouteDistanceKm * 1000 : null;
+  const distanceExceeded = maxDistanceMeters ? totalDistance > maxDistanceMeters : false;
+  const timeExceeded = maxRouteDurationMin ? totalTime > maxRouteDurationMin : false;
+
+  return {
+    crew_id: crewId,
+    task_ids: orderedTaskIds,
+    waypoints,
+    approximate,
+    totalDistance,
+    totalTime,
+    limits: {
+      max_route_distance_km: maxRouteDistanceKm,
+      max_route_duration_min: maxRouteDurationMin,
+      distance_exceeded: distanceExceeded,
+      time_exceeded: timeExceeded,
+      excess_distance_km: distanceExceeded ? Math.round(((totalDistance - maxDistanceMeters) / 1000) * 10) / 10 : 0,
+      excess_time_min: timeExceeded ? totalTime - maxRouteDurationMin : 0
+    }
+  };
 }
 
 export function generateMixedRoutesFromProposal(proposal, commitResults, crews, depot, maxDetourMinutes) {

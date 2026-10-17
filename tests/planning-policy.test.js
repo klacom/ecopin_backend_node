@@ -55,3 +55,32 @@ test('unselected candidate when no capable crew is available carries proper doma
   const result = selectPlanItems([report], [{ ...crew, supports_sweeper: false }], [], resolvePlanSettings({ mode: 'sweeper' }));
   expect(result.items[0]).toMatchObject({ is_selected: false, reason: 'no_capable_crew', status: 'backlog', operational_label: 'No qualified crew available on shift' });
 });
+
+test('max_route_distance_km enforces upper bounds on cumulative travel distance', () => {
+  const candidate1 = { ...cluster, cluster_id: 'c1', group_key: 'cluster:c1', service_minutes: 10, priority_score: 90 };
+  const candidate2 = { ...cluster, cluster_id: 'c2', group_key: 'cluster:c2', service_minutes: 10, priority_score: 80 };
+  const multiCrew = { ...crew, max_tasks_per_shift: 5, shift_start: '08:00', shift_end: '16:00' };
+  
+  // Set distance cap such that only 1 leg (6km) fits, 2nd leg would exceed 8km cap
+  const settings = resolvePlanSettings({ max_route_distance_km: 8 });
+  const result = selectPlanItems([candidate1, candidate2], [multiCrew], [], settings);
+
+  expect(result.items[0].is_selected).toBe(true);
+  expect(result.items[1].is_selected).toBe(false);
+  expect(result.items[1].reason).toBe('insufficient_capacity');
+});
+
+test('max_route_duration_min enforces upper bounds on cumulative transit duration', () => {
+  const candidate1 = { ...cluster, cluster_id: 'c1', group_key: 'cluster:c1', service_minutes: 10, priority_score: 90 };
+  const candidate2 = { ...cluster, cluster_id: 'c2', group_key: 'cluster:c2', service_minutes: 10, priority_score: 80 };
+  const multiCrew = { ...crew, max_tasks_per_shift: 5, shift_start: '08:00', shift_end: '16:00' };
+
+  // Set travel transit cap such that only 1 leg (25min) fits, 2nd leg (total 50min) exceeds 35min cap
+  const settings = resolvePlanSettings({ max_route_duration_min: 35 });
+  const result = selectPlanItems([candidate1, candidate2], [multiCrew], [], settings);
+
+  expect(result.items[0].is_selected).toBe(true);
+  expect(result.items[1].is_selected).toBe(false);
+  expect(result.items[1].reason).toBe('insufficient_capacity');
+});
+

@@ -31,9 +31,17 @@ export async function commitAndRoutePlan(planId, actor) {
     if (!depot || !Number.isFinite(depot.latitude) || !Number.isFinite(depot.longitude)) throw new Error('Configure the dispatch depot before publishing');
     const locations = new Map(coordinates.map(point => [point.id, point]));
     const signal = AbortSignal.timeout(20000);
+    const snapshot = planSettings.settings_snapshot ?? {};
     const routes = await Promise.all(crews.map(async crew => ({
       ...await generateRouteForCrew(crew.id, committed.tasks.filter(task => task.assigned_field_crew_id===crew.id).map(task=>task.id), depot,
-        process.env.TOMTOM_API_KEY ? 'tomtom' : 'haversine', { locations, travelMode: planSettings.settings_snapshot.travel_mode, speedFactor: Number(crew.speed_factor), signal }),
+        process.env.TOMTOM_API_KEY ? 'tomtom' : 'haversine', {
+          locations,
+          travelMode: snapshot.travel_mode,
+          speedFactor: Number(crew.speed_factor),
+          signal,
+          maxRouteDistanceKm: snapshot.max_route_distance_km ? Number(snapshot.max_route_distance_km) : null,
+          maxRouteDurationMin: snapshot.max_route_duration_min ? Number(snapshot.max_route_duration_min) : null
+        }),
       speed_factor: Number(crew.speed_factor), service_time_factor: Number(crew.service_time_factor)
     })));
     const published = await result(db.rpc('publish_dispatch_routes', { plan_id: planId, actor, token: lease.token, routes, depot }));
