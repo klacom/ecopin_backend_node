@@ -40,7 +40,8 @@ export async function commitAndRoutePlan(planId, actor) {
           speedFactor: Number(crew.speed_factor),
           signal,
           maxRouteDistanceKm: snapshot.max_route_distance_km ? Number(snapshot.max_route_distance_km) : null,
-          maxRouteDurationMin: snapshot.max_route_duration_min ? Number(snapshot.max_route_duration_min) : null
+          maxRouteDurationMin: (snapshot.max_route_duration_minutes ?? snapshot.max_route_duration_min) ? Number(snapshot.max_route_duration_minutes ?? snapshot.max_route_duration_min) : null,
+          maxRouteDurationMinutes: (snapshot.max_route_duration_minutes ?? snapshot.max_route_duration_min) ? Number(snapshot.max_route_duration_minutes ?? snapshot.max_route_duration_min) : null
         }),
       speed_factor: Number(crew.speed_factor), service_time_factor: Number(crew.service_time_factor)
     })));
@@ -66,7 +67,10 @@ async function commitMixedAndRoute(planId, actor, plan) {
     const depot = plan.settings_snapshot.depot;
     if (![depot?.lat, depot?.lng].every(Number.isFinite)) throw new Error('Saved plan depot is unavailable');
     const routes = assignTasksToCrews(plan.route_proposal, committed.results, crews, depot,
-      Number(plan.settings_snapshot.mixed_max_detour_minutes));
+      Number(plan.settings_snapshot.mixed_max_detour_minutes), {
+        maxRouteDistanceKm: plan.settings_snapshot.max_route_distance_km,
+        maxRouteDurationMinutes: plan.settings_snapshot.max_route_duration_minutes
+      });
     const published = await result(db.rpc('publish_mixed_dispatch_routes', { plan_id: planId, actor,
       token: lease.token, routes, depot: { latitude: depot.lat, longitude: depot.lng } }));
     const tasks = await result(db.from('cleanup_tasks').select('*').eq('source_plan_id', planId));

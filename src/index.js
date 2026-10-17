@@ -7,10 +7,22 @@ import app from './app.js';
 import { PORT as _PORT, NODE_ENV, NEXT_PUBLIC_SUPABASE_URL } from './config/index.js';
 import { startAllSchedules } from './modules/spatial_forecast/services/forecastScheduler.service.js';
 import { startSlaSchedule, stopSlaSchedule } from './jobs/cron.js';
+import { validateJwtSecretEntropy } from './services/jwt-verifier.service.js';
 
 const PORT = _PORT || 3000;
 
 console.log('Starting server initialization...');
+
+// Verify JWT_SECRET cryptographic strength and fail fast in production if weak
+const jwtSecretStatus = validateJwtSecretEntropy();
+if (NODE_ENV === 'production' && !jwtSecretStatus.valid) {
+    console.error(`FATAL: Insecure JWT_SECRET in production: ${jwtSecretStatus.reason}`);
+    process.exit(1);
+} else if (jwtSecretStatus.valid) {
+    console.log(`[JWT Authority] Secret entropy verified: ${jwtSecretStatus.bitLength}-bit key`);
+} else {
+    console.warn(`[JWT Authority] Warning: ${jwtSecretStatus.reason}`);
+}
 
 const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on ${PORT}`);

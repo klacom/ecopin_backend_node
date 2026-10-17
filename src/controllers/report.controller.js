@@ -4,7 +4,7 @@ import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
 import cloudinary from '../config/cloudinary.config.js';
-import { classifyImage, mapClassifierToValidation } from '../services/classifierClient.service.js';
+import { classifyImage, mapClassifierToValidation, ALLOWED_CLASSIFIER_CATEGORIES } from '../services/classifierClient.service.js';
 import { extractVideoFrames } from '../services/videoFrameExtractor.service.js';
 import { classifyVideoFrames } from '../services/videoFrameClassifier.service.js';
 import { aggregateVideoValidation } from '../services/videoFrameAggregator.service.js';
@@ -15,6 +15,7 @@ import { calculateSeverity } from '../services/severity.service.js';
 import { classifyReportHazard } from '../services/hazard-classifier.service.js';
 import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
 import { notifyOfficers } from '../services/officer-notification.service.js';
+import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
 
 // Helper function to determine issue type from text
 const determineIssueTypeFromText = (title, description) => {
@@ -84,6 +85,29 @@ export const addReportNote = async (req, res, next) => {
     const { note } = req.body;
 
     try {
+        const { data: currentReport, error: reportFetchError } = await supabase
+            .from('reports')
+            .select('cleanup_task_id')
+            .eq('id', id)
+            .maybeSingle();
+
+        if (reportFetchError || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        if (req.user.role !== 'admin' && currentReport.cleanup_task_id) {
+            const { data: task } = await supabase
+                .from('cleanup_tasks')
+                .select('lgu_user_id, created_by')
+                .eq('id', currentReport.cleanup_task_id)
+                .maybeSingle();
+            if (task && (task.lgu_user_id || task.created_by)) {
+                const isTaskOwner = task.lgu_user_id === req.user.id || task.created_by === req.user.id;
+                if (!isTaskOwner) {
+                    return res.status(403).json({ message: 'Access denied: report belongs to a task under another LGU jurisdiction' });
+                }
+            }
+        }
 
         const { data, error } = await supabase
             .from('reports')
@@ -118,6 +142,8 @@ export const uploadReportPhoto = async (req, res, next) => {
     if (!req.file) {
         return res.status(400).json({ message: 'No file uploaded' });
     }
+
+    validateUploadedPhotoBuffer(req.file.buffer, req.file.mimetype);
 
     try {
         // ── Phase 5: server-side photo deduplication ────────────────────────
@@ -284,7 +310,17 @@ export const uploadEvidence = async (req, res, next) => {
     const { reportId } = req.params;
     const { latitude, longitude } = req.body;
 
-    console.log('Uploading evidence for report:', reportId);
+    try {
+        const access = await readReportForViewer(supabase, reportId, req.user);
+        if (!access) return res.status(404).json({ message: 'Report not found' });
+
+        const isOwner = access.report?.user_id === req.user?.id;
+        const isStaff = ['admin', 'officer', 'field_crew'].includes(req.user?.role);
+        if (!isOwner && !isStaff) {
+            return res.status(403).json({ message: 'You are not authorized to upload evidence for this report' });
+        }
+
+        console.log('Uploading evidence for report:', reportId);
     console.log('Files received:', req.files);
 
     // Check for media files (image or video)
@@ -357,7 +393,7 @@ export const uploadEvidence = async (req, res, next) => {
     }
 
     // For images, proceed with existing upload logic
-    try {
+    // Process image evidence
         // Extract EXIF metadata from image
         let imageMetadata = {
             latitude: null,
@@ -460,16 +496,17 @@ export const getReportEvidence = async (req, res, next) => {
     try {
         console.log('Fetching evidence for report:', reportId);
 
-        // 1. Check in-memory cache FIRST before touching Supabase or Cloudinary
-        const cached = evidenceServerCache.get(String(reportId));
-        if (cached && cached.expiresAt > Date.now()) {
-            return res.status(200).json(cached.data);
-        }
-
+        // 1. ALWAYS perform authorization check first before checking or returning cached evidence (QA-03)
         const access = await readReportForViewer(supabase, reportId, req.user);
         if (!access) return res.status(404).json({ message: 'Report not found' });
         if (!canReadReportEvidence(access)) {
             return res.status(403).json({ message: 'Evidence requires authorized report access' });
+        }
+
+        // 2. Check in-memory cache ONLY AFTER viewer is verified authorized
+        const cached = evidenceServerCache.get(String(reportId));
+        if (cached && cached.expiresAt > Date.now()) {
+            return res.status(200).json(cached.data);
         }
 
         const prefix = `report_evidence/${reportId}`;
@@ -540,25 +577,10 @@ export const getBatchReportEvidence = async (req, res, next) => {
     const results = {};
 
     try {
-        // 1. Resolve all items already in cache (0 Supabase / Cloudinary calls)
-        const missingIds = [];
-        for (const id of reportIds) {
-            const cached = evidenceServerCache.get(String(id));
-            if (cached && cached.expiresAt > Date.now()) {
-                results[id] = cached.data;
-            } else {
-                missingIds.push(id);
-            }
-        }
-
-        if (missingIds.length === 0) {
-            return res.status(200).json(results);
-        }
-
-        // 2. Batch-check permissions for missing items in a SINGLE Supabase query
+        // 1. ALWAYS determine permissions for all requested IDs FIRST (QA-03: prevent cross-user cached evidence leak)
         const authorizedIds = new Set();
         if (req.user?.id) {
-            await Promise.all(missingIds.map(async (id) => {
+            await Promise.all(reportIds.map(async (id) => {
                 try {
                     const access = await readReportForViewer(supabase, id, req.user);
                     if (canReadReportEvidence(access)) {
@@ -569,11 +591,11 @@ export const getBatchReportEvidence = async (req, res, next) => {
                 }
             }));
         } else {
-            // Public viewer: ONE SINGLE query to Supabase using .in() instead of N individual queries!
+            // Public viewer: ONE SINGLE query to Supabase using .in()
             const { data: publicReports, error: pubError } = await supabase
                 .from('public_reports')
                 .select('id, location_precision')
-                .in('id', missingIds);
+                .in('id', reportIds);
 
             if (!pubError && Array.isArray(publicReports)) {
                 for (const row of publicReports) {
@@ -584,14 +606,30 @@ export const getBatchReportEvidence = async (req, res, next) => {
             }
         }
 
-        for (const id of missingIds) {
+        // Set empty array for unauthorized report IDs
+        for (const id of reportIds) {
             if (!authorizedIds.has(id)) {
                 results[id] = [];
             }
         }
 
-        // 3. Fetch evidence from Cloudinary for authorized missing IDs
-        await Promise.all([...authorizedIds].map(async (reportId) => {
+        // 2. For authorized IDs: check in-memory cache first
+        const missingAuthorizedIds = [];
+        for (const id of authorizedIds) {
+            const cached = evidenceServerCache.get(String(id));
+            if (cached && cached.expiresAt > Date.now()) {
+                results[id] = cached.data;
+            } else {
+                missingAuthorizedIds.push(id);
+            }
+        }
+
+        if (missingAuthorizedIds.length === 0) {
+            return res.status(200).json(results);
+        }
+
+        // 3. Fetch evidence from Cloudinary only for authorized IDs not in cache
+        await Promise.all(missingAuthorizedIds.map(async (reportId) => {
             try {
                 const prefix = `report_evidence/${reportId}`;
                 const [imageResources, videoResources] = await Promise.all([
@@ -950,7 +988,7 @@ export const createReport = async (req, res, next) => {
                         if (imageFiles.length === 0) {
                             finalValidationStatus = aggregated.validation_status;
                             finalRejectionReason = aggregated.rejection_reason;
-                            if (aggregated.dominant_class) {
+                            if (aggregated.dominant_class && ALLOWED_CLASSIFIER_CATEGORIES.includes(aggregated.dominant_class)) {
                                 finalIssueType = aggregated.dominant_class;
                             } else {
                                 // Fallback if video classification didn't provide a class
@@ -959,7 +997,7 @@ export const createReport = async (req, res, next) => {
                             }
                         } else {
                             // For combined reports, still use video dominant class if available
-                            if (aggregated.dominant_class && !finalIssueType) {
+                            if (aggregated.dominant_class && ALLOWED_CLASSIFIER_CATEGORIES.includes(aggregated.dominant_class) && !finalIssueType) {
                                 finalIssueType = aggregated.dominant_class;
                                 console.log(`[VIDEO-PIPELINE] Using video dominant_class for combined report: ${finalIssueType}`);
                             }
@@ -1149,13 +1187,14 @@ export const createReport = async (req, res, next) => {
                 };
 
                 // Always set issue_type - use AI category if available, otherwise fallback
-                if (finalIssueType && finalIssueType !== 'pending') {
+                if (finalIssueType && finalIssueType !== 'pending' && ALLOWED_CLASSIFIER_CATEGORIES.includes(finalIssueType)) {
                     updatePayload.issue_type = finalIssueType;
                     console.log(`[DATABASE-UPDATE] Using AI-determined issue_type: ${finalIssueType}`);
                 } else {
                     // Fallback: try to determine issue type from title/description if AI failed
                     console.log(`[DATABASE-UPDATE] No valid AI category determined, using fallback for issue_type`);
-                    updatePayload.issue_type = determineIssueTypeFromText(title, description);
+                    const fallbackType = determineIssueTypeFromText(title, description);
+                    updatePayload.issue_type = ALLOWED_CLASSIFIER_CATEGORIES.includes(fallbackType) ? fallbackType : 'waste';
                     console.log(`[DATABASE-UPDATE] Fallback issue_type: ${updatePayload.issue_type}`);
                 }
 
@@ -1329,11 +1368,29 @@ export const updateReportStatus = async (req, res, next) => {
 
     try {
         // Get current status and photos for verification
-        const { data: currentReport } = await supabase
+        const { data: currentReport, error: reportFetchError } = await supabase
             .from('reports')
-            .select('status, before_photo_url, after_photo_url, issue_type')
+            .select('status, before_photo_url, after_photo_url, issue_type, cleanup_task_id')
             .eq('id', id)
             .single();
+
+        if (reportFetchError || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        if (req.user.role !== 'admin' && currentReport.cleanup_task_id) {
+            const { data: task } = await supabase
+                .from('cleanup_tasks')
+                .select('lgu_user_id, created_by')
+                .eq('id', currentReport.cleanup_task_id)
+                .maybeSingle();
+            if (task && (task.lgu_user_id || task.created_by)) {
+                const isTaskOwner = task.lgu_user_id === user_id || task.created_by === user_id;
+                if (!isTaskOwner) {
+                    return res.status(403).json({ message: 'Access denied: report belongs to a task under another LGU jurisdiction' });
+                }
+            }
+        }
 
         if (status === 'resolved' || status === 'waiting_for_feedback') {
             const isScouting = currentReport?.issue_type === 'scouting' || currentReport?.issue_type === 'acknowledge_only';
@@ -1638,6 +1695,30 @@ export const logAgencyResponse = async (req, res, next) => {
     const user_id = req.user.id;
 
     try {
+        const { data: currentReport, error: reportFetchError } = await supabase
+            .from('reports')
+            .select('cleanup_task_id')
+            .eq('id', id)
+            .maybeSingle();
+
+        if (reportFetchError || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        if (req.user.role !== 'admin' && currentReport.cleanup_task_id) {
+            const { data: task } = await supabase
+                .from('cleanup_tasks')
+                .select('lgu_user_id, created_by')
+                .eq('id', currentReport.cleanup_task_id)
+                .maybeSingle();
+            if (task && (task.lgu_user_id || task.created_by)) {
+                const isTaskOwner = task.lgu_user_id === user_id || task.created_by === user_id;
+                if (!isTaskOwner) {
+                    return res.status(403).json({ message: 'Access denied: report belongs to a task under another LGU jurisdiction' });
+                }
+            }
+        }
+
         const { data, error } = await supabase
             .from('response_log')
             .insert({
@@ -1786,11 +1867,29 @@ export const lguResolveReport = async (req, res, next) => {
     const user_id = req.user.id;
 
     try {
-        const { data: currentReport } = await supabase
+        const { data: currentReport, error: reportFetchError } = await supabase
             .from('reports')
-            .select('user_id, before_photo_url, after_photo_url, issue_type')
+            .select('user_id, before_photo_url, after_photo_url, issue_type, cleanup_task_id')
             .eq('id', id)
             .single();
+
+        if (reportFetchError || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        if (req.user.role !== 'admin' && currentReport.cleanup_task_id) {
+            const { data: task } = await supabase
+                .from('cleanup_tasks')
+                .select('lgu_user_id, created_by')
+                .eq('id', currentReport.cleanup_task_id)
+                .maybeSingle();
+            if (task && (task.lgu_user_id || task.created_by)) {
+                const isTaskOwner = task.lgu_user_id === user_id || task.created_by === user_id;
+                if (!isTaskOwner) {
+                    return res.status(403).json({ message: 'Access denied: report belongs to a task under another LGU jurisdiction' });
+                }
+            }
+        }
 
         const isScouting = currentReport?.issue_type === 'scouting' || currentReport?.issue_type === 'acknowledge_only';
         if (!isScouting && (!currentReport?.before_photo_url || !currentReport?.after_photo_url)) {
@@ -2145,13 +2244,13 @@ export const syncReportMedia = async (req, res, next) => {
                         if (imageFiles.length === 0) {
                             finalValidationStatus = aggregated.validation_status;
                             finalRejectionReason = aggregated.rejection_reason;
-                            if (aggregated.dominant_class) {
+                            if (aggregated.dominant_class && ALLOWED_CLASSIFIER_CATEGORIES.includes(aggregated.dominant_class)) {
                                 finalIssueType = aggregated.dominant_class;
                             } else {
                                 finalIssueType = determineIssueTypeFromText(report.title, report.description);
                             }
                         } else {
-                            if (aggregated.dominant_class && !finalIssueType) {
+                            if (aggregated.dominant_class && ALLOWED_CLASSIFIER_CATEGORIES.includes(aggregated.dominant_class) && !finalIssueType) {
                                 finalIssueType = aggregated.dominant_class;
                             }
                         }
@@ -2265,10 +2364,11 @@ export const syncReportMedia = async (req, res, next) => {
                     updated_at: new Date().toISOString(),
                 };
 
-                if (finalIssueType && finalIssueType !== 'pending') {
+                if (finalIssueType && finalIssueType !== 'pending' && ALLOWED_CLASSIFIER_CATEGORIES.includes(finalIssueType)) {
                     updatePayload.issue_type = finalIssueType;
                 } else {
-                    updatePayload.issue_type = determineIssueTypeFromText(report.title, report.description);
+                    const fallbackType = determineIssueTypeFromText(report.title, report.description);
+                    updatePayload.issue_type = ALLOWED_CLASSIFIER_CATEGORIES.includes(fallbackType) ? fallbackType : 'waste';
                 }
 
                 if (finalScaleLevel) {

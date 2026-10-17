@@ -10,7 +10,7 @@ export async function getStorageMedia(req,res,next){
   try{
     // Use the caller's JWT and the publishable/anon key. The service key must
     // never bypass Storage policies for delivery, even for a known object path.
-    const client=createClient(config.NEXT_PUBLIC_SUPABASE_URL,config.SUPABASE_ANON_KEY,{
+    const client=createClient(config.NEXT_PUBLIC_SUPABASE_URL,config.SUPABASE_PUBLISHABLE_KEY||config.SUPABASE_ANON_KEY,{
       auth:{persistSession:false,autoRefreshToken:false},
       global:{headers:{Authorization:authorization}}
     });

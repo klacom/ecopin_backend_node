@@ -22,7 +22,8 @@
     "pm2:stop": "pm2 stop backend",
     "pm2:restart": "pm2 restart backend",
     "pm2:logs": "pm2 logs backend",
-    "pm2:monit": "pm2 monit"
+    "pm2:monit": "pm2 monit",
+    "test:git-audit": "node scripts/audit-git-history.mjs"
   },
   "keywords": [],
   "author": "",

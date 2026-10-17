@@ -6,6 +6,6 @@ import { generateMixedRoutesFromProposal } from './routeGenerator.service.js';
  * satellites missing at commit are removed from the proposal once; no solve or
  * greedy route reorder happens here.
  */
-export function assignTasksToCrews(proposal, commitResults, crews, depot, maxDetourMinutes) {
-  return generateMixedRoutesFromProposal(proposal, commitResults, crews, depot, maxDetourMinutes);
+export function assignTasksToCrews(proposal, commitResults, crews, depot, maxDetourMinutes, routeLimits = {}) {
+  return generateMixedRoutesFromProposal(proposal, commitResults, crews, depot, maxDetourMinutes, routeLimits);
 }

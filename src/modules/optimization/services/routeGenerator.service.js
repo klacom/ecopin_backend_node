@@ -1,6 +1,7 @@
 import { getDistanceAndDuration } from '../providers/distance.provider.js';
 import { metresBetween } from './geoTime.js';
-export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provider = 'haversine', { locations, speedFactor = 1, travelMode = 'DRIVING', signal, distance = getDistanceAndDuration, maxRouteDistanceKm = null, maxRouteDurationMin = null } = {}) {
+export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provider = 'haversine', { locations, speedFactor = 1, travelMode = 'DRIVING', signal, distance = getDistanceAndDuration, maxRouteDistanceKm = null, maxRouteDurationMin = null, maxRouteDurationMinutes = null } = {}) {
+  const durationLimit = maxRouteDurationMinutes ?? maxRouteDurationMin;
   if (!locations || !Number.isFinite(speedFactor) || speedFactor<=0) throw new Error('Verified task locations and speed factor required');
   const waypoints = [{ sequence_order: 0, latitude: depot.latitude, longitude: depot.longitude, cleanup_task_id: null,
     waypoint_type: 'depot_start', distance_from_previous_meters: 0, estimated_time_from_previous_min: 0 }];
@@ -20,11 +21,19 @@ export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provid
       estimated_time_from_previous_min: Math.ceil(leg.duration_min / speedFactor), polyline: leg.polyline ?? null });
     previous = stop;
   }
-  const totalDistance = waypoints.reduce((sum,w) => sum+w.distance_from_previous_meters,0);
-  const totalTime = waypoints.reduce((sum,w) => sum+w.estimated_time_from_previous_min,0);
+  const totalDistance = waypoints.reduce((sum, w) => sum + w.distance_from_previous_meters, 0);
+  const totalTime = waypoints.reduce((sum, w) => sum + w.estimated_time_from_previous_min, 0);
+
+  if (Number.isFinite(maxRouteDistanceKm) && maxRouteDistanceKm > 0 && (totalDistance / 1000) > maxRouteDistanceKm) {
+    throw new Error("Route distance " + Math.round(totalDistance / 1000) + " km exceeds maximum limit of " + maxRouteDistanceKm + " km");
+  }
+  if (Number.isFinite(durationLimit) && durationLimit > 0 && totalTime > durationLimit) {
+    throw new Error("Route duration " + totalTime + " min exceeds maximum limit of " + durationLimit + " min");
+  }
+
   const maxDistanceMeters = maxRouteDistanceKm ? maxRouteDistanceKm * 1000 : null;
   const distanceExceeded = maxDistanceMeters ? totalDistance > maxDistanceMeters : false;
-  const timeExceeded = maxRouteDurationMin ? totalTime > maxRouteDurationMin : false;
+  const timeExceeded = durationLimit ? totalTime > durationLimit : false;
 
   return {
     crew_id: crewId,
@@ -35,16 +44,16 @@ export async function generateRouteForCrew(crewId, orderedTaskIds, depot, provid
     totalTime,
     limits: {
       max_route_distance_km: maxRouteDistanceKm,
-      max_route_duration_min: maxRouteDurationMin,
+      max_route_duration_min: durationLimit,
       distance_exceeded: distanceExceeded,
       time_exceeded: timeExceeded,
       excess_distance_km: distanceExceeded ? Math.round(((totalDistance - maxDistanceMeters) / 1000) * 10) / 10 : 0,
-      excess_time_min: timeExceeded ? totalTime - maxRouteDurationMin : 0
+      excess_time_min: timeExceeded ? totalTime - durationLimit : 0
     }
   };
 }
 
-export function generateMixedRoutesFromProposal(proposal, commitResults, crews, depot, maxDetourMinutes) {
+export function generateMixedRoutesFromProposal(proposal, commitResults, crews, depot, maxDetourMinutes, routeLimits = {}) {
   if (!proposal || !Array.isArray(proposal.routes) || !Array.isArray(proposal.node_ids) ||
       !Array.isArray(proposal.travel_time_matrix_min)) throw new Error('Saved v5 route proposal required');
   const nodes = new Map(proposal.node_ids.map((id, index) => [id, index]));
@@ -105,10 +114,17 @@ export function generateMixedRoutesFromProposal(proposal, commitResults, crews, 
       const extra = Math.max(0, routeCost(routeNodes) - routeCost(directNodes));
       if (extra > maxDetourMinutes + 1e-6) throw new Error(`detour_cap_exceeded:${group.group_key}`);
     }
+    const totalDistance = waypoints.reduce((sum, point) => sum + point.distance_from_previous_meters, 0);
+    const totalTime = waypoints.reduce((sum, point) => sum + point.estimated_time_from_previous_min, 0);
+    if (Number.isFinite(routeLimits.maxRouteDistanceKm) && routeLimits.maxRouteDistanceKm > 0 && (totalDistance / 1000) > routeLimits.maxRouteDistanceKm) {
+      throw new Error("Route distance " + Math.round(totalDistance / 1000) + " km exceeds maximum limit of " + routeLimits.maxRouteDistanceKm + " km");
+    }
+    if (Number.isFinite(routeLimits.maxRouteDurationMinutes) && routeLimits.maxRouteDurationMinutes > 0 && totalTime > routeLimits.maxRouteDurationMinutes) {
+      throw new Error("Route duration " + totalTime + " min exceeds maximum limit of " + routeLimits.maxRouteDurationMinutes + " min");
+    }
     routes.push({ crew_id: crew.id, task_ids: taskIds, waypoints,
       speed_factor: Number(crew.speed_factor), service_time_factor: Number(crew.service_time_factor),
-      approximate: true, totalDistance: waypoints.reduce((sum, point) => sum + point.distance_from_previous_meters, 0),
-      totalTime: waypoints.reduce((sum, point) => sum + point.estimated_time_from_previous_min, 0) });
+      approximate: true, totalDistance, totalTime });
   }
   const expected = new Set([...committed.values()].map(group => group.task_id));
   const actual = routes.flatMap(route => route.task_ids);
