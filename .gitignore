@@ -25,6 +25,7 @@ yarn-error.log*
 # test coverage and artifacts
 coverage/
 .nyc_output/
+tests/
 
 # Graphify knowledge graph outputs
 graphify-out/
