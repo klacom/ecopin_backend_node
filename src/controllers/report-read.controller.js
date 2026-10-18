@@ -21,6 +21,29 @@ async function reportList(req,res,next,clusterId) {
 export const getPublicReports = (req,res,next) => reportList(req,res,next);
 export const getReportsByClusterId = (req,res,next) => reportList(req,res,next,req.params.clusterId);
 
+export async function getStaffReports(req, res, next) {
+  try {
+    const {limit, offset} = reportPage(req.query);
+    let query = db.from('reports_view').select('*');
+    if (req.query.validation_status) {
+      query = query.eq('validation_status', req.query.validation_status);
+    }
+    if (req.query.status) {
+      query = query.eq('status', req.query.status);
+    }
+    const {data, error} = await query
+      .order('created_at', {ascending: false})
+      .order('id', {ascending: false})
+      .range(offset, offset + limit);
+    if (error) throw error;
+    res.set('X-Has-More', String((data || []).length > limit));
+    res.status(200).json((data || []).slice(0, limit));
+  } catch (error) {
+    if (error.statusCode === 400) return res.status(400).json({message: error.message});
+    next(error);
+  }
+}
+
 export async function getReportById(req,res,next) {
   try {
     const access = await readReportForViewer(db,req.params.id,req.user);

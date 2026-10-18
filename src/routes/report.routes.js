@@ -29,7 +29,8 @@ import {
     logAgencyResponse,
     updateReportDetails,
     syncReportMedia,
-    validateReportImage
+    validateReportImage,
+    getStaffReports
 } from '../controllers/report.controller.js';
 import { batchSyncReports } from '../controllers/sync.controller.js';
 import { authenticate, optionalAuthenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
@@ -69,6 +70,7 @@ router.get('/cluster/:clusterId', getReportsByClusterId);
 // Routes that require officer/admin role
 router.use(authorize(ROLE_GROUPS.REPORT_MGMT));
 router.use(fieldReportWrite);
+router.get('/', getStaffReports);
 router.get('/analytics/satisfaction', getSatisfactionAnalytics);
 router.patch('/:id/status', updateReportStatus);
 router.patch('/:id/validation', updateReportValidation);

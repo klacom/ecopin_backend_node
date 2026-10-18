@@ -168,15 +168,21 @@ export const getAvailableDates = async () => {
   try {
     const { data, error } = await supabaseAdmin
       .from('hotspot_predictions')
-      .select('prediction_date');
+      .select('prediction_date')
+      .not('prediction_date', 'is', null)
+      .not('geojson_polygon', 'is', null)
+      .gt('risk_score', 0);
       
     if (error) throw error;
     
-    // Extract unique dates in YYYY-MM-DD format
-    const uniqueDates = [...new Set(data.map(d => {
-      const date = new Date(d.prediction_date);
-      return date.toISOString().split('T')[0];
-    }))];
+    // Extract unique valid dates in YYYY-MM-DD format
+    const uniqueDates = [...new Set((data || [])
+      .map(d => {
+        if (!d?.prediction_date) return null;
+        const date = new Date(d.prediction_date);
+        return isNaN(date.getTime()) ? null : date.toISOString().split('T')[0];
+      })
+      .filter(Boolean))];
     
     // Sort dates chronologically (oldest to newest)
     uniqueDates.sort((a, b) => new Date(a) - new Date(b));
@@ -421,9 +427,19 @@ export const getAccuracyMetrics = async (timeHorizon = null) => {
       query = query.eq('time_horizon', timeHorizon);
     }
     
-    const { data, error } = await query;
-    
+    let { data, error } = await query;
     if (error) throw error;
+    
+    // If no evaluations exist for the specific time horizon, fall back to all available evaluations
+    if ((!data || data.length === 0) && timeHorizon) {
+      const fallback = await supabaseAdmin
+        .from('hotspot_accuracy')
+        .select('*')
+        .order('evaluation_date', { ascending: false });
+      if (!fallback.error && fallback.data?.length > 0) {
+        data = fallback.data;
+      }
+    }
     
     // Calculate aggregate metrics
     if (data && data.length > 0) {
@@ -438,7 +454,7 @@ export const getAccuracyMetrics = async (timeHorizon = null) => {
     
     return {
       records: [],
-      averageAccuracy: 0,
+      averageAccuracy: null,
       totalEvaluations: 0
     };
     

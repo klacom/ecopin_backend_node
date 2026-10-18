@@ -1,4 +1,4 @@
-export {getPublicReports,getReportById,getReportsByClusterId} from './report-read.controller.js';
+export {getPublicReports,getReportById,getReportsByClusterId,getStaffReports} from './report-read.controller.js';
 import {readReportForViewer,canReadReportEvidence} from '../services/report-access.service.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';

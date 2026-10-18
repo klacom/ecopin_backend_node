@@ -110,6 +110,13 @@ export const login = async (req, res, next) => {
     const ipAddress = req.ip || req.connection?.remoteAddress || null;
     const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.[ 'user-agent'] || null);
 
+    if (!email || !password) {
+        return res.status(400).json({
+            message: 'Email and password are required',
+            error: 'Missing required credentials'
+        });
+    }
+
     try {
         const { data, error } = await supabase.auth.signInWithPassword({
             email,
@@ -117,8 +124,17 @@ export const login = async (req, res, next) => {
         });
 
         if (error) {
+            let userFriendlyMessage = 'Invalid email or password. Please check your credentials and try again.';
+            const errMsg = (error.message || '').toLowerCase();
+
+            if (errMsg.includes('email not confirmed')) {
+                userFriendlyMessage = 'Email not verified. Please check your inbox for the confirmation link.';
+            } else if (errMsg.includes('too many requests') || errMsg.includes('rate limit')) {
+                userFriendlyMessage = 'Too many login attempts. Please wait a few moments and try again.';
+            }
+
             return res.status(401).json({
-                message: 'Login failed',
+                message: userFriendlyMessage,
                 error: error.message
             });
         }
@@ -126,7 +142,7 @@ export const login = async (req, res, next) => {
         // Fetch role and verification status from profiles table
         const { data: profile, error: profileError } = await supabaseAdmin
             .from('profiles')
-            .select('role, is_email_verified, require_password_change')
+            .select('role, is_email_verified, require_password_change, suspended_until')
             .eq('id', data.user.id)
             .single();
 
@@ -140,12 +156,22 @@ export const login = async (req, res, next) => {
             });
         }
 
+        // Check if user is suspended
+        if (profile.suspended_until && new Date(profile.suspended_until) > new Date()) {
+            await supabase.auth.signOut();
+            return res.status(403).json({
+                message: `Your account is temporarily suspended until ${new Date(profile.suspended_until).toLocaleString()}.`,
+                code: 'ACCOUNT_SUSPENDED',
+                suspended_until: profile.suspended_until
+            });
+        }
+
         // Check if email is verified — treat false OR null as unverified
         if (profile.is_email_verified !== true) {
             // Sign the user out since they shouldn't be logged in
             await supabase.auth.signOut();
             return res.status(403).json({
-                message: 'Email not verified. Please check your inbox.',
+                message: 'Email not verified. Please check your inbox for the verification link.',
                 code: 'EMAIL_NOT_VERIFIED'
             });
         }
