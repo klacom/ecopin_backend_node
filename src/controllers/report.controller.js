@@ -1362,7 +1362,11 @@ export const createReport = async (req, res, next) => {
 };
 
 export const getMyReports = async (req, res, next) => {
-    const user_id = req.user.id;
+    const user_id = req.user?.id;
+
+    if (!user_id) {
+        return res.status(401).json({ message: 'User not authenticated' });
+    }
 
     try {
         const { data, error } = await supabase
@@ -1378,7 +1382,7 @@ export const getMyReports = async (req, res, next) => {
             });
         }
 
-        res.status(200).json(data);
+        res.status(200).json(data || []);
     } catch (error) {
         next(error);
     }
