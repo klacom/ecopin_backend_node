@@ -21,7 +21,8 @@ export const batchSyncReports = async (req, res, next) => {
                 longitude,
                 on_private_property,
                 scale_level,
-                obstruction_level
+                obstruction_level,
+                created_at
             } = reportData;
 
             if (!idempotency_key) {
@@ -50,6 +51,14 @@ export const batchSyncReports = async (req, res, next) => {
             const point = `POINT(${longitude} ${latitude})`;
             const onPrivateProperty = on_private_property === true || on_private_property === 'true';
 
+            let sanitizedCreatedAt = undefined;
+            if (created_at) {
+                const parsed = new Date(created_at);
+                if (!isNaN(parsed.getTime())) {
+                    sanitizedCreatedAt = parsed.toISOString();
+                }
+            }
+
             // Insert new report
             const { data: newReport, error: insertError } = await supabase
                 .from('reports')
@@ -64,7 +73,8 @@ export const batchSyncReports = async (req, res, next) => {
                     validation_status: 'pending_ai_validation', // Media uploaded later
                     scale_level: scale_level || 'medium',
                     obstruction_level: obstruction_level || 'none',
-                    idempotency_key
+                    idempotency_key,
+                    ...(sanitizedCreatedAt ? { created_at: sanitizedCreatedAt } : {})
                 })
                 .select()
                 .single();

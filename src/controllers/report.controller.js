@@ -850,6 +850,17 @@ export const createReport = async (req, res, next) => {
             locationVerificationStatus = 'unverified_gallery';
         }
 
+        let sanitizedPhotoCapturedAt = null;
+        if (photo_captured_at) {
+            const parsed = new Date(photo_captured_at);
+            if (!isNaN(parsed.getTime())) {
+                sanitizedPhotoCapturedAt = parsed.toISOString();
+            }
+        }
+        if (!sanitizedPhotoCapturedAt) {
+            sanitizedPhotoCapturedAt = new Date().toISOString();
+        }
+
         const { data: report, error } = await supabase
             .from('reports')
             .insert({
@@ -869,7 +880,7 @@ export const createReport = async (req, res, next) => {
                 photo_lat: parsedPhotoLat,
                 photo_lng: parsedPhotoLng,
                 photo_accuracy: parsedPhotoAccuracy,
-                photo_captured_at: photo_captured_at || new Date().toISOString(),
+                photo_captured_at: sanitizedPhotoCapturedAt,
                 photo_source: photo_source || (imageFiles.length > 0 ? 'unknown' : null),
                 is_mocked: mockDetected,
                 location_verification_status: locationVerificationStatus,
