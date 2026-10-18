@@ -8,7 +8,7 @@ import { SPATIAL_FORECAST_CONFIG } from '../config/spatial.config.js';
 const scheduledTasks = new Map();
 
 /**
- * Schedule daily forecast generation
+ * Refresh +7-day forecasts daily
  */
 export const scheduleDailyForecast = () => {
   if (!SPATIAL_FORECAST_CONFIG.scheduling.daily.enabled) {
@@ -21,7 +21,7 @@ export const scheduleDailyForecast = () => {
     async () => {
       console.log('[ForecastScheduler] Running daily forecast generation');
       try {
-        await generateForecast('daily');
+        await generateForecast('7d');
         console.log('[ForecastScheduler] Daily forecast completed successfully');
       } catch (error) {
         console.error('[ForecastScheduler] Daily forecast failed:', error);
@@ -35,7 +35,7 @@ export const scheduleDailyForecast = () => {
 };
 
 /**
- * Schedule weekly forecast generation
+ * Refresh +30-day forecasts weekly
  */
 export const scheduleWeeklyForecast = () => {
   if (!SPATIAL_FORECAST_CONFIG.scheduling.weekly.enabled) {
@@ -48,7 +48,7 @@ export const scheduleWeeklyForecast = () => {
     async () => {
       console.log('[ForecastScheduler] Running weekly forecast generation');
       try {
-        await generateForecast('weekly');
+        await generateForecast('30d');
         console.log('[ForecastScheduler] Weekly forecast completed successfully');
       } catch (error) {
         console.error('[ForecastScheduler] Weekly forecast failed:', error);
@@ -62,7 +62,7 @@ export const scheduleWeeklyForecast = () => {
 };
 
 /**
- * Schedule monthly forecast generation
+ * Refresh +90-day forecasts monthly
  */
 export const scheduleMonthlyForecast = () => {
   if (!SPATIAL_FORECAST_CONFIG.scheduling.monthly.enabled) {
@@ -75,7 +75,7 @@ export const scheduleMonthlyForecast = () => {
     async () => {
       console.log('[ForecastScheduler] Running monthly forecast generation');
       try {
-        await generateForecast('monthly');
+        await generateForecast('90d');
         console.log('[ForecastScheduler] Monthly forecast completed successfully');
       } catch (error) {
         console.error('[ForecastScheduler] Monthly forecast failed:', error);

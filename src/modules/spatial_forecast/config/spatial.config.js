@@ -8,9 +8,9 @@ export const SPATIAL_FORECAST_CONFIG = {
 
   // Time horizons in days
   timeHorizons: {
-    daily: 1,
-    weekly: 7,
-    monthly: 30
+    '7d': 7,
+    '30d': 30,
+    '90d': 90
   },
 
   // Hotspot thresholds
@@ -43,4 +43,15 @@ export const SPATIAL_FORECAST_CONFIG = {
 
   // Request timeout
   timeout: 60000 // 60 seconds
+};
+
+// Legacy labels now select forward windows: daily/weekly -> +7d, monthly -> +30d.
+export const normalizeHorizon = value => {
+  const aliases = { daily: '7d', weekly: '7d', monthly: '30d' };
+  if (typeof value !== 'string') throw Object.assign(new Error('Horizon must be 7d, 30d or 90d'), { statusCode: 400 });
+  const horizon = Object.hasOwn(aliases, value) ? aliases[value] : value;
+  if (!Object.hasOwn(SPATIAL_FORECAST_CONFIG.timeHorizons, horizon)) {
+    throw Object.assign(new Error('Horizon must be 7d, 30d or 90d'), { statusCode: 400 });
+  }
+  return horizon;
 };

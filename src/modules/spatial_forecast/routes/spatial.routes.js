@@ -1,6 +1,6 @@
 // Spatial Forecast Routes
 import express from 'express';
-import { triggerForecast, fetchPredictions, fetchCurrentPredictions, fetchAccuracyMetrics, fetchAvailableDates } from '../controllers/spatial.controller.js';
+import { triggerForecast, fetchPredictions, fetchCurrentPredictions, fetchAccuracyMetrics, fetchAvailableDates, fetchZoneTrend } from '../controllers/spatial.controller.js';
 import { authenticate, authorize } from '../../../middleware/auth.middleware.js';
 
 const router = express.Router();
@@ -16,6 +16,10 @@ router.get('/predictions', authorize(['admin', 'officer']), fetchPredictions);
 
 // Get current predictions for a time horizon (admin/officer only)
 router.get('/current/:horizon', authorize(['admin', 'officer']), fetchCurrentPredictions);
+router.get('/forecast/current', authorize(['admin', 'officer']), fetchCurrentPredictions);
+router.get('/predictions/current', authorize(['admin', 'officer']), fetchCurrentPredictions);
+router.get('/zones/:zoneId/trend', authorize(['admin', 'officer']), fetchZoneTrend);
+router.get('/zones/:zoneId/history', authorize(['admin', 'officer']), fetchZoneTrend);
 
 // Get accuracy metrics (admin/officer only)
 router.get('/accuracy', authorize(['admin', 'officer']), fetchAccuracyMetrics);

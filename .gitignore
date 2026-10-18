@@ -25,7 +25,9 @@ yarn-error.log*
 # test coverage and artifacts
 coverage/
 .nyc_output/
-tests/
+tests/*
+!tests/spatial-forward-forecast.test.js
+!tests/spatial-forecast-http.test.js
 
 # Graphify knowledge graph outputs
 graphify-out/

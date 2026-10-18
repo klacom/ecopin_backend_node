@@ -132,6 +132,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/clusters', clusterRoutes);
 app.use('/api/spatial-forecast', spatialRoutes);
+app.use('/api/spatial', spatialRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/cleanup-tasks', cleanupTaskRoutes);
 app.use('/api/admin', adminRoutes);
