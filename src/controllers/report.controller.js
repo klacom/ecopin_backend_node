@@ -906,6 +906,8 @@ export const createReport = async (req, res, next) => {
                 let finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
                 let finalRejectionReason = null;
                 let finalIssueType = null; // Will be set from AI classification
+                let finalScaleLevel = report.scale_level || null;
+                let finalObstructionLevel = report.obstruction_level || null;
 
                 // Upload media to Cloudinary FIRST (independent of AI validation)
                 console.log(`[Evidence] Starting media upload for report ${report.id}`);
@@ -1113,8 +1115,8 @@ export const createReport = async (req, res, next) => {
                             finalRejectionReason = 'Mixed or unclear image validation results.';
                         }
 
-                        let finalScaleLevel = report.scale_level || null;
-                        let finalObstructionLevel = report.obstruction_level || null;
+                        finalScaleLevel = report.scale_level || finalScaleLevel;
+                        finalObstructionLevel = report.obstruction_level || finalObstructionLevel;
 
                         // Pick majority-voted category, scale & obstruction (only when not fully rejected).
                         if (finalValidationStatus !== VALIDATION_STATUS.REJECTED) {
@@ -1329,6 +1331,18 @@ export const createReport = async (req, res, next) => {
                 await clusterReports();
             } catch (err) {
                 console.error('Error in background tasks:', err);
+                try {
+                    await supabase
+                        .from('reports')
+                        .update({
+                            validation_status: VALIDATION_STATUS.MANUAL_REVIEW,
+                            notes: `AI validation background task encountered an error: ${err.message}`,
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', report.id);
+                } catch (fallbackErr) {
+                    console.error('Failed to update report to manual_review fallback:', fallbackErr);
+                }
             }
         })();
     } catch (error) {
@@ -2204,6 +2218,8 @@ export const syncReportMedia = async (req, res, next) => {
                 let finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
                 let finalRejectionReason = null;
                 let finalIssueType = null;
+                let finalScaleLevel = report.scale_level || null;
+                let finalObstructionLevel = report.obstruction_level || null;
 
                 console.log(`[Evidence] Starting media upload for synced report ${report.id}`);
 
@@ -2320,8 +2336,8 @@ export const syncReportMedia = async (req, res, next) => {
                             finalRejectionReason = 'Mixed or unclear image validation results.';
                         }
 
-                        let finalScaleLevel = report.scale_level || null;
-                        let finalObstructionLevel = report.obstruction_level || null;
+                        finalScaleLevel = report.scale_level || finalScaleLevel;
+                        finalObstructionLevel = report.obstruction_level || finalObstructionLevel;
 
                         if (finalValidationStatus !== VALIDATION_STATUS.REJECTED) {
                             const categoryEntries = Object.entries(categoryCounts);
@@ -2432,6 +2448,18 @@ export const syncReportMedia = async (req, res, next) => {
                 await clusterReports();
             } catch (err) {
                 console.error('Error in background tasks:', err);
+                try {
+                    await supabase
+                        .from('reports')
+                        .update({
+                            validation_status: VALIDATION_STATUS.MANUAL_REVIEW,
+                            notes: `AI validation background task encountered an error: ${err.message}`,
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', report.id);
+                } catch (fallbackErr) {
+                    console.error('Failed to update report to manual_review fallback:', fallbackErr);
+                }
             }
         })();
     } catch (error) {
