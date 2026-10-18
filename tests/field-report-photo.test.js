@@ -25,7 +25,7 @@ async function run(user = 'assigned') {
   await uploadFieldReportPhoto({
     params: { id: 'report' }, user: { id: user },
     body: { photo_type: 'before', base_version: '4' },
-    file: { buffer: Buffer.from('image') }
+    file: { buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]), mimetype: 'image/png' }
   }, res, error => { failure = error; });
   return { res, failure };
 }
