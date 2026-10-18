@@ -188,14 +188,22 @@ export const getAvailableDates = async () => {
   }
 };
 
+const currentPredictionsCache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache
+
 /**
  * Get current predictions for a specific time horizon
  */
 export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
+  const cached = currentPredictionsCache.get(timeHorizon);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   try {
     const today = new Date().toISOString().split('T')[0];
     
-    const { data, error } = await supabaseAdmin
+    let { data, error } = await supabaseAdmin
       .from('hotspot_predictions')
       .select('*')
       .eq('time_horizon', timeHorizon)
@@ -204,21 +212,81 @@ export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
     
     if (error) throw error;
     
-    // If no predictions for today, generate them
+    // If no predictions for today, attempt to generate them or fall back to latest available forecast
     if (!data || data.length === 0) {
-      console.log(`[SpatialForecast] No predictions for today, generating...`);
-      const forecast = await generateForecast(timeHorizon);
-      return forecast;
+      console.log(`[SpatialForecast] No predictions for today (${today}), attempting to generate or fallback...`);
+      try {
+        const forecast = await generateForecast(timeHorizon);
+        if (forecast && forecast.region_analyses) {
+          currentPredictionsCache.set(timeHorizon, { timestamp: Date.now(), data: forecast });
+          return forecast;
+        }
+      } catch (genError) {
+        console.warn(`[SpatialForecast] Fresh forecast generation failed (${genError.message}), falling back to latest existing predictions`);
+      }
+
+      // Query latest available predictions for this timeHorizon
+      const { data: latestDateRow } = await supabaseAdmin
+        .from('hotspot_predictions')
+        .select('prediction_date')
+        .eq('time_horizon', timeHorizon)
+        .order('prediction_date', { ascending: false })
+        .limit(1);
+
+      if (latestDateRow && latestDateRow.length > 0) {
+        const latestDate = latestDateRow[0].prediction_date;
+        const { data: latestData, error: latestError } = await supabaseAdmin
+          .from('hotspot_predictions')
+          .select('*')
+          .eq('time_horizon', timeHorizon)
+          .eq('prediction_date', latestDate)
+          .order('risk_score', { ascending: false });
+
+        if (!latestError && latestData && latestData.length > 0) {
+          data = latestData;
+        }
+      }
+
+      // If still no data for requested horizon, query latest prediction date across any horizon
+      if (!data || data.length === 0) {
+        const { data: anyLatestRow } = await supabaseAdmin
+          .from('hotspot_predictions')
+          .select('prediction_date')
+          .order('prediction_date', { ascending: false })
+          .limit(1);
+
+        if (anyLatestRow && anyLatestRow.length > 0) {
+          const { data: anyData } = await supabaseAdmin
+            .from('hotspot_predictions')
+            .select('*')
+            .eq('prediction_date', anyLatestRow[0].prediction_date)
+            .order('risk_score', { ascending: false });
+
+          if (anyData && anyData.length > 0) {
+            data = anyData;
+          }
+        }
+      }
+
+      if (!data || data.length === 0) {
+        throw new Error(`No forecast predictions available for ${timeHorizon} horizon`);
+      }
     }
 
     // Detect stale pre-DBSCAN predictions:
-    // Old grid-cell records have no geojson_polygon. If none of today's records
+    // Old grid-cell records have no geojson_polygon. If none of the records
     // have geojson_polygon set, these are from the old system — regenerate.
     const hasDbscanData = data.some(r => r.geojson_polygon != null);
     if (!hasDbscanData) {
       console.log(`[SpatialForecast] Stale pre-DBSCAN predictions detected, regenerating...`);
-      const forecast = await generateForecast(timeHorizon);
-      return forecast;
+      try {
+        const forecast = await generateForecast(timeHorizon);
+        if (forecast && forecast.region_analyses) {
+          return forecast;
+        }
+      } catch (genErr) {
+        console.warn(`[SpatialForecast] Regeneration failed, continuing with database records`);
+      }
     }
     
     // Transform database records back to forecast structure
@@ -316,9 +384,9 @@ export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
       
     const total_reports = count || 0;
     
-    return {
+    const result = {
       time_horizon: timeHorizon,
-      prediction_date: today,
+      prediction_date: data[0]?.prediction_date || today,
       total_regions: data.length,
       hotspot_count,
       total_reports,
@@ -329,6 +397,9 @@ export const getCurrentPredictions = async (timeHorizon = 'weekly') => {
       },
       heatmap_geojson: null, // Heatmap not cached in DB — regenerate to get it
     };
+    
+    currentPredictionsCache.set(timeHorizon, { timestamp: Date.now(), data: result });
+    return result;
     
   } catch (error) {
     console.error('[SpatialForecast] Error getting current predictions:', error);
