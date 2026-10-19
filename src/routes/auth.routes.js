@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { register, login, logout, refreshToken, forgotPassword, resetPassword, getMe, changePassword, forceChangePassword, validateSession, verifyEmail, resendVerification, getPasswordRequirements } from '../controllers/auth.controller.js';
+import { register, login, logout, refreshToken, forgotPassword, resetPassword, getMe, changePassword, forceChangePassword, validateSession, verifyEmail, resendVerification, getPasswordRequirements, deleteAccount } from '../controllers/auth.controller.js';
 import { validateRegistration, validateLogin } from '../middleware/validation.middleware.js';
-import { authenticate, checkUserSuspension } from '../middleware/auth.middleware.js';
+import { authenticate, optionalAuthenticate, checkUserSuspension } from '../middleware/auth.middleware.js';
 import { rateLimiter, authRateLimiter } from '../middleware/rateLimit.middleware.js';
 
 const router = Router();
@@ -19,5 +19,8 @@ router.get('/validate-session', validateSession); // No authenticate middleware 
 router.get('/verify-email', rateLimiter, verifyEmail);
 router.post('/resend-verification', authRateLimiter, resendVerification);
 router.get('/password-requirements', getPasswordRequirements);
+router.delete('/delete-account', optionalAuthenticate, deleteAccount);
+router.post('/delete-account', optionalAuthenticate, authRateLimiter, deleteAccount);
+router.delete('/account', optionalAuthenticate, deleteAccount);
 
 export default router;

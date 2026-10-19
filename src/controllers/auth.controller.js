@@ -639,3 +639,108 @@ export const getPasswordRequirements = async (req, res, next) => {
         next(error);
     }
 };
+
+export const deleteAccount = async (req, res, next) => {
+    try {
+        let userId = req.user?.id;
+        const { email, password } = req.body || {};
+
+        // If no authenticated Bearer user, authenticate using provided credentials (e.g. from web deletion form)
+        if (!userId) {
+            if (!email || !password) {
+                return res.status(400).json({
+                    message: 'Email and password are required to verify account deletion.',
+                    error: 'Missing credentials'
+                });
+            }
+
+            const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+                email: email.trim().toLowerCase(),
+                password
+            });
+
+            if (authError || !authData?.user) {
+                return res.status(401).json({
+                    message: 'Invalid email or password.',
+                    error: authError?.message || 'Authentication failed'
+                });
+            }
+
+            userId = authData.user.id;
+        }
+
+        // Verify that the user has a citizen role (staff/officer accounts must be handled by administrative channels)
+        const { data: profile } = await supabaseAdmin
+            .from('profiles')
+            .select('id, role')
+            .eq('id', userId)
+            .maybeSingle();
+
+        if (profile && profile.role && profile.role !== 'citizen') {
+            return res.status(403).json({
+                message: 'Self-service account deletion is only available for citizen accounts. Staff accounts must be managed through administrative channels.',
+                error: 'Forbidden'
+            });
+        }
+
+        const ipAddress = req.ip || req.connection?.remoteAddress || null;
+        const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
+
+        // 1. Anonymize user's waste reports to preserve municipal statistics and cleanup records
+        // Setting user_id = null severs all personal identification while leaving location, waste category, resolution, etc. intact
+        const { error: reportsError } = await supabaseAdmin
+            .from('reports')
+            .update({ user_id: null })
+            .eq('user_id', userId);
+
+        if (reportsError) {
+            console.error('Failed to anonymize reports during account deletion:', reportsError);
+            return res.status(500).json({
+                message: 'Failed to anonymize user reports for account deletion',
+                error: reportsError.message
+            });
+        }
+
+        // 2. Delete user profile from 'profiles' table
+        const { error: profileDeleteError } = await supabaseAdmin
+            .from('profiles')
+            .delete()
+            .eq('id', userId);
+
+        if (profileDeleteError) {
+            console.error('Failed to delete user profile during account deletion:', profileDeleteError);
+            return res.status(500).json({
+                message: 'Failed to delete user profile',
+                error: profileDeleteError.message
+            });
+        }
+
+        // 3. Delete user from auth.users via Supabase Admin (removes auth credentials, cascades to notifications and email verifications)
+        const { error: deleteAuthError } = await supabaseAdmin.auth.admin.deleteUser(userId);
+
+        if (deleteAuthError) {
+            console.error('Failed to delete user credentials from auth.users:', deleteAuthError);
+            return res.status(500).json({
+                message: 'Failed to delete authentication credentials',
+                error: deleteAuthError.message
+            });
+        }
+
+        // Invalidate token from cache if Bearer token was provided
+        const authHeader = req.headers?.authorization;
+        if (authHeader?.startsWith('Bearer ')) {
+            invalidateToken(authHeader.split(' ')[1]);
+        }
+
+        // Log audit event (anonymized at system level)
+        await logAuditAction(null, 'account_deletion', `Citizen account ${userId} permanently deleted and waste reports anonymized`, ipAddress, userAgent);
+
+        return res.status(200).json({
+            success: true,
+            message: 'Account deleted successfully. Personal data removed and waste reports anonymized for public statistics.'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
