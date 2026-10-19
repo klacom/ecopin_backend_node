@@ -16,6 +16,7 @@ import { classifyReportHazard } from '../services/hazard-classifier.service.js';
 import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
 import { notifyOfficers } from '../services/officer-notification.service.js';
 import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
+import { checkUserReportQuota, recordReportSubmission } from '../services/reportQuota.service.js';
 
 // Helper function to determine issue type from text
 const determineIssueTypeFromText = (title, description) => {
@@ -896,10 +897,26 @@ export const createReport = async (req, res, next) => {
             });
         }
 
+        // Record submission in Redis cache if available
+        recordReportSubmission(user_id, report.id, report.created_at);
+
+        const remainingQuota = req.reportQuota ? Math.max(0, req.reportQuota.remaining - 1) : null;
+        const quotaWarning = req.reportQuota && remainingQuota <= 2 && remainingQuota > 0
+            ? `You have ${remainingQuota} report${remainingQuota === 1 ? '' : 's'} remaining for today.`
+            : null;
+
         // Send response to user immediately
         res.status(201).json({
             message: 'Report submitted successfully! AI validation is in progress.',
-            report: report
+            report: report,
+            quota: req.reportQuota ? {
+                limit: req.reportQuota.limit,
+                used: req.reportQuota.used + 1,
+                remaining: remainingQuota,
+                resetAt: req.reportQuota.resetAt,
+                countdown: req.reportQuota.countdown,
+                warning: quotaWarning
+            } : undefined
         });
 
         // Send pending validation notification
@@ -2208,9 +2225,24 @@ export const createReportFromRejected = async (req, res, next) => {
             });
         }
 
+        recordReportSubmission(user_id, newReport.id, newReport.created_at);
+
+        const remainingQuota = req.reportQuota ? Math.max(0, req.reportQuota.remaining - 1) : null;
+        const quotaWarning = req.reportQuota && remainingQuota <= 2 && remainingQuota > 0
+            ? `You have ${remainingQuota} report${remainingQuota === 1 ? '' : 's'} remaining for today.`
+            : null;
+
         res.status(201).json({
             message: 'New report created successfully from rejected report',
-            report: newReport
+            report: newReport,
+            quota: req.reportQuota ? {
+                limit: req.reportQuota.limit,
+                used: req.reportQuota.used + 1,
+                remaining: remainingQuota,
+                resetAt: req.reportQuota.resetAt,
+                countdown: req.reportQuota.countdown,
+                warning: quotaWarning
+            } : undefined
         });
     } catch (error) {
         next(error);
@@ -2541,3 +2573,20 @@ export const syncReportMedia = async (req, res, next) => {
         next(error);
     }
 };
+
+/**
+ * Returns current citizen report quota status for the authenticated user (WT-97).
+ */
+export const getReportQuota = async (req, res, next) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+        const quota = await checkUserReportQuota(userId);
+        res.status(200).json(quota);
+    } catch (error) {
+        next(error);
+    }
+};
+

@@ -30,10 +30,12 @@ import {
     updateReportDetails,
     syncReportMedia,
     validateReportImage,
-    getStaffReports
+    getStaffReports,
+    getReportQuota
 } from '../controllers/report.controller.js';
 import { batchSyncReports } from '../controllers/sync.controller.js';
 import { authenticate, optionalAuthenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
+import { enforceReportSubmissionQuota } from '../middleware/report-quota.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 
 const router = Router();
@@ -43,6 +45,9 @@ router.get('/public', getPublicReports);
 
 // Citizen reports for authenticated user (must be declared before parameterized /:id route)
 router.get('/my', authenticate, checkUserSuspension, getMyReports);
+
+// Citizen daily submission quota status (WT-97)
+router.get('/quota', authenticate, checkUserSuspension, getReportQuota);
 
 // Optionally authenticated routes
 router.get('/:reportId/evidence', optionalAuthenticate, getReportEvidence);
@@ -61,10 +66,10 @@ router.post('/validate-image', mediaUpload.single('image'), validateReportImage)
 // Routes that don't need LGU/admin role first
 router.post('/sync/batch', batchSyncReports);
 router.post('/sync/media/:idempotency_key', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), syncReportMedia);
-router.post('/', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'clean_image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), createReport);
+router.post('/', enforceReportSubmissionQuota, mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'clean_image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), createReport);
 router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), uploadEvidence);
 router.patch('/:id/close', citizenCloseReport); // Citizen can close their own report
-router.post('/:id/create-new', createReportFromRejected); // Create new report from rejected
+router.post('/:id/create-new', enforceReportSubmissionQuota, createReportFromRejected); // Create new report from rejected
 router.get('/cluster/:clusterId', getReportsByClusterId);
 
 // Routes that require officer/admin role

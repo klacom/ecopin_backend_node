@@ -29,6 +29,7 @@ import {
     generateGitHistoryAuditReport,
     verifyGitCleanliness
 } from "../services/git-history-audit.service.js";
+import { invalidateQuotaSettingsCache } from "../services/reportQuota.service.js";
 
 
 
@@ -364,7 +365,8 @@ export const getSystemSettings = async (req, res, next) => {
                     password_require_lowercase: true,
                     password_require_numbers: true,
                     password_require_special_chars: true,
-                    session_timeout_minutes: 60
+                    session_timeout_minutes: 60,
+                    daily_report_quota: 10
                 });
             }
             return res.status(400).json({
@@ -373,7 +375,10 @@ export const getSystemSettings = async (req, res, next) => {
             });
         }
 
-        res.status(200).json(data);
+        res.status(200).json({
+            ...data,
+            daily_report_quota: data.daily_report_quota != null ? data.daily_report_quota : 10
+        });
     } catch (error) {
         next(error);
     }
@@ -381,9 +386,19 @@ export const getSystemSettings = async (req, res, next) => {
 
 // Update system settings
 export const updateSystemSettings = async (req, res, next) => {
-    const settings = req.body;
+    const settings = { ...req.body };
 
     try {
+        if (settings.daily_report_quota !== undefined) {
+            const quota = parseInt(settings.daily_report_quota, 10);
+            if (isNaN(quota) || quota < 1 || quota > 100) {
+                return res.status(400).json({
+                    message: 'daily_report_quota must be an integer between 1 and 100'
+                });
+            }
+            settings.daily_report_quota = quota;
+        }
+
         const { data, error } = await supabase
             .from('system_settings')
             .upsert(settings)
@@ -396,6 +411,8 @@ export const updateSystemSettings = async (req, res, next) => {
                 error: error.message
             });
         }
+
+        invalidateQuotaSettingsCache();
 
         const ipAddress = req.ip || req.connection.remoteAddress;
         const userAgent = req.get('user-agent');
