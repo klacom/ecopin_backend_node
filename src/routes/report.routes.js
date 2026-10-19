@@ -22,6 +22,7 @@ import {
     updatePropertyOwnerConsent,
     lguResolveReport,
     citizenCloseReport,
+    citizenWithdrawReport,
     getSatisfactionAnalytics,
     createReportFromRejected,
     updateLifecycleStage,
@@ -64,6 +65,8 @@ router.post('/sync/media/:idempotency_key', mediaUpload.fields([{ name: 'image',
 router.post('/', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'clean_image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), createReport);
 router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), uploadEvidence);
 router.patch('/:id/close', citizenCloseReport); // Citizen can close their own report
+router.delete('/:id', citizenWithdrawReport); // Citizen can withdraw/delete their own report before triage/dispatch
+router.patch('/:id/withdraw', citizenWithdrawReport); // Alias for report withdrawal
 router.post('/:id/create-new', createReportFromRejected); // Create new report from rejected
 router.get('/cluster/:clusterId', getReportsByClusterId);
 
