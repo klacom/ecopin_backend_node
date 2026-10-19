@@ -157,6 +157,8 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
   const depot = { lat: Number(depotValue?.latitude), lng: Number(depotValue?.longitude) };
   if (![depot.lat, depot.lng].every(Number.isFinite)) throw new Error('Configure swmo_depot before Mixed planning');
   settings.depot = depot;
+  const vehicles = buildVehicles(crews, depot, settings, activeTasks);
+  if (!vehicles.length) throw new Error('No capable crews are available');
   const anchors = groupClustersForTask(snapshot.anchors.map(row => ({ id: row.id, centre: point(row),
     created_at: row.created_at, priority_score: Number(row.priority_score ?? 0),
     reportIds: row.report_ids, effortMinutes: Math.max(1, Math.ceil(Number(row.estimated_effort_minutes ?? 60) * weatherMultiplier)),
@@ -169,24 +171,65 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
     estimated_volume_m3: group.members.reduce((sum, member) => sum + (amount(member.estimated_volume_m3) ?? defaultReportVolume(member)), 0),
     estimated_weight_kg: group.members.reduce((sum, member) => sum + (amount(member.estimated_weight_kg) ?? defaultReportWeight(member)), 0) }));
   const generalists = crews.filter(crew => crew.supports_standard);
-  const anchorSelection = selectPlanItems(candidates, generalists, activeTasks, {
+  const generalistVehicles = vehicles.filter(v => v.supports_standard && v.max_tasks > 0 && v.effective_budget_min > 0);
+  const hasActiveTasks = activeTasks.some(task => !['completed', 'cancelled'].includes(task.status));
+  const isCandidateViable = candidate => {
+    if (!generalistVehicles.length) return false;
+    return generalistVehicles.some(v => {
+      const workMin = Math.ceil(candidate.service_minutes * Number(v.service_time_factor));
+      const fitsBudget = workMin <= v.effective_budget_min;
+      const fitsVolume = candidate.estimated_volume_m3 <= (v.max_volume_m3 - v.starting_volume_m3 + 1e-4);
+      const fitsWeight = candidate.estimated_weight_kg <= (v.max_weight_kg - v.starting_weight_kg + 1e-4);
+      return fitsBudget && fitsVolume && fitsWeight;
+    });
+  };
+  const viableCandidates = hasActiveTasks ? candidates.filter(isCandidateViable) : candidates;
+  const oversizedCandidates = hasActiveTasks ? candidates.filter(c => !isCandidateViable(c)) : [];
+  const anchorSelection = selectPlanItems(viableCandidates, generalists, activeTasks, {
     ...settings, capacity_utilization: settings.capacity_utilization * (1 - settings.mixed_bundle_reserve_pct / 100) });
   const crewById = new Map(crews.map(crew => [crew.id, crew]));
-  const selectedGroups = anchorSelection.items.filter(item => item.is_selected).map(item => ({
-    ...item, crew: crewById.get(item.planned_crew_id),
-    estimated_volume_m3: item.estimated_volume_m3, estimated_weight_kg: item.estimated_weight_kg }));
+  const selectedGroups = anchorSelection.items.filter(item => item.is_selected).map(item => {
+    const plannedVehicle = vehicles.find(v => v.id === item.planned_crew_id);
+    const crewObj = crewById.get(item.planned_crew_id);
+    return {
+      ...item,
+      crew: plannedVehicle ? {
+        ...crewObj,
+        starting_volume_m3: plannedVehicle.starting_volume_m3,
+        starting_weight_kg: plannedVehicle.starting_weight_kg
+      } : crewObj,
+      estimated_volume_m3: item.estimated_volume_m3,
+      estimated_weight_kg: item.estimated_weight_kg
+    };
+  });
   const successors = provisionalAnchorSuccessors(selectedGroups, depot);
   for (const group of selectedGroups) group.successorCentre = successors.get(group.group_key);
   const reports = snapshot.satellites.map(row => ({ ...row, location: point(row),
     estimated_volume_m3: amount(row.estimated_volume_m3) ?? defaultReportVolume(row),
     estimated_weight_kg: amount(row.estimated_weight_kg) ?? defaultReportWeight(row),
     base_priority_score: reportPriority(row, settings.mcda_weights), workMinutes: Math.max(1, Math.ceil(Number(row.work_time_minutes ?? 30) * weatherMultiplier)) }));
-  const reserve = Math.floor(generalists.reduce((sum, crew) => sum + crewCapacity(crew, settings), 0)
+  const maxAssignedResidualBudget = Math.max(0, ...selectedGroups.map(g => {
+    const v = vehicles.find(veh => veh.id === g.planned_crew_id);
+    return v ? Math.max(0, v.effective_budget_min - (g.estimated_duration_minutes ?? g.service_minutes)) : 0;
+  }));
+  const nominalReserve = Math.floor(generalists.reduce((sum, crew) => sum + crewCapacity(crew, settings), 0)
     * settings.mixed_bundle_reserve_pct / 100);
+  const reserve = hasActiveTasks && selectedGroups.length > 0 ? Math.min(nominalReserve, maxAssignedResidualBudget) : nominalReserve;
   const bundles = bundleReports({ groups: selectedGroups, candidates: reports, settings,
     workMinutes: report => report.workMinutes, remainingMinutes: reserve });
   const reportById = new Map(reports.map(report => [report.id, report]));
-  const anchorByKey = new Map(anchorSelection.items.map(item => [item.group_key, item]));
+  const oversizedAnchorItems = oversizedCandidates.map(c => ({
+    ...c,
+    crew_snapshot: {},
+    is_selected: false,
+    status: 'backlog',
+    operational_label: 'Exceeds remaining crew capacity · deferred to prevent plan cancellation',
+    planned_crew_id: null,
+    estimated_work_minutes: c.service_minutes,
+    estimated_duration_minutes: c.service_minutes,
+    reason: 'exceeds_residual_capacity'
+  }));
+  const anchorByKey = new Map([...anchorSelection.items, ...oversizedAnchorItems].map(item => [item.group_key, item]));
   const tasks = anchorSelection.items.filter(item => item.is_selected).map(item => ({ id: item.group_key,
     group_key: item.group_key, task_type: 'Standard', location: item.centre, service_minutes: item.service_minutes,
     estimated_volume_m3: item.estimated_volume_m3, estimated_weight_kg: item.estimated_weight_kg,
@@ -200,11 +243,19 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
   const bundledIds = new Set(bundles.assignments.flatMap(bundle => bundle.satellites.map(item => item.report.id)));
   const outsideBuffer = new Set(bundles.rejected.filter(item => item.reason === 'outside_buffer')
     .map(item => item.report_id));
+  const sweeperVehicles = vehicles.filter(v => (v.supports_sweeper || v.allowed_task_types?.includes('Sweeper')) && v.max_tasks > 0 && v.effective_budget_min > 0);
+  const isSweeperViable = report => sweeperVehicles.some(v => {
+    const work = report.workMinutes * Number(v.service_time_factor);
+    const vol = (report.estimated_volume_m3 ?? defaultReportVolume(report)) <= (v.max_volume_m3 - v.starting_volume_m3 + 1e-4);
+    const wt = (report.estimated_weight_kg ?? defaultReportWeight(report)) <= (v.max_weight_kg - v.starting_weight_kg + 1e-4);
+    return work <= v.effective_budget_min && vol && wt;
+  });
   const standalone = reports.filter(report => report.lifecycle_state === 'sla_breached' && !report.blocked &&
     outsideBuffer.has(report.id) &&
     !bundledIds.has(report.id) && settings.mixed_include_standalone_breached !== false &&
     !['suspected_hazard','hazmat_required','hazard_review'].includes(report.hazard_class));
-  for (const report of standalone.slice(0, Math.max(0, settings.solver_max_candidate_nodes - tasks.length))) {
+  const viableStandalone = hasActiveTasks ? standalone.filter(isSweeperViable) : standalone;
+  for (const report of viableStandalone.slice(0, Math.max(0, settings.solver_max_candidate_nodes - tasks.length))) {
     tasks.push({ id: `sweeper:${report.id}`, group_key: `sweeper:${report.id}`, task_type: 'Sweeper',
       location: report.location, service_minutes: report.workMinutes,
       estimated_volume_m3: report.estimated_volume_m3 ?? defaultReportVolume(report),
@@ -223,15 +274,15 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
   const topUp = remainingSlots ? selectPlanItems(anchorSelection.items.filter(item => !item.is_selected).slice(0, remainingSlots),
     generalists, [...activeTasks, ...reservedWork, ...satelliteWork], settings) : { items: [] };
   const topUpByKey = new Map(topUp.items.map(item => [item.group_key, item]));
-  const allAnchorItems = anchorSelection.items.map(item => topUpByKey.get(item.group_key)?.is_selected
-    ? topUpByKey.get(item.group_key) : item);
+  const allAnchorItems = [
+    ...(anchorSelection.items.map(item => topUpByKey.get(item.group_key)?.is_selected ? topUpByKey.get(item.group_key) : item)),
+    ...oversizedAnchorItems
+  ];
   for (const item of topUp.items.filter(item => item.is_selected)) tasks.push({
     id: item.group_key, group_key: item.group_key, task_type: 'Standard', location: item.centre,
     service_minutes: item.service_minutes, estimated_volume_m3: item.estimated_volume_m3,
     estimated_weight_kg: item.estimated_weight_kg, required_certifications: [],
     drop_penalty: 100000 + Math.round(item.priority_score * 100) });
-  const vehicles = buildVehicles(crews, depot, settings, activeTasks);
-  if (!vehicles.length) throw new Error('No capable crews are available');
   const points = [...vehicles.map(vehicle => vehicle.depot), ...tasks.map(task => task.location)];
   let travelSeconds;
   let matrixFallbackUsed = false;
@@ -262,6 +313,11 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
       weight_kg: stop.weight_after_kg } }])));
   const unassigned = new Map(proposal.unassigned.map(item => [item.task_id, item.reason]));
   const rejected = [
+    ...oversizedCandidates.map(c => ({
+      group_key: c.group_key,
+      task_id: c.group_key,
+      reason: 'exceeds_residual_capacity'
+    })),
     ...bundles.rejected.filter(entry => entry.reason !== 'outside_buffer' ||
       !assigned.has(`sweeper:${entry.report_id}`)),
     ...proposal.unassigned.map(entry => ({ task_id: entry.task_id,
@@ -278,7 +334,7 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
       ...item,
       is_selected: isSelected,
       status: isSelected ? 'scheduled' : 'backlog',
-      operational_label: isSelected ? 'Scheduled for dispatch' : 'Queued in backlog for next shift',
+      operational_label: isSelected ? 'Scheduled for dispatch' : item.operational_label || 'Queued in backlog for next shift',
       planned_crew_id: assigned.get(item.group_key)?.crewId ?? null,
       reason: unusableGroups.has(item.group_key) ? 'detour_cap_unenforceable' :
         unassigned.get(item.group_key) ?? item.reason,
@@ -337,6 +393,23 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
     crewById.get(item.planned_crew_id)?.supports_standard).reduce((sum, item) =>
     sum + Number(item.estimated_duration_minutes || 0), 0);
   const specialistUsed = assignedMinutes - generalistUsed;
+  const capacityFilteringDiagnostics = {
+    has_active_tasks: hasActiveTasks,
+    total_candidates_evaluated: candidates.length,
+    viable_candidates_count: viableCandidates.length,
+    filtered_oversized_count: oversizedCandidates.length,
+    crew_residual_capacities: vehicles.map(v => ({
+      crew_id: v.id,
+      crew_name: crewById.get(v.id)?.name || v.id,
+      remaining_tasks: v.max_tasks,
+      remaining_minutes: v.effective_budget_min,
+      remaining_volume_m3: Math.max(0, Math.round((v.max_volume_m3 - v.starting_volume_m3) * 100) / 100),
+      remaining_weight_kg: Math.max(0, Math.round((v.max_weight_kg - v.starting_weight_kg) * 10) / 10)
+    })),
+    alert_message: (hasActiveTasks && oversizedCandidates.length > 0)
+      ? `Notice: Filtered ${viableCandidates.length} viable tasks fitting remaining crew capacity (${oversizedCandidates.length} oversized tasks deferred to prevent plan cancellation).`
+      : null
+  };
   const capacity = { availableCrews: vehicles.length, totalMinutes: Math.floor(generalistMinutes + specialistMinutes),
     generalist: { minutes: Math.floor(generalistMinutes), crews: generalists.length,
       maxTasks: generalists.reduce((sum, crew) => sum + (crew.max_tasks_per_shift ?? 10), 0),
@@ -344,7 +417,8 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
     specialist: { minutes: Math.floor(specialistMinutes),
       crews: crews.filter(crew => crew.supports_sweeper && !crew.supports_standard).length,
       used: Math.ceil(specialistUsed) },
-    used: Math.ceil(assignedMinutes) };
+    used: Math.ceil(assignedMinutes),
+    capacity_filtering: capacityFilteringDiagnostics };
   const routeProposal = { ...proposal, travel_time_matrix_min: travel,
     node_ids: [...vehicles.map(vehicle => vehicle.id), ...tasks.map(task => task.id)],
     task_locations: Object.fromEntries(tasks.map(task => [task.id, task.location])),
@@ -354,7 +428,8 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
     weather_adjustment: { condition: weatherCondition, multiplier: weatherMultiplier },
     matrix_fallback_used: matrixFallbackUsed,
     scheduled_count: items.filter(i => i.is_selected).length,
-    backlog_count: items.filter(i => !i.is_selected).length
+    backlog_count: items.filter(i => !i.is_selected).length,
+    capacity_filtering: capacityFilteringDiagnostics
   };
   const { data: plan, error } = await db.rpc('save_mixed_dispatch_draft', {
     actor, job_id: jobId, worker_id: workerToken, settings, items, proposal: routeProposal,

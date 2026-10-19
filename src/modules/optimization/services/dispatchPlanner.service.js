@@ -60,9 +60,12 @@ export async function generateDispatchPlan(userId, input = {}) {
     actor: userId, plan_mode: settings.mode, settings, items: selected.items,
     available_crews: capableCrewCount, capacity_minutes: selected.totalCapacityMinutes
   });
-  if (error) throw error;
+  const diagnostics = {
+    capacity_filtering: selected.residualCapacitySummary
+  };
   return { plan, selectedCount: selected.items.filter(item => item.is_selected).length,
     omittedLoggedCount: selected.items.filter(item => !item.is_selected).length,
     capacityUtilized: selected.capacityUtilized,
-    unassigned: selected.items.filter(item => !item.is_selected).map(item => ({ group_key: item.group_key, reason: item.reason })) };
+    unassigned: selected.items.filter(item => !item.is_selected).map(item => ({ group_key: item.group_key, reason: item.reason })),
+    diagnostics };
 }

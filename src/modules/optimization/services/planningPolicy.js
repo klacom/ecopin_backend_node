@@ -84,7 +84,15 @@ export function selectPlanItems(candidates, crews, activeTasks, settings) {
   const budgets = capable.map(crew => {
     const members = [...(crew.member_profile_ids ?? []), crew.team_lead_profile_id].filter(Boolean);
     const busy = activeTasks.filter(task => !['completed', 'cancelled'].includes(task.status) && (task.assigned_field_crew_id === crew.id || task.assigned_crew_ids?.some(id => members.includes(id))));
+    const busyVolume = busy.reduce((sum, task) => sum + Number(task.estimated_volume_m3 ?? 0), 0);
+    const busyWeight = busy.reduce((sum, task) => sum + Number(task.estimated_weight_kg ?? 0), 0);
     const total = Math.max(0, (shiftMinutes(crew) - settings.break_duration_min + settings.overtime_tolerance_min) * settings.capacity_utilization);
+    const maxVol = crew.max_volume_m3 != null ? Number(crew.max_volume_m3) : null;
+    const maxWt = crew.max_weight_kg != null ? Number(crew.max_weight_kg) : null;
+    const startVol = (crew.starting_volume_m3 != null ? Number(crew.starting_volume_m3) : 0) + busyVolume;
+    const startWt = (crew.starting_weight_kg != null ? Number(crew.starting_weight_kg) : 0) + busyWeight;
+    const remainingVol = maxVol != null ? Math.max(0, maxVol - startVol) : null;
+    const remainingWt = maxWt != null ? Math.max(0, maxWt - startWt) : null;
     return {
       crew,
       total,
@@ -92,9 +100,13 @@ export function selectPlanItems(candidates, crews, activeTasks, settings) {
       accumulated_travel_min: 0,
       accumulated_distance_km: 0,
       count: busy.length,
-      cap: Math.min(crew.max_tasks_per_shift ?? 10, settings.max_tasks_per_shift)
+      cap: Math.min(crew.max_tasks_per_shift ?? 10, settings.max_tasks_per_shift),
+      remaining_volume_m3: remainingVol,
+      remaining_weight_kg: remainingWt,
+      has_active_tasks: busy.length > 0
     };
   });
+  const hasActiveAssignments = budgets.some(b => b.has_active_tasks);
   const items = [...candidates].sort((a, b) => Number(b.lifecycle_state === 'sla_breached') - Number(a.lifecycle_state === 'sla_breached') || b.priority_score - a.priority_score || a.group_key.localeCompare(b.group_key)).map(candidate => {
     const eligible = budgets.map(budget => {
       const travelMins = Math.ceil(travel / Number(budget.crew.speed_factor));
@@ -104,15 +116,22 @@ export function selectPlanItems(candidates, crews, activeTasks, settings) {
       const nextDistanceKm = budget.accumulated_distance_km + avgDistanceKmPerLeg;
       const withinDistance = settings.max_route_distance_km == null || nextDistanceKm <= settings.max_route_distance_km;
       const withinTravelTime = settings.max_route_duration_min == null || nextTravelMin <= settings.max_route_duration_min;
+      const candVol = candidate.estimated_volume_m3 != null ? Number(candidate.estimated_volume_m3) : null;
+      const candWt = candidate.estimated_weight_kg != null ? Number(candidate.estimated_weight_kg) : null;
+      const withinVol = budget.remaining_volume_m3 == null || candVol == null || candVol <= budget.remaining_volume_m3 + 1e-4;
+      const withinWt = budget.remaining_weight_kg == null || candWt == null || candWt <= budget.remaining_weight_kg + 1e-4;
       return {
         budget,
         minutes: totalMins,
         travelMins,
         distanceKm: avgDistanceKmPerLeg,
-        withinLimits: withinDistance && withinTravelTime
+        withinLimits: withinDistance && withinTravelTime,
+        withinVol,
+        withinWt
       };
     })
-      .filter(({ budget, minutes, withinLimits }) => budget.remaining >= minutes && budget.count < budget.cap && withinLimits)
+      .filter(({ budget, minutes, withinLimits, withinVol, withinWt }) =>
+        budget.remaining >= minutes && budget.count < budget.cap && withinLimits && withinVol && withinWt)
       .sort((a, b) => b.budget.remaining - a.budget.remaining || a.budget.crew.id.localeCompare(b.budget.crew.id));
     const chosen = eligible[0];
     if (chosen) {
@@ -120,18 +139,45 @@ export function selectPlanItems(candidates, crews, activeTasks, settings) {
       chosen.budget.accumulated_travel_min += chosen.travelMins;
       chosen.budget.accumulated_distance_km += chosen.distanceKm;
       chosen.budget.count++;
+      if (chosen.budget.remaining_volume_m3 != null && candidate.estimated_volume_m3 != null) {
+        chosen.budget.remaining_volume_m3 = Math.max(0, chosen.budget.remaining_volume_m3 - Number(candidate.estimated_volume_m3));
+      }
+      if (chosen.budget.remaining_weight_kg != null && candidate.estimated_weight_kg != null) {
+        chosen.budget.remaining_weight_kg = Math.max(0, chosen.budget.remaining_weight_kg - Number(candidate.estimated_weight_kg));
+      }
     }
+    const unselectedReason = !capable.length ? 'no_capable_crew' : hasActiveAssignments ? 'exceeds_residual_capacity' : 'insufficient_capacity';
+    const unselectedLabel = !capable.length
+      ? 'No qualified crew available on shift'
+      : hasActiveAssignments
+        ? 'Exceeds remaining crew capacity · deferred to prevent plan cancellation'
+        : 'Shift full · queued for next shift';
     return {
       ...candidate,
       crew_snapshot: chosen ? { speed_factor: Number(chosen.budget.crew.speed_factor), service_time_factor: Number(chosen.budget.crew.service_time_factor) } : {},
       is_selected: Boolean(chosen),
       status: chosen ? 'scheduled' : 'backlog',
-      operational_label: chosen ? 'Scheduled for dispatch' : capable.length ? 'Shift full · queued for next shift' : 'No qualified crew available on shift',
+      operational_label: chosen ? 'Scheduled for dispatch' : unselectedLabel,
       planned_crew_id: chosen?.budget.crew.id ?? null,
       estimated_work_minutes: Math.ceil(candidate.service_minutes * Number(chosen?.budget.crew.service_time_factor ?? 1)),
       estimated_duration_minutes: chosen?.minutes ?? Math.ceil(candidate.service_minutes + travel),
-      reason: chosen ? 'selected' : capable.length ? 'insufficient_capacity' : 'no_capable_crew'
+      reason: chosen ? 'selected' : unselectedReason
     };
   });
-  return { items, totalCapacityMinutes: Math.floor(budgets.reduce((sum, budget) => sum + budget.total, 0)), capacityUtilized: budgets.reduce((sum, budget) => sum + budget.total - budget.remaining, 0) };
+  const viableItemsCount = items.filter(i => i.is_selected).length;
+  const oversizedItemsCount = items.filter(i => i.reason === 'exceeds_residual_capacity').length;
+  const residualSummary = {
+    has_active_tasks: hasActiveAssignments,
+    viable_count: viableItemsCount,
+    oversized_deferred_count: oversizedItemsCount,
+    alert_message: (hasActiveAssignments && oversizedItemsCount > 0)
+      ? `Notice: Filtered ${viableItemsCount} viable tasks fitting remaining crew capacity (${oversizedItemsCount} oversized tasks deferred to prevent plan cancellation).`
+      : null
+  };
+  return {
+    items,
+    totalCapacityMinutes: Math.floor(budgets.reduce((sum, budget) => sum + budget.total, 0)),
+    capacityUtilized: budgets.reduce((sum, budget) => sum + budget.total - budget.remaining, 0),
+    residualCapacitySummary: residualSummary
+  };
 }

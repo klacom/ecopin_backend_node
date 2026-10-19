@@ -49,7 +49,7 @@ export async function processNextPlanningJob({ generate = generateDispatchPlan,
       : await generate(job.requested_by, job.settings_snapshot);
     if (job.mode !== 'mixed') {
       const { data, error } = await client.from('dispatch_plans')
-        .update({ generation_job_id: job.id }).eq('id', result.plan.id).eq('status', 'draft')
+        .update({ generation_job_id: job.id, solver_diagnostics: result.diagnostics ?? {} }).eq('id', result.plan.id).eq('status', 'draft')
         .select('id').single();
       if (error || !data) throw error ?? new Error('Draft plan was not saved');
     }

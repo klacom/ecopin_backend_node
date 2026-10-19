@@ -14,7 +14,7 @@ async function assignedReport(id, actor, expectedVersion) {
   if (!report?.cleanup_task_id) { const denied = new Error('Report is not assigned'); denied.statusCode = 403; throw denied; }
   const { data: task, error: taskError } = await db.from('cleanup_tasks').select('status,route_status,assigned_crew_ids').eq('id', report.cleanup_task_id).maybeSingle();
   if (taskError) throw taskError;
-  if (!task || !['created','pending','in_progress','partially_completed'].includes(task.status) || task.route_status !== 'ready' || !task.assigned_crew_ids?.includes(actor)) {
+  if (!task || !['created','pending','assigned','en_route','in_progress','partially_completed'].includes(task.status) || task.route_status !== 'ready' || !task.assigned_crew_ids?.includes(actor)) {
     const denied = new Error('Report is not assigned to this crew'); denied.statusCode = 403; throw denied;
   }
   if (report.fc_version !== expectedVersion) { const stale = new Error('Report changed; refresh before uploading'); stale.statusCode = 409; throw stale; }

@@ -12,7 +12,8 @@ import {
     assignCleanupTask,
     getAvailableCrew,
     upload,
-    updateCleanupTaskTitle
+    updateCleanupTaskTitle,
+    updateCleanupTaskStatus
 } from '../controllers/cleanup_task.controller.js';
 import { batchSyncTaskUpdates } from '../controllers/sync.controller.js';
 import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
@@ -46,6 +47,10 @@ router.patch('/:id/assign', authorize(ROLE_GROUPS.DESK_OPS), assignCleanupTask);
 router.post('/:taskId/photo', upload.single('image'), uploadCleanupPhoto);
 router.delete('/:taskId/photo', deleteCleanupPhoto);
 router.get('/:taskId/photo/:slot', getCleanupPhotoMedia);
+
+// Task status transitions (field crew and desk ops)
+router.patch('/:id/status', updateCleanupTaskStatus);
+router.patch('/:id/en-route', (req, res, next) => { req.body = req.body || {}; req.body.status = 'en_route'; return updateCleanupTaskStatus(req, res, next); });
 
 // Task completion (field crew only)
 router.patch('/:id/complete', markTaskComplete);
