@@ -204,6 +204,9 @@ export const getPlan = async (req, res, next) => {
         minutes: plan.mode === 'sweeper' ? plan.total_capacity_minutes ?? 0 : 0 },
       used: selectedMinutes
     };
+    if (plan.solver_diagnostics?.capacity_filtering && !capacity.capacity_filtering) {
+      capacity.capacity_filtering = plan.solver_diagnostics.capacity_filtering;
+    }
     const depotSetting = plan.settings_snapshot?.depot;
     const depotLat = Number(depotSetting?.lat ?? depotSetting?.latitude ?? 14.561433);
     const depotLng = Number(depotSetting?.lng ?? depotSetting?.longitude ?? 121.075636);
