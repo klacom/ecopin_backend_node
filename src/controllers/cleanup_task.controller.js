@@ -30,6 +30,28 @@ export const upload = multer({
 export const createCleanupTask = async (req,res,next) => {
   try {
     if (!req.body.cluster_id) return res.status(400).json({message:'cluster_id is required'});
+    
+    // Check if the reports in the cluster are approved reports
+    const { data: clusterReports, error: clusterReportsError } = await supabase
+      .from('reports')
+      .select('id, validation_status')
+      .eq('cluster_id', req.body.cluster_id);
+      
+    if (clusterReportsError) throw clusterReportsError;
+    
+    const unapproved = (clusterReports || []).filter(r => {
+      const v = (r.validation_status || '').toLowerCase().trim();
+      return v !== 'approved' && v !== 'validated' && v !== 'automatically_valid';
+    });
+    
+    if (unapproved.length > 0) {
+      return res.status(400).json({
+        message: 'Cannot dispatch cluster: all constituent reports must be approved first. Please manually verify the reports first.',
+        unapproved_count: unapproved.length,
+        unapproved_report_ids: unapproved.map(r => r.id)
+      });
+    }
+
     const {plan}=await generateDispatchPlan(req.user.id,{mode:'standard',cluster_ids:[req.body.cluster_id]});
     const result=await commitAndRoutePlan(plan.id,req.user.id);
     res.status(result.routing_status==='needs_replan'?202:201).json({...result,task:result.tasks[0]??null});
