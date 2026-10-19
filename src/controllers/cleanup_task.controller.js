@@ -134,7 +134,7 @@ function extractValidatedStoragePath(photoUrl,expectedBucket,expectedTaskId,expe
 async function photoTask(taskId,user) {
   const {data:task,error}=await supabase.from('cleanup_tasks').select('*').eq('id',taskId).single();
   if(error||!task) { const e=new Error('Task not found');e.statusCode=404;throw e; }
-  if(!['created','pending','in_progress','partially_completed'].includes(task.status)) {
+  if(!['created','pending','assigned','en_route','in_progress','partially_completed'].includes(task.status)) {
     const e=new Error('Task is no longer accepting photos');e.statusCode=409;throw e;
   }
   if(!['admin','officer'].includes(user.role)&&(!task.assigned_crew_ids?.includes(user.id)||task.route_status!=='ready')) {
@@ -209,8 +209,124 @@ export const getCleanupPhotoMedia = async (req,res,next) => {
   return getStorageMedia({query:{bucket:CLEANUP_TASK_PHOTOS_STORAGE_PATH,path},headers:req.headers},res,next);
  }catch(error){next(error);}
 };
+export const updateCleanupTaskStatus = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const user = req.user;
+
+    if (!status) {
+      return res.status(400).json({ message: 'status is required' });
+    }
+
+    const { data: currentTask, error: fetchErr } = await supabase
+      .from('cleanup_tasks')
+      .select('id, status, assigned_crew_ids, fc_version')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (fetchErr || !currentTask) {
+      return res.status(404).json({ message: 'Cleanup task not found' });
+    }
+
+    // Permission check
+    if (!['admin', 'officer'].includes(user.role) && !currentTask.assigned_crew_ids?.includes(user.id)) {
+      return res.status(403).json({ message: 'Access denied: you are not assigned to this task' });
+    }
+
+    // Idempotent duplicate check
+    if (currentTask.status === status) {
+      return res.status(200).json({ message: `Task is already ${status}`, task: currentTask });
+    }
+
+    // Disallow mutations of terminal tasks
+    if (['completed', 'cancelled'].includes(currentTask.status)) {
+      return res.status(409).json({ message: `Cannot change status of a ${currentTask.status} task.` });
+    }
+
+    if (status === 'en_route') {
+      // Allowed from created, pending, assigned
+      if (!['created', 'pending', 'assigned'].includes(currentTask.status)) {
+        return res.status(409).json({
+          message: `Cannot transition task to en_route from current status: ${currentTask.status}`
+        });
+      }
+
+      const { data: updatedTask, error: updateErr } = await supabase
+        .from('cleanup_tasks')
+        .update({
+          status: 'en_route',
+          fc_version: (currentTask.fc_version || 0) + 1,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (updateErr) throw updateErr;
+      return res.status(200).json({ message: 'Task marked as en route', task: updatedTask });
+    }
+
+    if (status === 'completed') {
+      // Enforce strict state machine: task must be en_route (or in_progress) before completed
+      if (!['en_route', 'in_progress'].includes(currentTask.status)) {
+        return res.status(409).json({
+          message: 'Task must be en_route before it can be marked as completed.'
+        });
+      }
+      const task = await processTaskFeedback(id, req.body.outcome ?? 'completed', req.body.notes, req.user.id, req.body);
+      return res.status(200).json({ message: 'Task marked as complete', task });
+    }
+
+    // Desk ops overrides for other statuses
+    if (['admin', 'officer'].includes(user.role)) {
+      const { data: updatedTask, error: updateErr } = await supabase
+        .from('cleanup_tasks')
+        .update({
+          status,
+          fc_version: (currentTask.fc_version || 0) + 1,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (updateErr) throw updateErr;
+      return res.status(200).json({ message: `Task status updated to ${status}`, task: updatedTask });
+    }
+
+    return res.status(400).json({ message: `Invalid status transition to ${status}` });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const markTaskComplete = async (req,res,next) => {
   try {
+    const { data: currentTask, error: fetchErr } = await supabase
+      .from('cleanup_tasks')
+      .select('id, status, assigned_crew_ids')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (fetchErr || !currentTask) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    if (!['admin', 'officer'].includes(req.user.role) && !currentTask.assigned_crew_ids?.includes(req.user.id)) {
+      return res.status(403).json({ message: 'Access denied: you are not assigned to this task' });
+    }
+
+    if (currentTask.status === 'completed') {
+      return res.status(200).json({ message: 'Task already completed', task: currentTask });
+    }
+
+    if (['created', 'pending', 'assigned'].includes(currentTask.status)) {
+      return res.status(409).json({
+        message: 'Task cannot be completed directly from assigned/pending. Must transition to en_route first.'
+      });
+    }
+
     const task=await processTaskFeedback(req.params.id,req.body.outcome??'completed',req.body.notes,req.user.id,req.body);
     res.json({message:'Task outcome recorded',task});
   } catch(error){next(error);}

@@ -1430,6 +1430,59 @@ export const updateReportStatus = async (req, res, next) => {
             }
         }
 
+        // Monotonic transition enforcement
+        const currentStatus = (currentReport.status || 'unresolved').toLowerCase();
+        const targetStatus = (status || '').toLowerCase();
+
+        // Idempotent duplicate check
+        if (currentStatus === targetStatus) {
+            return res.status(200).json({
+                message: `Report is already ${status}`,
+                report: currentReport
+            });
+        }
+
+        const allowedTransitions = {
+            'unresolved': ['acknowledged'],
+            'submitted': ['acknowledged'],
+            'pending': ['acknowledged'],
+            'new': ['acknowledged'],
+            'open': ['acknowledged'],
+            'acknowledged': ['responded', 'in_progress'],
+            'responded': ['resolved', 'waiting_for_feedback'],
+            'in_progress': ['resolved', 'waiting_for_feedback'],
+            'waiting_for_feedback': ['closed', 'resolved'],
+            'resolved': ['closed'],
+            'closed': [],
+            'rejected': []
+        };
+
+        const isDeskOps = ['admin', 'officer'].includes(req.user.role);
+        const isTerminalOrAdminAction = isDeskOps && ['closed', 'rejected'].includes(targetStatus);
+
+        const validNextStatuses = allowedTransitions[currentStatus] || [];
+        if (!validNextStatuses.includes(targetStatus) && !isTerminalOrAdminAction) {
+            const statusOrder = ['unresolved', 'acknowledged', 'responded', 'resolved', 'closed'];
+            const currentIndex = statusOrder.indexOf(currentStatus);
+            const targetIndex = statusOrder.indexOf(targetStatus);
+
+            let reason = `Invalid status transition from "${currentReport.status}" to "${status}".`;
+            if (currentIndex !== -1 && targetIndex !== -1) {
+                if (targetIndex < currentIndex) {
+                    reason = `Status cannot move backwards from "${currentReport.status}" to "${status}".`;
+                } else if (targetIndex > currentIndex + 1) {
+                    reason = `Reports per task must move monotonically one status to the next. Current status is "${currentReport.status}", expected next is "${validNextStatuses.join(' or ')}".`;
+                }
+            }
+
+            return res.status(409).json({
+                message: reason,
+                current_status: currentReport.status,
+                attempted_status: status,
+                valid_next_statuses: validNextStatuses
+            });
+        }
+
         const { data, error } = await supabase
             .from('reports')
             .update({
@@ -1615,6 +1668,13 @@ export const updateLifecycleStage = async (req, res, next) => {
             .select('stage, user_id, status')
             .eq('id', id)
             .single();
+
+        if (currentReport && currentReport.stage === stage) {
+            return res.status(200).json({
+                message: `Report stage is already ${stage}`,
+                report: currentReport
+            });
+        }
 
         // Determine status based on lifecycle stage
         let status = currentReport?.status || 'unresolved';
