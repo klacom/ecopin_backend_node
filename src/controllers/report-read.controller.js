@@ -5,14 +5,27 @@ async function enrichReportsWithTasks(reports) {
   if (!Array.isArray(reports) || reports.length === 0) return reports;
   const ids = reports.map(r => r.id).filter(Boolean);
   if (ids.length === 0) return reports;
-  const { data: directRows } = await db.from('reports')
-    .select('id, cleanup_task_id')
-    .in('id', ids);
-  if (directRows && directRows.length > 0) {
-    const directMap = new Map(directRows.map(d => [d.id, d.cleanup_task_id]));
+  try {
+    const directMap = new Map();
+    const chunkSize = 80;
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      const chunk = ids.slice(i, i + chunkSize);
+      const { data: directRows, error } = await db.from('reports')
+        .select('id, cleanup_task_id')
+        .in('id', chunk);
+      if (error) {
+        console.warn('[enrichReportsWithTasks] Warning fetching task mapping chunk:', error.message);
+        break;
+      }
+      if (directRows) {
+        directRows.forEach(d => directMap.set(d.id, d.cleanup_task_id));
+      }
+    }
     reports.forEach(r => {
       r.cleanup_task_id = directMap.get(r.id) || r.cleanup_task_id || null;
     });
+  } catch (err) {
+    console.warn('[enrichReportsWithTasks] Unexpected error:', err.message);
   }
   return reports;
 }
