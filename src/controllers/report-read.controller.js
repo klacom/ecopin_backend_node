@@ -1,6 +1,22 @@
 import {supabaseAdmin as db} from '../config/supabase.config.js';
 import {PUBLIC_REPORT_FIELDS,reportPage,readReportForViewer} from '../services/report-access.service.js';
 
+async function enrichReportsWithTasks(reports) {
+  if (!Array.isArray(reports) || reports.length === 0) return reports;
+  const ids = reports.map(r => r.id).filter(Boolean);
+  if (ids.length === 0) return reports;
+  const { data: directRows } = await db.from('reports')
+    .select('id, cleanup_task_id')
+    .in('id', ids);
+  if (directRows && directRows.length > 0) {
+    const directMap = new Map(directRows.map(d => [d.id, d.cleanup_task_id]));
+    reports.forEach(r => {
+      r.cleanup_task_id = directMap.get(r.id) || r.cleanup_task_id || null;
+    });
+  }
+  return reports;
+}
+
 async function reportList(req,res,next,clusterId) {
   try {
     const {limit,offset} = reportPage(req.query);
@@ -11,8 +27,10 @@ async function reportList(req,res,next,clusterId) {
     const {data,error} = await query.order('created_at',{ascending:false})
       .order('id',{ascending:false}).range(offset,offset + limit);
     if (error) throw error;
+    const sliced = (data || []).slice(0,limit);
+    if (staffCluster) await enrichReportsWithTasks(sliced);
     res.set('X-Has-More',String((data || []).length > limit));
-    res.status(200).json((data || []).slice(0,limit));
+    res.status(200).json(sliced);
   } catch(error) {
     if (error.statusCode === 400) return res.status(400).json({message:error.message});
     next(error);
@@ -36,8 +54,10 @@ export async function getStaffReports(req, res, next) {
       .order('id', {ascending: false})
       .range(offset, offset + limit);
     if (error) throw error;
+    const sliced = (data || []).slice(0, limit);
+    await enrichReportsWithTasks(sliced);
     res.set('X-Has-More', String((data || []).length > limit));
-    res.status(200).json((data || []).slice(0, limit));
+    res.status(200).json(sliced);
   } catch (error) {
     if (error.statusCode === 400) return res.status(400).json({message: error.message});
     next(error);
