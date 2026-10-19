@@ -9,6 +9,7 @@ import { enqueuePlan, readPlanJob, processNextPlanningJob } from '../services/pl
 import { processTaskFeedback } from '../services/taskFeedback.service.js';
 import { metresBetween } from '../services/geoTime.js';
 import { previewPlanDisassembly as svcPreviewDisassembly, disassemblePlan as svcDisassemblePlan } from '../services/planDisassembly.service.js';
+import { getIncompletePriorTasks } from '../services/incompleteTasksService.js';
 
 // Phase 2: Work Queue Endpoints
 export const prioritizeQueue = async (req, res, next) => {
@@ -28,6 +29,13 @@ export const fetchWorkQueue = async (req, res, next) => {
     // Pass both parameters
     const queue = await getWorkQueue(parseInt(req.query.limit) || 100, targetOutliersOnly);
     res.status(200).json(queue);
+  } catch (error) { next(error); }
+};
+
+export const getIncompleteTasks = async (req, res, next) => {
+  try {
+    const result = await getIncompletePriorTasks();
+    res.json(result);
   } catch (error) { next(error); }
 };
 

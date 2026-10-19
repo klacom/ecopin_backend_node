@@ -26,6 +26,9 @@ router.post('/queue/prioritize', authorize(ROLE_GROUPS.DESK_OPS), ctrl.prioritiz
 router.get('/queue', authorize(ROLE_GROUPS.DESK_OPS), ctrl.fetchWorkQueue);
 router.post('/dispatch', authorize(ROLE_GROUPS.DESK_OPS), ctrl.explicitDispatch);
 
+// Prior-run incomplete task detection (WT-80)
+router.get('/incomplete-tasks', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getIncompleteTasks);
+
 // Optimization Templates (officer-configurable presets)
 router.get('/templates', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getTemplates);
 router.post('/templates', authorize(ROLE_GROUPS.DESK_OPS), ctrl.createTemplate);
