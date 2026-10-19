@@ -378,6 +378,18 @@ export const getAvailableCrew = async (req, res, next) => {
             });
         }
 
+        // Fetch active cleanup tasks (not completed and not cancelled)
+        const { data: activeTasks, error: tasksError } = await supabase
+            .from('cleanup_tasks')
+            .select('id, title, status, priority_score, scheduled_date, assigned_field_crew_id, assigned_crew_ids')
+            .in('status', ['created', 'pending', 'in_progress', 'partially_completed']);
+
+        if (tasksError) {
+            console.warn('Failed to fetch active tasks for available crews:', tasksError.message);
+        }
+
+        const tasksList = activeTasks || [];
+
         const enriched = await Promise.all((crews || []).map(async (crew) => {
             const memberIds = crew.member_profile_ids || [];
             let members = [];
@@ -388,6 +400,15 @@ export const getAvailableCrew = async (req, res, next) => {
                     .in('id', memberIds);
                 members = profiles || [];
             }
+
+            const crewTasks = tasksList.filter((t) =>
+                t.assigned_field_crew_id === crew.id ||
+                (Array.isArray(t.assigned_crew_ids) && memberIds.some((mId) => t.assigned_crew_ids.includes(mId)))
+            );
+
+            const maxTasks = Number(crew.max_tasks_per_shift) || 10;
+            const activeTaskCount = crewTasks.length;
+
             return {
                 id: crew.id,
                 name: crew.name,
@@ -395,9 +416,19 @@ export const getAvailableCrew = async (req, res, next) => {
                 shift_start: crew.shift_start,
                 shift_end: crew.shift_end,
                 availability_status: crew.availability_status,
-                max_tasks_per_shift: crew.max_tasks_per_shift,
+                max_tasks_per_shift: maxTasks,
                 member_count: members.length,
-                members
+                members,
+                active_task_count: activeTaskCount,
+                assigned_tasks_count: activeTaskCount,
+                active_tasks: crewTasks.map((t) => ({
+                    id: t.id,
+                    title: t.title || 'Cleanup Task',
+                    status: t.status,
+                    priority_score: t.priority_score,
+                    scheduled_date: t.scheduled_date
+                })),
+                is_at_capacity: activeTaskCount >= maxTasks
             };
         }));
 
