@@ -2096,6 +2096,130 @@ export const citizenCloseReport = async (req, res, next) => {
     }
 };
 
+// Citizen withdraws/deletes their own report before triage/dispatch
+export const citizenWithdrawReport = async (req, res, next) => {
+    const { id } = req.params;
+    const user_id = req.user?.id;
+    const user_role = req.user?.role;
+
+    if (!user_id) {
+        return res.status(401).json({ message: 'User not authenticated' });
+    }
+
+    try {
+        const { data: currentReport, error: fetchError } = await supabase
+            .from('reports')
+            .select('id, user_id, status, stage, lifecycle_state, cleanup_task_id, cluster_id')
+            .eq('id', id)
+            .maybeSingle();
+
+        if (fetchError || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        const isOwner = currentReport.user_id === user_id;
+        const isAdmin = user_role === 'admin';
+
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({
+                message: 'You are not authorized to delete this report'
+            });
+        }
+
+        // Check specific operational constraints to provide clear, actionable feedback
+        if (currentReport.cleanup_task_id) {
+            return res.status(409).json({
+                message: 'Cannot withdraw report: This report has already been assigned to an active cleanup task.'
+            });
+        }
+
+        if (currentReport.cluster_id) {
+            const { data: clusterTask } = await supabase
+                .from('cleanup_tasks')
+                .select('id, status')
+                .eq('cluster_id', currentReport.cluster_id)
+                .not('status', 'in', '("completed","cancelled")')
+                .maybeSingle();
+
+            if (clusterTask) {
+                return res.status(409).json({
+                    message: 'Cannot withdraw report: This report is part of a cluster currently assigned to an active cleanup task.'
+                });
+            }
+        }
+
+        if (currentReport.lifecycle_state === 'dispatched' || currentReport.stage === 'assigned') {
+            return res.status(409).json({
+                message: 'Cannot withdraw report: This report has already been dispatched to a field crew.'
+            });
+        }
+
+        if (currentReport.status === 'in_progress' || currentReport.stage === 'in_progress') {
+            return res.status(409).json({
+                message: 'Cannot withdraw report: Cleanup operations are currently in progress for this report.'
+            });
+        }
+
+        if (currentReport.status === 'resolved' || currentReport.stage === 'resolved') {
+            return res.status(409).json({
+                message: 'Cannot withdraw report: This report has already been resolved.'
+            });
+        }
+
+        if (currentReport.status === 'closed' || currentReport.stage === 'closed' || currentReport.lifecycle_state === 'closed') {
+            return res.status(409).json({
+                message: 'Cannot withdraw report: This report has already been closed.'
+            });
+        }
+
+        // Clean up linked auxiliary queue items, access blocks, and notifications before deletion
+        await supabase
+            .from('manual_review_queue')
+            .delete()
+            .eq('report_id', id);
+
+        await supabase
+            .from('notifications')
+            .delete()
+            .eq('report_id', id);
+
+        await supabase
+            .from('dispatch_access_blocks')
+            .delete()
+            .eq('report_id', id);
+
+        // Delete the report from database
+        const { error: deleteError } = await supabase
+            .from('reports')
+            .delete()
+            .eq('id', id);
+
+        if (deleteError) {
+            console.error('Failed to delete report:', deleteError);
+            let userFriendlyMessage = 'Failed to delete report from database.';
+            if (deleteError.code === '23503' || deleteError.message?.includes('foreign key')) {
+                userFriendlyMessage = 'Cannot withdraw report: This report is currently linked to an active operational task or route.';
+            } else if (deleteError.message) {
+                userFriendlyMessage = `Failed to withdraw report: ${deleteError.message}`;
+            }
+            return res.status(400).json({
+                message: userFriendlyMessage,
+                error: deleteError.message
+            });
+        }
+
+        // Log audit action after successful deletion
+        await logAuditAction(id, user_id, 'citizen_withdraw', `Citizen withdrew report ${id} prior to triage`);
+
+        res.status(200).json({
+            message: 'Report withdrawn successfully',
+            reportId: id
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // Get satisfaction ratings analytics
 export const getSatisfactionAnalytics = async (req, res, next) => {
     try {
