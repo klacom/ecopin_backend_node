@@ -26,6 +26,7 @@ import manualReviewRoutes from './routes/manualReview.routes.js';
 import conflictRoutes from './routes/conflict.routes.js';
 import fcSyncRoutes from './routes/fc_sync.routes.js';
 import sweeperRoutes from './modules/sweeper/routes/sweeper.routes.js';
+import contactRoutes from './routes/contact.routes.js';
 
 // Import middleware
 import { errorHandler } from './middleware/errorHandler.middleware.js';
@@ -142,6 +143,7 @@ app.use('/api/manual-review', manualReviewRoutes);
 app.use('/api/optimization', optimizationRoutes);
 app.use('/api/fc', fcSyncRoutes);
 app.use('/api/sweeper', sweeperRoutes);
+app.use('/api/contact', contactRoutes);
 
 // 404 handler
 app.use((req, res) => {
