@@ -32,9 +32,19 @@ export const sendContactEmail = async (req, res) => {
             });
         }
 
-        // Validate recipient
-        const validRecipients = ['ecopinmail@gmail.com', 'swmo@pasigcity.gov.ph'];
-        const toEmail = recipient || 'ecopinmail@gmail.com';
+        // Validate recipient dynamically against configured CMS settings
+        let validRecipients = ['ecopinmail@gmail.com', 'swmo@pasigcity.gov.ph'];
+        try {
+            const { getCmsSettingsService } = await import('../services/cms.service.js');
+            const cms = await getCmsSettingsService();
+            if (cms.contact_support_email) validRecipients.push(cms.contact_support_email.toLowerCase());
+            if (cms.contact_office_email) validRecipients.push(cms.contact_office_email.toLowerCase());
+            validRecipients = [...new Set(validRecipients.map(e => e.trim().toLowerCase()))];
+        } catch (cmsErr) {
+            console.warn('[Contact Controller] Could not fetch CMS recipients, using fallback:', cmsErr.message);
+        }
+
+        const toEmail = (recipient || validRecipients[0] || 'ecopinmail@gmail.com').trim().toLowerCase();
         if (!validRecipients.includes(toEmail)) {
             return res.status(400).json({
                 error: 'Invalid recipient',

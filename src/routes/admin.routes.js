@@ -10,6 +10,9 @@ import {
     changeUserPassword,
     getSystemSettings,
     updateSystemSettings,
+    getCmsSettings,
+    updateCmsSettings,
+    uploadCmsMedia,
     getAuditLogs,
     getSystemLogs,
     getSystemStats,
@@ -50,9 +53,30 @@ router.patch('/users/:id/role', authorize(['admin']), updateUserRole);
 router.patch('/users/:id/password', authorize(['admin']), changeUserPassword);
 router.delete('/users/:id', authorize(['admin']), deleteUser);
 
+import multer from 'multer';
+
+const cmsStorage = multer.memoryStorage();
+const cmsUpload = multer({
+    storage: cmsStorage,
+    limits: {
+        fileSize: 50 * 1024 * 1024 // Up to 50MB for media and APK bundles
+    },
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml', 'application/vnd.android.package-archive', 'application/octet-stream'];
+        if (allowedTypes.includes(file.mimetype) || file.originalname.endsWith('.apk')) {
+            cb(null, true);
+        } else {
+            cb(new Error('Invalid file type. Allowed types: Images (JPG, PNG, WebP, SVG) and APK bundles.'), false);
+        }
+    }
+});
+
 // System settings (admin only)
 router.get('/settings', authorize(['admin']), getSystemSettings);
 router.patch('/settings', authorize(['admin']), updateSystemSettings);
+router.get('/settings/cms', authorize(['admin']), getCmsSettings);
+router.patch('/settings/cms', authorize(['admin']), updateCmsSettings);
+router.post('/settings/cms/upload', authorize(['admin']), cmsUpload.single('file'), uploadCmsMedia);
 
 // System logs (authentication, session activity, admin only)
 router.get('/system-logs', authorize(['admin']), getSystemLogs);

@@ -30,6 +30,7 @@ import {
     verifyGitCleanliness
 } from "../services/git-history-audit.service.js";
 import { invalidateQuotaSettingsCache } from "../services/reportQuota.service.js";
+import { getCmsSettingsService, saveCmsSettingsService } from "../services/cms.service.js";
 
 
 
@@ -356,6 +357,8 @@ export const getSystemSettings = async (req, res, next) => {
             .select('*')
             .single();
 
+        const cmsSettings = await getCmsSettingsService();
+
         if (error) {
             // If settings don't exist, return defaults
             if (error.code === 'PGRST116') {
@@ -366,7 +369,8 @@ export const getSystemSettings = async (req, res, next) => {
                     password_require_numbers: true,
                     password_require_special_chars: true,
                     session_timeout_minutes: 60,
-                    daily_report_quota: 10
+                    daily_report_quota: 10,
+                    cms: cmsSettings
                 });
             }
             return res.status(400).json({
@@ -377,50 +381,139 @@ export const getSystemSettings = async (req, res, next) => {
 
         res.status(200).json({
             ...data,
-            daily_report_quota: data.daily_report_quota != null ? data.daily_report_quota : 10
+            daily_report_quota: data.daily_report_quota != null ? data.daily_report_quota : 10,
+            cms: cmsSettings
         });
     } catch (error) {
         next(error);
     }
 };
 
-// Update system settings
+// Update system settings (security, quotas, and/or CMS settings)
 export const updateSystemSettings = async (req, res, next) => {
-    const settings = { ...req.body };
+    const { cms, ...settings } = { ...req.body };
 
     try {
-        if (settings.daily_report_quota !== undefined) {
-            const quota = parseInt(settings.daily_report_quota, 10);
-            if (isNaN(quota) || quota < 1 || quota > 100) {
-                return res.status(400).json({
-                    message: 'daily_report_quota must be an integer between 1 and 100'
-                });
-            }
-            settings.daily_report_quota = quota;
+        let updatedCms = null;
+        if (cms && typeof cms === 'object') {
+            updatedCms = await saveCmsSettingsService(cms);
         }
 
-        const { data, error } = await supabase
-            .from('system_settings')
-            .upsert(settings)
-            .select()
-            .single();
+        let data = null;
+        // If system_settings columns are being updated
+        if (Object.keys(settings).length > 0) {
+            if (settings.daily_report_quota !== undefined) {
+                const quota = parseInt(settings.daily_report_quota, 10);
+                if (isNaN(quota) || quota < 1 || quota > 100) {
+                    return res.status(400).json({
+                        message: 'daily_report_quota must be an integer between 1 and 100'
+                    });
+                }
+                settings.daily_report_quota = quota;
+            }
+
+            const { data: upsertData, error } = await supabase
+                .from('system_settings')
+                .upsert(settings)
+                .select()
+                .single();
+
+            if (error) {
+                return res.status(400).json({
+                    message: 'Failed to update system settings',
+                    error: error.message
+                });
+            }
+            data = upsertData;
+            invalidateQuotaSettingsCache();
+        } else {
+            // Fetch current settings to return complete object
+            const { data: currentData } = await supabase
+                .from('system_settings')
+                .select('*')
+                .single();
+            data = currentData;
+        }
+
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(req.user.id, 'profile_update', `Updated system & CMS settings`, ipAddress, userAgent);
+
+        res.status(200).json({
+            message: 'System settings updated successfully',
+            settings: {
+                ...data,
+                cms: updatedCms || (await getCmsSettingsService())
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Direct CMS settings handlers
+export const getCmsSettings = async (req, res, next) => {
+    try {
+        const cmsSettings = await getCmsSettingsService();
+        res.status(200).json(cmsSettings);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const updateCmsSettings = async (req, res, next) => {
+    try {
+        const updated = await saveCmsSettingsService(req.body);
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('user-agent');
+        await logAuditAction(req.user.id, 'profile_update', 'Updated CMS settings', ipAddress, userAgent);
+        res.status(200).json({
+            message: 'CMS settings updated successfully',
+            cms: updated
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Upload media or APK file to cms-media bucket
+export const uploadCmsMedia = async (req, res, next) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ message: 'No file provided' });
+        }
+
+        const file = req.file;
+        const fieldKey = (req.body.fieldKey || 'media').replace(/[^a-zA-Z0-9_-]/g, '');
+        const extension = file.originalname.split('.').pop().toLowerCase();
+        const safeFileName = `${fieldKey}_${Date.now()}.${extension}`;
+
+        const { data, error } = await supabase.storage
+            .from('cms-media')
+            .upload(safeFileName, file.buffer, {
+                contentType: file.mimetype,
+                upsert: true
+            });
 
         if (error) {
-            return res.status(400).json({
-                message: 'Failed to update system settings',
+            return res.status(500).json({
+                message: 'Failed to upload media to storage',
                 error: error.message
             });
         }
 
-        invalidateQuotaSettingsCache();
+        const { data: urlData } = supabase.storage
+            .from('cms-media')
+            .getPublicUrl(safeFileName);
 
         const ipAddress = req.ip || req.connection.remoteAddress;
         const userAgent = req.get('user-agent');
-        await logAuditAction(req.user.id, 'profile_update', `Updated system settings`, ipAddress, userAgent);
+        await logAuditAction(req.user.id, 'profile_update', `Uploaded CMS media: ${safeFileName}`, ipAddress, userAgent);
 
         res.status(200).json({
-            message: 'System settings updated successfully',
-            settings: data
+            message: 'File uploaded successfully',
+            url: urlData.publicUrl,
+            fileName: safeFileName
         });
     } catch (error) {
         next(error);
