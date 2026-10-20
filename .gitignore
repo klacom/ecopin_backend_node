@@ -28,6 +28,10 @@ coverage/
 tests/*
 !tests/spatial-forward-forecast.test.js
 !tests/spatial-forecast-http.test.js
+!tests/report-evidence-batching.test.js
+!tests/sql/
+tests/sql/*
+!tests/sql/batch-evidence-access-regression.sql
 
 # Graphify knowledge graph outputs
 graphify-out/

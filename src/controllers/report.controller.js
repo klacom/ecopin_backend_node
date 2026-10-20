@@ -581,16 +581,19 @@ export const getBatchReportEvidence = async (req, res, next) => {
         // 1. ALWAYS determine permissions for all requested IDs FIRST (QA-03: prevent cross-user cached evidence leak)
         const authorizedIds = new Set();
         if (req.user?.id) {
-            await Promise.all(reportIds.map(async (id) => {
-                try {
-                    const access = await readReportForViewer(supabase, id, req.user);
-                    if (canReadReportEvidence(access)) {
-                        authorizedIds.add(id);
-                    }
-                } catch {
-                    // skip
+            const validIds = reportIds.filter(id => typeof id === 'string' &&
+                /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
+            if (validIds.length) {
+                const { data, error } = await supabase.rpc('read_authorized_report_evidence_ids', {
+                    actor: req.user.id,
+                    report_ids: validIds
+                });
+                if (error) throw error;
+                const allowedIds = new Set((data || []).map(row => row.id));
+                for (const id of validIds) {
+                    if (allowedIds.has(id.toLowerCase())) authorizedIds.add(id);
                 }
-            }));
+            }
         } else {
             // Public viewer: ONE SINGLE query to Supabase using .in()
             const { data: publicReports, error: pubError } = await supabase
