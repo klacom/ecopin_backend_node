@@ -603,9 +603,7 @@ export const getBatchReportEvidence = async (req, res, next) => {
 
             if (!pubError && Array.isArray(publicReports)) {
                 for (const row of publicReports) {
-                    if (row.location_precision === 'exact') {
-                        authorizedIds.add(row.id);
-                    }
+                    authorizedIds.add(row.id);
                 }
             }
         }
