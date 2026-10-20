@@ -26,11 +26,11 @@ export const SPATIAL_FORECAST_CONFIG = {
       enabled: true
     },
     weekly: {
-      cron: '0 6 * * 1', // 6 AM every Monday
+      cron: '0 6 * * *', // 6 AM daily (30d forecast refreshed every day)
       enabled: true
     },
     monthly: {
-      cron: '0 6 1 * *', // 6 AM on 1st of month
+      cron: '0 6 * * 1', // 6 AM every Monday (90d forecast refreshed weekly)
       enabled: true
     }
   },
