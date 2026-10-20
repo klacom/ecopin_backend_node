@@ -32,7 +32,8 @@ import {
     syncReportMedia,
     validateReportImage,
     getStaffReports,
-    getReportQuota
+    getReportQuota,
+    getBatchReportPublishers
 } from '../controllers/report.controller.js';
 import { batchSyncReports } from '../controllers/sync.controller.js';
 import { authenticate, optionalAuthenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
@@ -53,6 +54,7 @@ router.get('/quota', authenticate, checkUserSuspension, getReportQuota);
 // Optionally authenticated routes
 router.get('/:reportId/evidence', optionalAuthenticate, getReportEvidence);
 router.post('/batch-evidence', optionalAuthenticate, getBatchReportEvidence);
+router.post('/batch-publishers', optionalAuthenticate, getBatchReportPublishers);
 router.get('/:id', optionalAuthenticate, getReportById);
 
 // All other report routes require authentication

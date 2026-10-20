@@ -682,6 +682,45 @@ export const getBatchReportEvidence = async (req, res, next) => {
     }
 };
 
+export const getBatchReportPublishers = async (req, res, next) => {
+    const rawIds = Array.isArray(req.body?.reportIds) ? req.body.reportIds : [];
+    if (!rawIds.length) {
+        return res.status(200).json({});
+    }
+
+    const reportIds = [...new Set(rawIds)].slice(0, 200);
+    const results = {};
+
+    try {
+        const { data, error } = await supabase
+            .from('reports')
+            .select('id, user_id, profiles(id, full_name, data_consent)')
+            .in('id', reportIds);
+
+        if (error) throw error;
+
+        for (const row of (data || [])) {
+            const consent = row.profiles?.data_consent === true;
+            results[row.id] = {
+                publisher_name: consent && row.profiles?.full_name ? row.profiles.full_name : 'Anonymous',
+                has_consent: consent
+            };
+        }
+
+        // Fill remaining with Anonymous
+        for (const id of reportIds) {
+            if (!results[id]) {
+                results[id] = { publisher_name: 'Anonymous', has_consent: false };
+            }
+        }
+
+        res.status(200).json(results);
+    } catch (error) {
+        console.error('Error in getBatchReportPublishers:', error);
+        next(error);
+    }
+};
+
 export const validateReportImage = async (req, res, next) => {
     try {
         const imageFile = req.file || (req.files && req.files['image'] ? req.files['image'][0] : null);

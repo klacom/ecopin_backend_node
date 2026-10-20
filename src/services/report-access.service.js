@@ -21,13 +21,49 @@ export async function readReportForViewer(db, id, viewer) {
       actor:viewer.id,report_id:id
     });
     if (error) throw error;
-    if (data) return {report:data,detail:true};
+    if (data) {
+      const consent = data.profiles?.data_consent === true;
+      const pubName = consent && data.profiles?.full_name ? data.profiles.full_name : 'Anonymous';
+      return {
+        report: {
+          ...data,
+          publisher_name: pubName,
+          publisher_disclosed: consent
+        },
+        detail: true
+      };
+    }
   }
   const {data:report,error:readError} = await db.from('public_reports')
     .select(PUBLIC_REPORT_FIELDS)
     .eq('id',id).maybeSingle();
   if (readError) throw readError;
-  return report ? {report,detail:false} : null;
+  if (!report) return null;
+
+  // Resolve citizen publisher information safely respecting data_consent
+  let publisher_name = 'Anonymous';
+  let publisher_disclosed = false;
+  try {
+    const { data: repOwner } = await db.from('reports')
+      .select('user_id, profiles(id, full_name, data_consent)')
+      .eq('id', id)
+      .maybeSingle();
+    if (repOwner?.profiles && repOwner.profiles.data_consent === true && repOwner.profiles.full_name) {
+      publisher_name = repOwner.profiles.full_name;
+      publisher_disclosed = true;
+    }
+  } catch (err) {
+    // Graceful fallback to Anonymous
+  }
+
+  return {
+    report: {
+      ...report,
+      publisher_name,
+      publisher_disclosed
+    },
+    detail: false
+  };
 }
 
 export function canReadReportEvidence(access) {
