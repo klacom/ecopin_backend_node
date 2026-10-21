@@ -17,7 +17,7 @@ export const extractVideoFrames = async (videoBuffer, originalFilename) => {
 
   // Check ffmpeg availability
   try {
-    await execFileAsync('ffmpeg', ['-version']);
+    await execFileAsync('ffmpeg', ['-version'], { timeout: 15000 });
     console.log('[VIDEO-FRAME-EXTRACTION] ffmpeg available');
   } catch (error) {
     console.error('[VIDEO-FRAME-EXTRACTION] ffmpeg not available:', error.message);
@@ -50,14 +50,8 @@ export const extractVideoFrames = async (videoBuffer, originalFilename) => {
       throw new Error('Could not determine video duration or invalid duration');
     }
 
-    // Calculate 5 sampling timestamps (0%, 25%, 50%, 75%, 100%)
-    const timestamps = [
-      0,
-      duration * 0.25,
-      duration * 0.5,
-      duration * 0.75,
-      duration * 0.99 // Use 99% to avoid potential end-of-file issues
-    ];
+    // Stay clear of EOF: 99% can fall after the final encoded frame.
+    const timestamps = [0, .2, .4, .6, .8].map(fraction => duration * fraction);
     console.log('[VIDEO-FRAME-EXTRACTION] extracting frames at timestamps:', timestamps);
 
     // Extract frames at each timestamp
@@ -71,13 +65,15 @@ export const extractVideoFrames = async (videoBuffer, originalFilename) => {
 
       // Extract single frame at timestamp
       await execFileAsync('ffmpeg', [
+        '-nostdin', '-loglevel', 'error', '-protocol_whitelist', 'file,pipe',
         '-ss', timestamp.toString(),
         '-i', videoPath,
         '-frames:v', '1',
+        '-pix_fmt', 'yuvj420p',
         '-q:v', '2', // High quality JPEG
         '-y', // Overwrite output files
         framePath
-      ]);
+      ], { timeout: 20000 });
 
       // Read the extracted frame
       const frameBuffer = await fs.readFile(framePath);
@@ -129,10 +125,33 @@ const getVideoDuration = async (videoPath) => {
       '-show_entries', 'format=duration',
       '-of', 'default=noprint_wrappers=1:nokey=1',
       videoPath
-    ]);
+    ], { timeout: 15000 });
     const duration = parseFloat(stdout.trim());
     return duration;
   } catch (error) {
     throw new Error(`Failed to get video duration: ${error.message}`);
   }
 };
+/** Probe actual uploaded bytes; client duration and MIME claims are not trusted. */
+export async function inspectVideoBuffer(buffer) {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ecopin-video-check-'));
+  try {
+    const input = path.join(tempDir, 'input.media');
+    await fs.writeFile(input, buffer);
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v', 'error', '-protocol_whitelist', 'file,pipe',
+      '-show_entries', 'format=duration,format_name:stream=codec_type', '-of', 'json', input,
+    ], { timeout: 15000, maxBuffer: 1024 * 1024 });
+    const metadata = JSON.parse(stdout);
+    const formats = (metadata.format?.format_name || '').split(',');
+    if (!metadata.streams?.some(stream => stream.codec_type === 'video') ||
+        !formats.some(format => ['mov', 'mp4', 'webm', 'matroska'].includes(format))) {
+      throw new Error('A supported video stream is required');
+    }
+    const duration = Number(metadata.format?.duration);
+    if (!Number.isFinite(duration) || duration <= 0) throw new Error('Invalid duration');
+    return duration;
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+}

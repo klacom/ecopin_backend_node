@@ -6,7 +6,7 @@ import { classifyImage } from './classifierClient.service.js';
  * @returns {Promise<Array>} Array of classification results with frame metadata
  */
 export const classifyVideoFrames = async (frames) => {
-  console.log('[VIDEO-FRAME-CLASSIFIER] START - classifying', frames.length, 'frames');
+  console.log('[VIDEO-FRAME-CLASSIFIER] START - classifying', frames?.length, 'frames');
   
   if (!frames || !Array.isArray(frames) || frames.length === 0) {
     console.error('[VIDEO-FRAME-CLASSIFIER] No frames provided');
@@ -36,6 +36,8 @@ export const classifyVideoFrames = async (frames) => {
         filename: frame.filename,
         ok: result.ok,
         predicted_class: result.predicted_class,
+        decision: result.decision,
+        predicted_category: result.predicted_category,
         confidence: result.confidence,
         probabilities: result.probabilities,
         error: result.error || null

@@ -1,3 +1,5 @@
+import { getCurrentSystemSettings } from '../services/system-settings.service.js';
+import { validateVideoMaximum } from '../services/report-video-policy.service.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import { logAuditAction } from "../controllers/auth.controller.js";
 import { ALL_ROLES } from "../constants/roles.js";
@@ -352,16 +354,13 @@ export const deleteUser = async (req, res, next) => {
 // Get system settings
 export const getSystemSettings = async (req, res, next) => {
     try {
-        const { data, error } = await supabase
-            .from('system_settings')
-            .select('*')
-            .single();
+        const { data, error } = await getCurrentSystemSettings(supabase);
 
         const cmsSettings = await getCmsSettingsService();
 
-        if (error) {
-            // If settings don't exist, return defaults
-            if (error.code === 'PGRST116') {
+        if (error || !data) {
+            // Only a genuinely empty settings table may use initial defaults.
+            if (!error) {
                 return res.status(200).json({
                     password_min_length: 8,
                     password_require_uppercase: true,
@@ -370,6 +369,7 @@ export const getSystemSettings = async (req, res, next) => {
                     password_require_special_chars: true,
                     session_timeout_minutes: 60,
                     daily_report_quota: 10,
+                    report_video_max_seconds: 10,
                     cms: cmsSettings
                 });
             }
@@ -393,7 +393,18 @@ export const getSystemSettings = async (req, res, next) => {
 export const updateSystemSettings = async (req, res, next) => {
     const { cms, ...settings } = { ...req.body };
 
+    if (settings.report_video_max_seconds !== undefined && !validateVideoMaximum(settings.report_video_max_seconds)) {
+        return res.status(400).json({ message: 'report_video_max_seconds must be a whole number from 5 to 10' });
+    }
     try {
+        const { data: currentSettings, error: settingsError } = await getCurrentSystemSettings(supabase);
+        if (settingsError) {
+            return res.status(503).json({ message: 'Current settings could not load. Please try again.' });
+        }
+        if (settings.id && settings.id !== currentSettings?.id) {
+            return res.status(409).json({ message: 'Settings changed. Reload settings before saving.' });
+        }
+        if (currentSettings && Object.keys(settings).length > 0) settings.id = currentSettings.id;
         let updatedCms = null;
         if (cms && typeof cms === 'object') {
             updatedCms = await saveCmsSettingsService(cms);
@@ -428,11 +439,7 @@ export const updateSystemSettings = async (req, res, next) => {
             invalidateQuotaSettingsCache();
         } else {
             // Fetch current settings to return complete object
-            const { data: currentData } = await supabase
-                .from('system_settings')
-                .select('*')
-                .single();
-            data = currentData;
+            data = currentSettings;
         }
 
         const ipAddress = req.ip || req.connection.remoteAddress;
