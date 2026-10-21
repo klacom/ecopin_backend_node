@@ -29,6 +29,7 @@ tests/*
 !tests/spatial-forward-forecast.test.js
 !tests/spatial-forecast-http.test.js
 !tests/report-evidence-batching.test.js
+!tests/fleet-policy.test.js
 !tests/sql/
 tests/sql/*
 !tests/sql/batch-evidence-access-regression.sql
