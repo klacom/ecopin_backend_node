@@ -1,8 +1,9 @@
+import { crewLoadIssues } from './crewLoadReadiness.js';
 import { supabaseAdmin as db } from '../../../config/supabase.config.js';
 import { prioritizeBacklog } from './workQueue.service.js';
 import { reportPriority, selectPlanItems, resolvePlanSettings } from './planningPolicy.js';
 import { groupClustersForTask } from './taskGrouping.js';
-import { bundleReports, defaultReportVolume, defaultReportWeight, defaultCrewVolumeCapacity, defaultCrewWeightCapacity } from './bundler.js';
+import { bundleReports, defaultReportVolume, defaultReportWeight } from './bundler.js';
 import { metresBetween, provisionalAnchorSuccessors } from './geoTime.js';
 import { getTomTomDistanceMatrix } from '../providers/tomtom.provider.js';
 import { solveVRPWithOrTools } from './ortools.service.js';
@@ -28,8 +29,8 @@ function buildVehicles(crews, depot, settings, activeTasks = []) {
       );
       const busyCount = busy.length;
       const busyMinutes = busy.reduce((sum, task) => sum + Number(task.estimated_duration_min ?? 60), 0);
-      const busyVolume = busy.reduce((sum, task) => sum + Number(task.estimated_volume_m3 ?? 0.1), 0);
-      const busyWeight = busy.reduce((sum, task) => sum + Number(task.estimated_weight_kg ?? 10), 0);
+      const busyVolume = busy.reduce((sum, task) => sum + Number(task.estimated_volume_m3), 0);
+      const busyWeight = busy.reduce((sum, task) => sum + Number(task.estimated_weight_kg), 0);
 
       const start = clockMinutes(crew.shift_start);
       let end = clockMinutes(crew.shift_end);
@@ -41,8 +42,8 @@ function buildVehicles(crews, depot, settings, activeTasks = []) {
       const maxTasksAllowed = Math.min(crew.max_tasks_per_shift ?? 10, settings.max_tasks_per_shift);
       const remainingTasks = Math.max(0, maxTasksAllowed - busyCount);
 
-      const maxVol = amount(crew.max_volume_m3) ?? defaultCrewVolumeCapacity(crew);
-      const maxWt = amount(crew.max_weight_kg) ?? defaultCrewWeightCapacity(crew);
+      const maxVol = Number(crew.max_volume_m3);
+      const maxWt = Number(crew.max_weight_kg);
       const startingVol = Math.min(maxVol, (amount(crew.starting_volume_m3) ?? 0) + busyVolume);
       const startingWt = Math.min(maxWt, (amount(crew.starting_weight_kg) ?? 0) + busyWeight);
 
@@ -134,8 +135,16 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
     rows(db.from('cleanup_tasks').select('assigned_field_crew_id,assigned_crew_ids,status,estimated_duration_min,estimated_volume_m3,estimated_weight_kg')
       .not('status', 'in', '(completed,cancelled)'))
   ]);
-  const crews = availableCrews.filter(crew =>
+  const staffedCrews = availableCrews.filter(crew =>
     (crew.member_profile_ids?.length ?? 0) > 0 || crew.team_lead_profile_id);
+  const loadIssues = crewLoadIssues(staffedCrews, activeTasks);
+  const blockedCrews = new Set(loadIssues.map(issue => issue.crew_id));
+  const crews = staffedCrews.filter(crew => !blockedCrews.has(crew.id));
+  if (!crews.length && loadIssues.length) {
+    const error = new Error(`Load information required before planning. ${loadIssues.map(i=>i.message).join('. ')}.`);
+    error.statusCode = 409;
+    throw error;
+  }
   const configured = Object.fromEntries(settingRows.map(row => [row.key, row.value]));
   const settings = { ...configured, ...resolvePlanSettings(input), mode: 'mixed', weather_condition: weatherCondition, weather_multiplier: weatherMultiplier };
   for (const key of ['mixed_spatial_buffer_meters','mixed_max_reports_per_anchor','mixed_max_detour_minutes',
@@ -394,6 +403,7 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
     sum + Number(item.estimated_duration_minutes || 0), 0);
   const specialistUsed = assignedMinutes - generalistUsed;
   const capacityFilteringDiagnostics = {
+    load_readiness_issues: loadIssues,
     has_active_tasks: hasActiveTasks,
     total_candidates_evaluated: candidates.length,
     viable_candidates_count: viableCandidates.length,

@@ -1,3 +1,4 @@
+import { readActiveCrewRoutes } from '../services/activeCrewRoutes.service.js';
 import { fleetSettings } from '../services/fleetPolicy.js';
 import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
 
@@ -502,35 +503,9 @@ async function canReadCrewRoute(req, routeId) {
 // Get active (approved) routes
 export const getActiveRoutes = async (req, res, next) => {
   try {
-    // Find the most recent approved run
-    const { data: run } = await supabase
-      .from('optimization_runs')
-      .select('id')
-      .eq('status', 'approved')
-      .not('approved_at', 'is', null)
-      .order('approved_at', { ascending: false })
-      .limit(1)
-      .single();
-
-    if (!run) return res.json({ routes: [] });
-
-    const ids = await visibleCrewIds(req);
-    if (ids && !ids.length) return res.json({ optimization_run_id: run.id, routes: [] });
-    let query = supabase.from('crew_routes').select('*, field_crews(name)').eq('optimization_run_id', run.id);
-    if (ids) query = query.in('crew_id', ids);
-    const { data: routes, error } = await query;
-    if (error) throw error;
-
-    for (const route of (routes || [])) {
-      const { data: waypoints } = await supabase
-        .from('route_waypoints')
-        .select('*, cleanup_tasks(id, task_type)')
-        .eq('crew_route_id', route.id)
-        .order('sequence_order');
-      route.waypoints = waypoints || [];
-    }
-
-    res.json({ optimization_run_id: run.id, routes });
+    const routes = await readActiveCrewRoutes(supabase, await visibleCrewIds(req));
+    const runIds = [...new Set(routes.map(route => route.optimization_run_id))];
+    res.json({optimization_run_id: runIds.length === 1 ? runIds[0] : null, routes});
   } catch (error) { next(error); }
 };
 

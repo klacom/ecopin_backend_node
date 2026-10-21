@@ -1,3 +1,4 @@
+import { requireCrewLoads } from './crewLoadReadiness.js';
 import { supabaseAdmin as db } from '../../../config/supabase.config.js';
 import { generateRouteForCrew } from './routeGenerator.service.js';
 import { assignTasksToCrews } from './crewAssigner.service.js';
@@ -56,6 +57,16 @@ export async function commitAndRoutePlan(planId, actor) {
 }
 
 async function commitMixedAndRoute(planId, actor, plan) {
+  // Validate before committing claims/tasks, including drafts made by older planners.
+  const selectedItems = await result(db.from('dispatch_plan_items').select('planned_crew_id')
+    .eq('dispatch_plan_id',planId).eq('is_selected',true));
+  const selectedIds = [...new Set(selectedItems.map(item=>item.planned_crew_id).filter(Boolean))];
+  const [selectedCrews, activeTasks] = await Promise.all([
+    result(db.from('field_crews').select('*').in('id', selectedIds)),
+    result(db.from('cleanup_tasks').select('assigned_field_crew_id,assigned_crew_ids,status,estimated_volume_m3,estimated_weight_kg')
+      .not('status','in','(completed,cancelled)').or(`source_plan_id.is.null,source_plan_id.neq.${planId}`))
+  ]);
+  requireCrewLoads(selectedCrews, activeTasks);
   const committed = await result(db.rpc('commit_mixed_dispatch_plan', { plan_id: planId, actor }));
   if (!committed.tasks.length) return { ...committed, run: null, routing_status: 'empty' };
   const lease = await result(db.rpc('begin_plan_routing', { plan_id: planId, actor }));
