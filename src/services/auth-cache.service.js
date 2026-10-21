@@ -51,7 +51,12 @@ export function setCachedUser(token, user, ttlMs = DEFAULT_TTL_MS) {
 /**
  * Removes a token from the cache (e.g. upon logout or password change).
  */
-export function invalidateToken(token) {
+export function invalidateToken(token, userId) {
+  if (userId) {
+    for (const [key, entry] of cache) {
+      if (entry.user.id === userId) cache.delete(key);
+    }
+  }
   if (!token) return;
   const key = hashToken(token);
   cache.delete(key);

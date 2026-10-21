@@ -641,9 +641,12 @@ export const getPasswordRequirements = async (req, res, next) => {
 };
 
 export const deleteAccount = async (req, res, next) => {
+    let signedOut = false;
     try {
         let userId = req.user?.id;
-        const { email, password } = req.body || {};
+        let sessionToken = req.headers?.authorization?.startsWith('Bearer ')
+            ? req.headers.authorization.slice(7) : null;
+        const { email, password, confirmation } = req.body || {};
 
         // If no authenticated Bearer user, authenticate using provided credentials (e.g. from web deletion form)
         if (!userId) {
@@ -667,21 +670,38 @@ export const deleteAccount = async (req, res, next) => {
             }
 
             userId = authData.user.id;
+            sessionToken = authData.session?.access_token;
         }
 
         // Verify that the user has a citizen role (staff/officer accounts must be handled by administrative channels)
-        const { data: profile } = await supabaseAdmin
+        const { data: profile, error: profileError } = await supabaseAdmin
             .from('profiles')
             .select('id, role')
             .eq('id', userId)
             .maybeSingle();
 
-        if (profile && profile.role && profile.role !== 'citizen') {
+        if (profileError || profile?.role !== 'citizen') {
             return res.status(403).json({
                 message: 'Self-service account deletion is only available for citizen accounts. Staff accounts must be managed through administrative channels.',
                 error: 'Forbidden'
             });
         }
+
+        if (confirmation !== 'I confirm') {
+            return res.status(400).json({ message: 'Type "I confirm" to confirm permanent account deletion.' });
+        }
+
+        if (!sessionToken) {
+            return res.status(401).json({ message: 'Sign in again before deleting your account.' });
+        }
+
+        // Revoke sessions before touching account data; stop if logout cannot be confirmed.
+        const { error: signOutError } = await supabaseAdmin.auth.admin.signOut(sessionToken, 'global');
+        if (signOutError) {
+            return res.status(503).json({ message: 'Could not sign out your sessions. Account was not deleted. Please try again.' });
+        }
+        signedOut = true;
+        invalidateToken(sessionToken, userId);
 
         const ipAddress = req.ip || req.connection?.remoteAddress || null;
         const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
@@ -696,7 +716,8 @@ export const deleteAccount = async (req, res, next) => {
         if (reportsError) {
             console.error('Failed to anonymize reports during account deletion:', reportsError);
             return res.status(500).json({
-                message: 'Failed to anonymize user reports for account deletion',
+                signed_out: true,
+                message: 'Failed to anonymize user reports for account deletion. Sign in again to retry.',
                 error: reportsError.message
             });
         }
@@ -710,7 +731,8 @@ export const deleteAccount = async (req, res, next) => {
         if (profileDeleteError) {
             console.error('Failed to delete user profile during account deletion:', profileDeleteError);
             return res.status(500).json({
-                message: 'Failed to delete user profile',
+                signed_out: true,
+                message: 'Failed to delete user profile. Sign in again to retry.',
                 error: profileDeleteError.message
             });
         }
@@ -721,7 +743,8 @@ export const deleteAccount = async (req, res, next) => {
         if (deleteAuthError) {
             console.error('Failed to delete user credentials from auth.users:', deleteAuthError);
             return res.status(500).json({
-                message: 'Failed to delete authentication credentials',
+                signed_out: true,
+                message: 'Failed to delete authentication credentials. Please contact support.',
                 error: deleteAuthError.message
             });
         }
@@ -740,6 +763,9 @@ export const deleteAccount = async (req, res, next) => {
             message: 'Account deleted successfully. Personal data removed and waste reports anonymized for public statistics.'
         });
     } catch (error) {
+        if (signedOut) {
+            return res.status(500).json({ signed_out: true, message: 'Deletion could not be completed. Please contact support.' });
+        }
         next(error);
     }
 };

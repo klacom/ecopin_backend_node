@@ -6,6 +6,7 @@ const mockSupabaseAdmin = {
   auth: {
     admin: {
       deleteUser: jest.fn(),
+      signOut: jest.fn(),
     },
   },
 };
@@ -43,7 +44,8 @@ describe('WT-89: Citizen Account Deletion Flow (Google Play Policy Compliance)',
   let next;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
+    mockSupabaseAdmin.auth.admin.signOut.mockResolvedValue({ error: null });
     res = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn().mockReturnThis(),
@@ -55,7 +57,7 @@ describe('WT-89: Citizen Account Deletion Flow (Google Play Policy Compliance)',
     test('returns 400 when neither token nor credentials are provided', async () => {
       req = {
         headers: {},
-        body: {},
+        body: { confirmation: 'I confirm' },
       };
 
       await deleteAccount(req, res, next);
@@ -98,7 +100,7 @@ describe('WT-89: Citizen Account Deletion Flow (Google Play Policy Compliance)',
       req = {
         user: { id: 'officer-uuid-123' },
         headers: { authorization: 'Bearer officer-token' },
-        body: {},
+        body: { confirmation: 'I confirm' },
       };
 
       // Mock profiles lookup returning officer role
@@ -124,13 +126,54 @@ describe('WT-89: Citizen Account Deletion Flow (Google Play Policy Compliance)',
     });
   });
 
+  describe('Deletion safeguards', () => {
+    const profileResult = (data, error = null) => ({
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data, error }) }) }),
+    });
+    test.each(['admin', 'field_crew', 'officer', null, ''])('blocks role %s before any deletion', async (role) => {
+      mockSupabaseAdmin.from.mockReturnValue(profileResult(role === null ? null : { role }));
+      await deleteAccount({ user: { id: 'user' }, headers: {}, body: { confirmation: 'I confirm' } }, res, next);
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(mockSupabaseAdmin.auth.admin.deleteUser).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.auth.admin.signOut).not.toHaveBeenCalled();
+    });
+    test.each([undefined, '', 'i confirm', 'I confirm '])('requires exact confirmation %s', async (confirmation) => {
+      mockSupabaseAdmin.from.mockReturnValue(profileResult({ role: 'citizen' }));
+      await deleteAccount({ user: { id: 'user' }, headers: { authorization: 'Bearer token' }, body: { confirmation } }, res, next);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalledWith('reports');
+    });
+    test('profile lookup failure cannot fall back to citizen', async () => {
+      mockSupabaseAdmin.from.mockReturnValue(profileResult(null, { message: 'unavailable' }));
+      await deleteAccount({ user: { id: 'user' }, headers: {}, body: { confirmation: 'I confirm' } }, res, next);
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(mockSupabaseAdmin.auth.admin.signOut).not.toHaveBeenCalled();
+    });
+    test('post-logout failure tells the client to clear its session without claiming success', async () => {
+      mockSupabaseAdmin.from.mockImplementation(table => table === 'profiles'
+        ? profileResult({ role: 'citizen' })
+        : { update: () => ({ eq: async () => ({ error: { message: 'unavailable' } }) }) });
+      await deleteAccount({ user: { id: 'user' }, headers: { authorization: 'Bearer token' }, body: { confirmation: 'I confirm' } }, res, next);
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ signed_out: true }));
+      expect(mockSupabaseAdmin.auth.admin.deleteUser).not.toHaveBeenCalled();
+    });
+    test('stops before changing data when session revocation fails', async () => {
+      mockSupabaseAdmin.from.mockReturnValue(profileResult({ role: 'citizen' }));
+      mockSupabaseAdmin.auth.admin.signOut.mockResolvedValue({ error: { message: 'unavailable' } });
+      await deleteAccount({ user: { id: 'user' }, headers: { authorization: 'Bearer token' }, body: { confirmation: 'I confirm' } }, res, next);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalledWith('reports');
+    });
+  });
+
   describe('Successful Deletion & Waste Report Anonymization', () => {
     test('scrubs credentials and anonymizes reports for authenticated citizen', async () => {
       const citizenId = 'citizen-uuid-456';
       req = {
         user: { id: citizenId },
         headers: { authorization: 'Bearer citizen-token' },
-        body: {},
+        body: { confirmation: 'I confirm' },
         ip: '127.0.0.1',
         get: jest.fn().mockReturnValue('EcopinApp/1.0'),
       };
@@ -188,6 +231,8 @@ describe('WT-89: Citizen Account Deletion Flow (Google Play Policy Compliance)',
 
       await deleteAccount(req, res, next);
 
+      expect(mockSupabaseAdmin.auth.admin.signOut).toHaveBeenCalledWith('citizen-token', 'global');
+      expect(mockSupabaseAdmin.auth.admin.signOut.mock.invocationCallOrder[0]).toBeLessThan(reportsUpdateMock.update.mock.invocationCallOrder[0]);
       // Verify report anonymization was executed: user_id = null
       expect(reportsUpdateMock.update).toHaveBeenCalledWith({ user_id: null });
       // Verify profile was deleted
@@ -195,7 +240,7 @@ describe('WT-89: Citizen Account Deletion Flow (Google Play Policy Compliance)',
       // Verify Supabase auth credentials were deleted
       expect(mockSupabaseAdmin.auth.admin.deleteUser).toHaveBeenCalledWith(citizenId);
       // Verify cache token was invalidated
-      expect(mockInvalidateToken).toHaveBeenCalledWith('citizen-token');
+      expect(mockInvalidateToken).toHaveBeenCalledWith('citizen-token', citizenId);
 
       // Verify 200 response
       expect(res.status).toHaveBeenCalledWith(200);
@@ -212,6 +257,7 @@ describe('WT-89: Citizen Account Deletion Flow (Google Play Policy Compliance)',
         body: {
           email: 'citizen@pasig.gov',
           password: 'ValidPassword123!',
+          confirmation: 'I confirm',
         },
         ip: '127.0.0.1',
         get: jest.fn().mockReturnValue('Mozilla/5.0'),
@@ -221,6 +267,7 @@ describe('WT-89: Citizen Account Deletion Flow (Google Play Policy Compliance)',
       mockSupabase.auth.signInWithPassword.mockResolvedValueOnce({
         data: {
           user: { id: citizenId, email: 'citizen@pasig.gov' },
+          session: { access_token: 'web-token' },
         },
         error: null,
       });
