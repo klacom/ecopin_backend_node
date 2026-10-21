@@ -42,3 +42,11 @@ export const authRateLimiter = rateLimit({
     message: { error: 'Too many authentication attempts, please try again later.' },
     skipSuccessfulRequests: true, // Don't count successful logins
 });
+// A separate instance avoids counting contact requests twice in the global store.
+export const contactRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 3,
+    message: 'Too many contact form submissions, please try again later.',
+    standardHeaders: true,
+    legacyHeaders: false,
+});

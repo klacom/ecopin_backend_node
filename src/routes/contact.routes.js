@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { sendContactEmail } from '../controllers/contact.controller.js';
 import { getCmsSettingsService } from '../services/cms.service.js';
-import { rateLimiter } from '../middleware/rateLimit.middleware.js';
+import { contactRateLimiter } from '../middleware/rateLimit.middleware.js';
 
 const router = Router();
 
@@ -15,7 +15,7 @@ router.get('/settings', async (req, res, next) => {
     }
 });
 
-router.post('/send', rateLimiter, sendContactEmail);
+router.post('/send', contactRateLimiter, sendContactEmail);
 
 export default router;
 

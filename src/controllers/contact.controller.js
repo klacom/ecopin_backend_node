@@ -1,13 +1,5 @@
 import { transporter } from '../config/email.config.js';
 import { SMTP_FROM_NAME, SMTP_USER } from '../config/index.js';
-import { rateLimiter } from '../middleware/rateLimit.middleware.js';
-
-const contactRateLimiter = rateLimiter({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 3, // Limit each IP to 3 requests per windowMs
-    message: 'Too many contact form submissions, please try again later.'
-});
-
 /**
  * Send contact form email
  */
