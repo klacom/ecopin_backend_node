@@ -569,6 +569,7 @@ export const getReportEvidence = async (req, res, next) => {
 };
 
 export const getBatchReportEvidence = async (req, res, next) => {
+    const strict = req.body?.strict === true;
     const rawIds = Array.isArray(req.body?.reportIds) ? req.body.reportIds : [];
     if (!rawIds.length) {
         return res.status(200).json({});
@@ -603,7 +604,7 @@ export const getBatchReportEvidence = async (req, res, next) => {
 
             if (!pubError && Array.isArray(publicReports)) {
                 for (const row of publicReports) {
-                    authorizedIds.add(row.id);
+                    if (row.location_precision === 'exact') authorizedIds.add(row.id);
                 }
             }
         }
@@ -640,13 +641,13 @@ export const getBatchReportEvidence = async (req, res, next) => {
                         prefix,
                         max_results: 100,
                         resource_type: 'image'
-                    }).catch(() => ({ resources: [] })),
+                    }).catch(error => { if (strict) throw error; return { resources: [] }; }),
                     cloudinary.api.resources({
                         type: 'upload',
                         prefix,
                         max_results: 100,
                         resource_type: 'video'
-                    }).catch(() => ({ resources: [] }))
+                    }).catch(error => { if (strict) throw error; return { resources: [] }; })
                 ]);
 
                 const allResources = [...(imageResources.resources || []), ...(videoResources.resources || [])];
@@ -672,6 +673,7 @@ export const getBatchReportEvidence = async (req, res, next) => {
                 results[reportId] = mapped;
             } catch (err) {
                 console.error(`Error fetching batch evidence for report ${reportId}:`, err.message);
+                if (strict) throw err;
                 results[reportId] = [];
             }
         }));

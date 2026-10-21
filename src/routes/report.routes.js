@@ -1,3 +1,4 @@
+import { getReportVideoPolicyHandler, validateReportVideo } from '../services/report-video-policy.service.js';
 import { fieldReportWrite } from '../middleware/field-report-write.middleware.js';
 import { uploadFieldReportPhoto, deleteFieldReportPhoto } from '../controllers/field-report-photo.controller.js';
 import { Router } from 'express';
@@ -49,6 +50,8 @@ router.get('/public', getPublicReports);
 router.get('/my', authenticate, checkUserSuspension, getMyReports);
 
 // Citizen daily submission quota status (WT-97)
+router.get('/media-policy', authenticate, checkUserSuspension, getReportVideoPolicyHandler);
+
 router.get('/quota', authenticate, checkUserSuspension, getReportQuota);
 
 // Optionally authenticated routes
@@ -68,9 +71,9 @@ router.post('/validate-image', mediaUpload.single('image'), validateReportImage)
 
 // Routes that don't need LGU/admin role first
 router.post('/sync/batch', batchSyncReports);
-router.post('/sync/media/:idempotency_key', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), syncReportMedia);
-router.post('/', enforceReportSubmissionQuota, mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'clean_image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), createReport);
-router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), uploadEvidence);
+router.post('/sync/media/:idempotency_key', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), validateReportVideo, syncReportMedia);
+router.post('/', enforceReportSubmissionQuota, mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'clean_image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), validateReportVideo, createReport);
+router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), validateReportVideo, uploadEvidence);
 router.patch('/:id/close', citizenCloseReport); // Citizen can close their own report
 router.delete('/:id', citizenWithdrawReport); // Citizen can withdraw/delete their own report before triage/dispatch
 router.patch('/:id/withdraw', citizenWithdrawReport); // Alias for report withdrawal

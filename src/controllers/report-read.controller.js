@@ -11,18 +11,20 @@ async function enrichReportsWithTasks(reports) {
     for (let i = 0; i < ids.length; i += chunkSize) {
       const chunk = ids.slice(i, i + chunkSize);
       const { data: directRows, error } = await db.from('reports')
-        .select('id, cleanup_task_id')
+        .select('id, cleanup_task_id, before_photos')
         .in('id', chunk);
       if (error) {
         console.warn('[enrichReportsWithTasks] Warning fetching task mapping chunk:', error.message);
         break;
       }
       if (directRows) {
-        directRows.forEach(d => directMap.set(d.id, d.cleanup_task_id));
+        directRows.forEach(d => directMap.set(d.id, d));
       }
     }
     reports.forEach(r => {
-      r.cleanup_task_id = directMap.get(r.id) || r.cleanup_task_id || null;
+      const direct = directMap.get(r.id);
+      r.cleanup_task_id = direct?.cleanup_task_id || r.cleanup_task_id || null;
+      if (direct?.before_photos) r.before_photos = direct.before_photos;
     });
   } catch (err) {
     console.warn('[enrichReportsWithTasks] Unexpected error:', err.message);
@@ -33,7 +35,7 @@ async function enrichReportsWithTasks(reports) {
 async function reportList(req,res,next,clusterId) {
   try {
     const {limit,offset} = reportPage(req.query);
-    const staffCluster = clusterId && ['officer','admin'].includes(req.user?.role);
+    const staffCluster = clusterId && ['officer','admin','field_crew'].includes(req.user?.role);
     let query = db.from(staffCluster ? 'reports_view' : 'public_reports')
       .select(staffCluster ? '*' : PUBLIC_REPORT_FIELDS);
     if (clusterId) query = query.eq('cluster_id',clusterId);
@@ -56,6 +58,14 @@ export async function getStaffReports(req, res, next) {
   try {
     const {limit, offset} = reportPage(req.query);
     let query = db.from('reports_view').select('*');
+    if (req.query.ids !== undefined) {
+      const ids = [...new Set(String(req.query.ids).split(','))];
+      if (ids.length > 100 || ids.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) {
+        return res.status(400).json({message: 'Provide 1 to 100 valid report IDs'});
+      }
+      query = query.in('id', ids);
+    }
+
     if (req.query.validation_status) {
       query = query.eq('validation_status', req.query.validation_status);
     }

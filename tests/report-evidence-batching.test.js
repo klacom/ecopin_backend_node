@@ -120,3 +120,14 @@ test('anonymous viewers retain the single public query and exact-location restri
   expect(resources).toHaveBeenCalledTimes(2);
   expect(resources.mock.calls.every(([options]) => options.prefix === `report_evidence/${ids[0]}`)).toBe(true);
 });
+
+
+test('strict offline preparation propagates evidence provider failures instead of caching empty success', async () => {
+  rpc.mockResolvedValue({data:[{id:ids[0]}],error:null});
+  const error = new Error('Evidence provider unavailable');
+  resources.mockRejectedValue(error);
+  const res = response(); const next = jest.fn();
+  await getBatchReportEvidence({body:{reportIds:[ids[0]],strict:true},user:viewer},res,next);
+  expect(next).toHaveBeenCalledWith(error);
+  expect(res.json).not.toHaveBeenCalled();
+});

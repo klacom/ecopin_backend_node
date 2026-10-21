@@ -140,7 +140,19 @@ export const getCleanupTaskById = async (req, res, next) => {
     const {data} = await readCleanupTasks(req, {taskId: req.params.id});
     res.set('Cache-Control', 'private, no-store');
     if (!data.length) return res.status(404).json({message: 'Cleanup task not found'});
-    return res.json(data[0]);
+    const task = data[0];
+    if (task.access_level === 'detail') {
+      const members = [...new Set(task.assigned_crew_ids || [])];
+      const [teamResult, memberResult] = await Promise.all([
+        task.assigned_field_crew_id ? supabase.from('field_crews').select('id,name').eq('id',task.assigned_field_crew_id).maybeSingle() : {data:null},
+        members.length ? supabase.from('profiles').select('id,full_name,avatar_url').in('id',members) : {data:[]}
+      ]);
+      if (teamResult.error) throw teamResult.error;
+      if (memberResult.error) throw memberResult.error;
+      task.assigned_team = teamResult.data;
+      task.assigned_members = memberResult.data || [];
+    }
+    return res.json(task);
   } catch (error) {
     return taskReadError(error, res, next);
   }
