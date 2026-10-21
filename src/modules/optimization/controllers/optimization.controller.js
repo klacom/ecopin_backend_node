@@ -11,6 +11,7 @@ import { processTaskFeedback } from '../services/taskFeedback.service.js';
 import { metresBetween } from '../services/geoTime.js';
 import { previewPlanDisassembly as svcPreviewDisassembly, disassemblePlan as svcDisassemblePlan } from '../services/planDisassembly.service.js';
 import { getIncompletePriorTasks } from '../services/incompleteTasksService.js';
+import { safeAuditLog } from '../../sweeper/services/audit-log.service.js';
 
 // Phase 2: Work Queue Endpoints
 export const prioritizeQueue = async (req, res, next) => {
@@ -639,6 +640,8 @@ export const updateCrewMembers = async (req, res, next) => {
       });
     }
 
+    await safeAuditLog('CREW_MEMBERS_UPDATED', 'crew', crew_id, req.user.id, { member_id: user_id, action });
+
     return res.status(200).json(data);
   } catch (error) {
     return res.status(error.statusCode || 400).json({
@@ -699,6 +702,7 @@ export const updateOptimizationSettings = async (req, res, next) => {
       .single();
 
     if (error) return res.status(400).json({ message: 'Failed to update setting', error: error.message });
+    await safeAuditLog('OPTIMIZATION_SETTINGS_UPDATED', 'settings', key, req.user.id, { key, value });
     res.json(data);
   } catch (error) { next(error); }
 };
@@ -709,7 +713,9 @@ export const createFieldCrew = async (req,res,next) => {
     const fleet = fleetSettings(req.body,true);
     if (fleet.hazmat_certified) fleet.certification_reviewed_by = req.user.id;
     const {data,error}=await supabase.from('field_crews').insert(fleet).select().single();
-    if(error) throw error;res.status(201).json(data);
+    if(error) throw error;
+    await safeAuditLog('CREW_CREATED', 'crew', data.id, req.user.id, { name: data.name, vehicle_type: data.vehicle_type });
+    res.status(201).json(data);
   } catch(error){next(error);}
 };
 export const updateFieldCrew = async (req,res,next) => {
@@ -717,8 +723,76 @@ export const updateFieldCrew = async (req,res,next) => {
     const fleet = fleetSettings(req.body);
     if (fleet.hazmat_certified !== undefined) fleet.certification_reviewed_by = req.user.id;
     const {data,error}=await supabase.from('field_crews').update({...fleet,updated_at:new Date().toISOString()}).eq('id',req.params.id).select().single();
-    if(error) throw error;res.json(data);
+    if(error) throw error;
+    await safeAuditLog('CREW_UPDATED', 'crew', data.id, req.user.id, { name: data.name, vehicle_type: data.vehicle_type });
+    res.json(data);
   } catch(error){next(error);}
+};
+export const deleteFieldCrew = async (req, res, next) => {
+  const { id } = req.params;
+  try {
+    const { data: crew, error: crewError } = await supabase
+      .from('field_crews')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (crewError || !crew) {
+      return res.status(404).json({ message: 'Field crew not found' });
+    }
+
+    // Safety check 1: tasks assigned
+    const { count: taskCount, error: taskError } = await supabase
+      .from('cleanup_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('assigned_field_crew_id', id);
+
+    if (taskError) throw taskError;
+    if (taskCount > 0) {
+      return res.status(400).json({
+        message: `Cannot delete crew "${crew.name}": There are ${taskCount} task(s) assigned to this crew. Crews with tasks cannot be deleted to prevent data inconsistencies.`
+      });
+    }
+
+    // Safety check 2: members attached
+    const memberIds = crew.member_profile_ids || [];
+    if (memberIds.length > 0 || crew.team_lead_profile_id) {
+      return res.status(400).json({
+        message: `Cannot delete crew "${crew.name}": Crew still has ${memberIds.length} member(s) or an assigned team lead. Remove all members in Crew Management first.`
+      });
+    }
+
+    // Safety check 3: routes referencing crew
+    const { count: routeCount, error: routeError } = await supabase
+      .from('crew_routes')
+      .select('id', { count: 'exact', head: true })
+      .eq('crew_id', id);
+
+    if (!routeError && routeCount > 0) {
+      return res.status(400).json({
+        message: `Cannot delete crew "${crew.name}": Crew has ${routeCount} route record(s) associated with it.`
+      });
+    }
+
+    const { error: deleteError } = await supabase
+      .from('field_crews')
+      .delete()
+      .eq('id', id);
+
+    if (deleteError) throw deleteError;
+
+    await safeAuditLog('CREW_DELETED', 'crew', id, req.user.id, {
+      name: crew.name,
+      vehicle_type: crew.vehicle_type
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `Field crew "${crew.name}" was successfully deleted.`
+    });
+  } catch (error) {
+    next(error);
+  }
 };
 
 // Phase 6: Field Feedback Loop

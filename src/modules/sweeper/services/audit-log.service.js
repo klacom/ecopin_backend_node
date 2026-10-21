@@ -29,6 +29,15 @@ export async function createAuditLog(eventType, entityType, entityId, userId, ev
   return data;
 }
 
+export async function safeAuditLog(eventType, entityType, entityId, userId, eventData) {
+  try {
+    return await createAuditLog(eventType, entityType, entityId, userId, eventData);
+  } catch (err) {
+    console.warn(`[AuditLog] Failed to log ${eventType} for ${entityType}:${entityId}:`, err?.message || err);
+    return null;
+  }
+}
+
 export async function logSlaBreachDetection(reportId, breachDuration) {
   return createAuditLog('SLA_BREACH_DETECTED', 'REPORT', reportId, 'system', { breach_duration_hours: breachDuration });
 }

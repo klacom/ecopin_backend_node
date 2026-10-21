@@ -2,6 +2,7 @@ import { getCurrentSystemSettings } from '../services/system-settings.service.js
 import { validateVideoMaximum } from '../services/report-video-policy.service.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import { logAuditAction } from "../controllers/auth.controller.js";
+import { safeAuditLog } from "../modules/sweeper/services/audit-log.service.js";
 import { ALL_ROLES } from "../constants/roles.js";
 import {
     getAuditArchiveStatus as fetchAuditArchiveStatus,
@@ -90,6 +91,7 @@ export const createUser = async (req, res, next) => {
 
         // Log user creation event
         await logAuditAction(req.user.id, 'user_created', `Created user account for ${email}`, ipAddress, userAgent);
+        await safeAuditLog('USER_CREATED', 'user', profileData.id, req.user.id, { email, role, full_name });
 
         res.status(201).json({
             message: 'User created successfully',
@@ -246,6 +248,7 @@ export const updateUserRole = async (req, res, next) => {
         const ipAddress = req.ip || req.connection.remoteAddress;
         const userAgent = req.get('user-agent');
         await logAuditAction(req.user.id, 'profile_update', `Updated role for user ${id} to ${role}`, ipAddress, userAgent);
+        await safeAuditLog('USER_ROLE_UPDATED', 'user', id, req.user.id, { new_role: role });
 
         res.status(200).json({
             message: 'User role updated successfully',
@@ -294,6 +297,7 @@ export const changeUserPassword = async (req, res, next) => {
         const ipAddress = req.ip || req.connection.remoteAddress;
         const userAgent = req.get('user-agent');
         await logAuditAction(req.user.id, 'profile_update', `Reset password for user ${id}`, ipAddress, userAgent);
+        await safeAuditLog('USER_PASSWORD_RESET', 'user', id, req.user.id, { forced_reset: true });
 
         res.status(200).json({
             message: 'User password updated successfully'
@@ -342,6 +346,7 @@ export const deleteUser = async (req, res, next) => {
         const ipAddress = req.ip || req.connection.remoteAddress;
         const userAgent = req.get('user-agent');
         await logAuditAction(req.user.id, 'account_deletion', `Deleted user account ${id}`, ipAddress, userAgent);
+        await safeAuditLog('USER_DELETED', 'user', id, req.user.id, { deleted_user_id: id });
 
         res.status(200).json({
             message: 'User deleted successfully'
@@ -445,6 +450,7 @@ export const updateSystemSettings = async (req, res, next) => {
         const ipAddress = req.ip || req.connection.remoteAddress;
         const userAgent = req.get('user-agent');
         await logAuditAction(req.user.id, 'profile_update', `Updated system & CMS settings`, ipAddress, userAgent);
+        await safeAuditLog('SYSTEM_SETTINGS_UPDATED', 'settings', 'system', req.user.id, { updated_fields: Object.keys(req.body) });
 
         res.status(200).json({
             message: 'System settings updated successfully',
@@ -474,6 +480,7 @@ export const updateCmsSettings = async (req, res, next) => {
         const ipAddress = req.ip || req.connection.remoteAddress;
         const userAgent = req.get('user-agent');
         await logAuditAction(req.user.id, 'profile_update', 'Updated CMS settings', ipAddress, userAgent);
+        await safeAuditLog('CMS_SETTINGS_UPDATED', 'settings', 'cms', req.user.id, { updated_keys: Object.keys(req.body) });
         res.status(200).json({
             message: 'CMS settings updated successfully',
             cms: updated

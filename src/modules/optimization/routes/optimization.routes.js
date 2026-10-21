@@ -61,6 +61,7 @@ router.patch('/crews/:id/members', authorize(ROLE_GROUPS.DESK_OPS), ctrl.updateC
 router.get('/crews/unassigned-members', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getUnassignedMembers);
 router.post('/tasks/:id/complete', authorize(ROLE_GROUPS.FIELD_OPS), ctrl.completeTask);
 router.put('/crews/:id', authorize(ROLE_GROUPS.ADMIN_ONLY), ctrl.updateFieldCrew);
+router.delete('/crews/:id', authorize(ROLE_GROUPS.ADMIN_ONLY), ctrl.deleteFieldCrew);
 
 // Admin settings
 router.get('/settings', authorize(ROLE_GROUPS.ADMIN_ONLY), ctrl.getOptimizationSettings);
