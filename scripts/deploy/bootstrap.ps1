@@ -25,10 +25,12 @@ function Ensure-Role($Name, $Trust, $Policy) {
     Invoke-Aws -Arguments @('iam','put-role-policy','--role-name',$Name,'--policy-name','EcoPinDeployment','--policy-document',(JsonFile "$Name-policy.json" $Policy)) | Out-Null
 }
 function GitHub-Trust($Repository, $Branch, $RepositoryId) {
+    $subject = "repo:klacom/${Repository}:ref:refs/heads/$Branch"
+    if ($RepositoryId) { $subject = "repo:klacom@170255538/${Repository}@${RepositoryId}:ref:refs/heads/$Branch" }
     return @{Version='2012-10-17';Statement=@(@{Effect='Allow';Action='sts:AssumeRoleWithWebIdentity';
         Principal=@{Federated="arn:aws:iam::${account}:oidc-provider/token.actions.githubusercontent.com"};
         Condition=@{StringEquals=@{'token.actions.githubusercontent.com:aud'='sts.amazonaws.com';
-        'token.actions.githubusercontent.com:sub'="repo:klacom@170255538/${Repository}@${RepositoryId}:ref:refs/heads/$Branch"}}})}
+        'token.actions.githubusercontent.com:sub'=$subject}}})}
 }
 try {
     $identity = Invoke-Aws -Arguments @('sts','get-caller-identity')
@@ -60,7 +62,7 @@ try {
         @{Effect='Allow';Action=@('s3:PutObject');Resource="arn:aws:s3:::$bucket/backend/*"},
         @{Effect='Allow';Action='ssm:SendCommand';Resource=@("arn:aws:ssm:${region}:${account}:document/EcoPin-DeployBackend","arn:aws:ec2:${region}:${account}:instance/$instance")},
         @{Effect='Allow';Action='ssm:GetCommandInvocation';Resource='*'})}
-    Ensure-Role 'ecopin-backend-github-deploy' (GitHub-Trust 'ecopin_backend_node' 'master' '1256316967') $backendPolicy
+    Ensure-Role 'ecopin-backend-github-deploy' (GitHub-Trust 'ecopin_backend_node' 'master') $backendPolicy
     $repositories = @('clip-validation-lambda','ecopin-vrp-service','hotspot-forecasting')
     $functions = @('clip-validator','ecopin-vrp-service','ecopin-temp-hotspot-forecasting-aka-spatial-analysis')
     $mlPolicy = @{Version='2012-10-17';Statement=@(

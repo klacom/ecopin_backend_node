@@ -24,7 +24,9 @@ try {
     & "$PSScriptRoot/bootstrap.ps1"
     if ($global:ecopinBootstrapTestCommands.Count -lt 20) { throw 'Expected full provisioning plan' }
     $trust = $global:ecopinBootstrapTestPolicies['ecopin-backend-github-deploy-trust.json']
-    if ($trust.Statement[0].Condition.StringEquals.'token.actions.githubusercontent.com:sub' -ne 'repo:klacom@170255538/ecopin_backend_node@1256316967:ref:refs/heads/master') { throw 'Backend trust must be branch- and identity-scoped' }
+    if ($trust.Statement[0].Condition.StringEquals.'token.actions.githubusercontent.com:sub' -ne 'repo:klacom/ecopin_backend_node:ref:refs/heads/master') { throw 'Backend trust must match its legacy branch subject' }
+    $mlTrust = $global:ecopinBootstrapTestPolicies['ecopin-ml-github-deploy-trust.json']
+    if ($mlTrust.Statement[0].Condition.StringEquals.'token.actions.githubusercontent.com:sub' -ne 'repo:klacom@170255538/ecopin_ml_models@1338119715:ref:refs/heads/main') { throw 'ML trust must match its immutable branch subject' }
     $ml = $global:ecopinBootstrapTestPolicies['ecopin-ml-github-deploy-policy.json']
     if ($ml.Statement[2].Resource.Count -ne 3) { throw 'ML role must target exactly three functions' }
     $document = $global:ecopinBootstrapTestPolicies['document.json']
