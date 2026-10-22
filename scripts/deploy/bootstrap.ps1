@@ -24,11 +24,11 @@ function Ensure-Role($Name, $Trust, $Policy) {
     }
     Invoke-Aws -Arguments @('iam','put-role-policy','--role-name',$Name,'--policy-name','EcoPinDeployment','--policy-document',(JsonFile "$Name-policy.json" $Policy)) | Out-Null
 }
-function GitHub-Trust($Repository, $Branch) {
+function GitHub-Trust($Repository, $Branch, $RepositoryId) {
     return @{Version='2012-10-17';Statement=@(@{Effect='Allow';Action='sts:AssumeRoleWithWebIdentity';
         Principal=@{Federated="arn:aws:iam::${account}:oidc-provider/token.actions.githubusercontent.com"};
         Condition=@{StringEquals=@{'token.actions.githubusercontent.com:aud'='sts.amazonaws.com';
-        'token.actions.githubusercontent.com:sub'="repo:klacom/${Repository}:ref:refs/heads/$Branch"}}})}
+        'token.actions.githubusercontent.com:sub'="repo:klacom@170255538/${Repository}@${RepositoryId}:ref:refs/heads/$Branch"}}})}
 }
 try {
     $identity = Invoke-Aws -Arguments @('sts','get-caller-identity')
@@ -60,7 +60,7 @@ try {
         @{Effect='Allow';Action=@('s3:PutObject');Resource="arn:aws:s3:::$bucket/backend/*"},
         @{Effect='Allow';Action='ssm:SendCommand';Resource=@("arn:aws:ssm:${region}:${account}:document/EcoPin-DeployBackend","arn:aws:ec2:${region}:${account}:instance/$instance")},
         @{Effect='Allow';Action='ssm:GetCommandInvocation';Resource='*'})}
-    Ensure-Role 'ecopin-backend-github-deploy' (GitHub-Trust 'ecopin_backend_node' 'master') $backendPolicy
+    Ensure-Role 'ecopin-backend-github-deploy' (GitHub-Trust 'ecopin_backend_node' 'master' '1256316967') $backendPolicy
     $repositories = @('clip-validation-lambda','ecopin-vrp-service','hotspot-forecasting')
     $functions = @('clip-validator','ecopin-vrp-service','ecopin-temp-hotspot-forecasting-aka-spatial-analysis')
     $mlPolicy = @{Version='2012-10-17';Statement=@(
@@ -68,8 +68,10 @@ try {
         @{Effect='Allow';Action=@('ecr:BatchCheckLayerAvailability','ecr:InitiateLayerUpload','ecr:UploadLayerPart','ecr:CompleteLayerUpload','ecr:PutImage','ecr:BatchGetImage','ecr:GetDownloadUrlForLayer','ecr:DescribeImages');
             Resource=@($repositories | ForEach-Object { "arn:aws:ecr:${region}:${account}:repository/$_" })},
         @{Effect='Allow';Action=@('lambda:GetFunction','lambda:GetFunctionConfiguration','lambda:UpdateFunctionCode','lambda:InvokeFunction');
-            Resource=@($functions | ForEach-Object { "arn:aws:lambda:${region}:${account}:function:$_" })})}
-    Ensure-Role 'ecopin-ml-github-deploy' (GitHub-Trust 'ecopin_ml_models' 'main') $mlPolicy
+            Resource=@($functions | ForEach-Object { "arn:aws:lambda:${region}:${account}:function:$_" })},
+        @{Effect='Allow';Action='ecr-public:GetAuthorizationToken';Resource='*'},
+        @{Effect='Allow';Action='sts:GetServiceBearerToken';Resource='*';Condition=@{StringEquals=@{'sts:AWSServiceName'='ecr-public.amazonaws.com'}}})}
+    Ensure-Role 'ecopin-ml-github-deploy' (GitHub-Trust 'ecopin_ml_models' 'main' '1338119715') $mlPolicy
     $ec2Trust = @{Version='2012-10-17';Statement=@(@{Effect='Allow';Action='sts:AssumeRole';Principal=@{Service='ec2.amazonaws.com'}})}
     $ec2Policy = @{Version='2012-10-17';Statement=@(@{Effect='Allow';Action='s3:GetObject';Resource="arn:aws:s3:::$bucket/backend/*"})}
     Ensure-Role 'ecopin-backend-instance' $ec2Trust $ec2Policy
@@ -95,5 +97,9 @@ try {
     Write-Output 'Deployment roles, private artifact bucket and fixed SSM command are ready.'
 } finally {
     # Only delete this invocation's verified temporary directory.
-    if ((Split-Path -Leaf $scratch) -like 'ecopin-bootstrap-*') { Remove-Item -LiteralPath $scratch -Recurse -Force }
+    $resolvedScratch = (Resolve-Path -LiteralPath $scratch).Path
+    $resolvedTemp = (Resolve-Path -LiteralPath ([System.IO.Path]::GetTempPath())).Path.TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    if ((Split-Path -Parent $resolvedScratch) -eq $resolvedTemp -and (Split-Path -Leaf $resolvedScratch) -like 'ecopin-bootstrap-*') {
+        Remove-Item -LiteralPath $resolvedScratch -Recurse -Force
+    }
 }
