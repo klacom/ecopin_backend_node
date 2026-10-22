@@ -8,8 +8,11 @@ bucket=ecopin-deploy-035074951255-ap-southeast-1
 mkdir -p "$root/releases"
 exec 9>"$root/deploy.lock"
 flock -n 9 || { echo 'Another deployment is running'; exit 1; }
-previous=$(readlink -f "$root/current" 2>/dev/null || true)
-previous=${previous:-/home/ubuntu/ecopin_backend_node}
+if [[ -L "$root/current" && -f "$root/current/src/index.js" ]]; then
+  previous=$(readlink -f "$root/current")
+else
+  previous=/home/ubuntu/ecopin_backend_node
+fi
 target="$root/releases/$release"
 # Existing releases are immutable and can be selected again for rollback.
 if [[ ! -f "$target/.complete" ]]; then

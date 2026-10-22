@@ -21,7 +21,7 @@ These roles grant production code execution through deployments. Protect write a
 
 Upload `setup-host.sh` and `deploy-backend.sh` to EC2, then run the former with sudo and the latter's path. Setup installs AWS CLI and required system libraries, protects/backups the existing environment, installs the root-owned deployment script, and restarts SSM Agent. It does not restart the backend.
 
-Keep production environment values on EC2, not in the repository or workflow. Verify current Supabase URL/keys, strong `JWT_SECRET`, frontend origin and all three AWS endpoint settings before the first release. Existing production settings point to old database/service configuration and must be reconciled with the working local setup. Never print environment values during setup.
+Keep production environment values on EC2, not in the repository or workflow. Verify current Supabase URL/keys, strong `JWT_SECRET`, frontend origin and all three AWS endpoint settings before the first release. The initial setup reconciled the old database/service configuration with the working local setup while preserving the protected environment backup. Never print environment values during setup.
 
 ## Release and rollback
 
@@ -40,4 +40,4 @@ Release folders and S3 artifacts consume storage. Remove old releases only after
 
 ## Verification status
 
-Local backend tests passed (186 tests) after the dependency lockfile and classifier health check updates. Production dependency audit has no high/critical findings; moderate transitive findings remain. Bootstrap has a mocked contract check (`scripts/deploy/test-bootstrap.ps1`) that makes no AWS calls. Real Linux builds, SSM deployment, production environment reconciliation and live health checks still need execution; local Docker Desktop is unavailable.
+Backend tests passed (186 tests) locally and on Linux after the dependency lockfile and classifier health check updates. Production dependency audit has no high/critical findings; moderate transitive findings remain. Bootstrap has a mocked contract check (`scripts/deploy/test-bootstrap.ps1`) that makes no AWS calls. The private artifact bucket, OIDC roles and online SSM instance profile are configured. Check [Backend production runs](https://github.com/klacom/ecopin_backend_node/actions/workflows/deploy.yml) for the deployed commit and live deployment outcome. Local Docker Desktop is unavailable; Linux builds run on GitHub-hosted runners.
