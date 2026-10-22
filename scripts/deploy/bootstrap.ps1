@@ -81,7 +81,16 @@ try {
     }
     $associations = Invoke-Aws -Arguments @('ec2','describe-iam-instance-profile-associations','--filters',"Name=instance-id,Values=$instance")
     if (-not $associations.IamInstanceProfileAssociations) {
-        Invoke-Aws -Arguments @('ec2','associate-iam-instance-profile','--instance-id',$instance,'--iam-instance-profile','Name=ecopin-backend-instance') | Out-Null
+        # IAM profile creation is eventually consistent with EC2.
+        foreach ($attempt in 1..6) {
+            try {
+                Invoke-Aws -Arguments @('ec2','associate-iam-instance-profile','--instance-id',$instance,'--iam-instance-profile',"Arn=arn:aws:iam::${account}:instance-profile/ecopin-backend-instance") | Out-Null
+                break
+            } catch {
+                if ($attempt -eq 6) { throw }
+                Start-Sleep -Seconds 10
+            }
+        }
     }
     Write-Output 'Deployment roles, private artifact bucket and fixed SSM command are ready.'
 } finally {

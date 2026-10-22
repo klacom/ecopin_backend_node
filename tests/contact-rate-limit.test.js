@@ -4,6 +4,7 @@ import { once } from 'node:events';
 
 const sendMail = jest.fn();
 jest.unstable_mockModule('../src/config/email.config.js', () => ({ transporter: { sendMail } }));
+jest.unstable_mockModule('../src/config/supabase.config.js', () => ({ supabase: {}, supabaseAdmin: {} }));
 const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
 const contactRoutes = (await import('../src/routes/contact.routes.js')).default;
 const { rateLimiter } = await import('../src/middleware/rateLimit.middleware.js');
