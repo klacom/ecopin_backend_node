@@ -1397,8 +1397,10 @@ export const createReport = async (req, res, next) => {
                         body: `New report "${report.title || 'Untitled'}" has been validated and added to the queue.`
                     }).catch(err => console.error('Failed to notify officers for approved report:', err));
                 }
-                // Trigger clustering
-                await clusterReports();
+                // Clustering failures must not overwrite an already valid AI decision.
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
+                    await clusterReports().catch(err => console.error('Approved report clustering failed:', err));
+                }
             } catch (err) {
                 console.error('Error in background tasks:', err);
                 try {
@@ -2718,7 +2720,9 @@ export const syncReportMedia = async (req, res, next) => {
                     createNotification(user_id, report.id, 'pending_validation', 'Report Under Review', 'Your report has been flagged for manual review.').catch(console.error);
                 }
 
-                await clusterReports();
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
+                    await clusterReports().catch(err => console.error('Approved report clustering failed:', err));
+                }
             } catch (err) {
                 console.error('Error in background tasks:', err);
                 try {

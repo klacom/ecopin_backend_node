@@ -4,6 +4,16 @@ import { uploadFromBuffer, deleteFromCloudinary } from '../services/cloudinary.s
 import { hashBuffer } from '../services/photo_dedup.service.js';
 import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
 
+function respondToPhotoError(error, res, next) {
+  if ((error.code === '42703' && error.message?.includes('before_photos')) ||
+      (error.code === 'PGRST202' && error.message?.includes('set_report_before_photo'))) {
+    return res.status(503).json({
+      code: 'CREW_PHOTO_SCHEMA_NOT_READY',
+      message: 'Photo uploads are temporarily unavailable: the server needs the Before photo database update. Your photo remains on this device. Ask your administrator to update the server before retrying.',
+    });
+  }
+  return next(error);
+}
 
 async function assignedReport(id, actor, expectedVersion) {
   if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
@@ -55,7 +65,7 @@ export async function uploadFieldReportPhoto(req, res, next) {
       try { await deleteFromCloudinary(uploaded.secure_url); } catch (cleanupError) { console.error('Failed to remove rejected report photo', cleanupError); }
       throw error;
     }
-  } catch (error) { next(error); }
+  } catch (error) { respondToPhotoError(error, res, next); }
 }
 
 export async function deleteFieldReportPhoto(req, res, next) {
@@ -70,5 +80,5 @@ export async function deleteFieldReportPhoto(req, res, next) {
       try { await deleteFromCloudinary(result.previous_url); } catch (error) { console.error('Report photo storage cleanup failed', error); }
     }
     res.json({ report: result.server_record });
-  } catch (error) { next(error); }
+  } catch (error) { respondToPhotoError(error, res, next); }
 }

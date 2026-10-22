@@ -1,372 +1,158 @@
-/**
- * clear-reports-and-clusters.mjs
- * 
- * Standalone script to cleanly and safely delete all reports, clusters,
- * cleanup tasks, dispatch plans, routes, and related operational entities
- * from the database, while strictly preserving user accounts, field crews,
- * system configurations, strikes, and system logs.
- * 
- * Usage:
- *   node scripts/clear-reports-and-clusters.mjs --dry-run
- *   node scripts/clear-reports-and-clusters.mjs --confirm
- *   node scripts/clear-reports-and-clusters.mjs --confirm --include-storage
- */
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { parseArgs } from 'node:util';
 
-import 'dotenv/config';
-import readline from 'node:readline';
-import { supabaseAdmin } from '../src/config/supabase.config.js';
-
-// Specific primary/filtering key column for tables that don't have an "id" column
-const TABLE_KEY_COLUMNS = {
-  dispatch_group_commits: 'dispatch_plan_id',
-  fc_operation_log: 'operation_id',
-};
-
-function getKeyColumn(table) {
-  return TABLE_KEY_COLUMNS[table] || 'id';
-}
-
-// Tables to be wiped (in safe child-to-parent deletion order)
-const TABLES_TO_CLEAR = [
-  // 1. Leaf and child event tables
-  'field_load_events',
-  'field_task_failure_events',
-  'task_report_outcomes',
-  'report_resolution_events',
-  'field_assignment_receipts',
-  'route_waypoints',
-  'dispatch_access_blocks',
-  'dispatch_plan_items',
-  'dispatch_group_commits',
-  
-  // 2. Planning and task coordination
-  'plan_generation_jobs',
-  'cleanup_tasks',
-  'crew_routes',
-  'dispatch_plans',
-  'optimization_runs',
-
-  // 3. Report-specific queues and logs
-  'manual_review_queue',
-  'notifications',
-  'audit_logs',
-
-  // 4. Primary entities
-  'reports',
-  'clusters',
-
-  // 5. Predictions and offline/sync telemetry
-  'hotspot_accuracy',
-  'hotspot_predictions',
-  'sweeper_audit_log',
-  'fc_operation_log',
-  'fc_conflict_audit',
-  'sync_conflicts',
+const ROOT = fileURLToPath(new URL('../', import.meta.url));
+const SQL = path.join(ROOT, 'scripts/clear-reports-and-clusters.sql');
+const TABLES = [
+  'field_load_events', 'field_task_failure_events', 'task_report_outcomes',
+  'report_resolution_events', 'field_assignment_receipts', 'route_waypoints',
+  'dispatch_access_blocks', 'dispatch_plan_items', 'dispatch_group_commits',
+  'plan_generation_jobs', 'cleanup_tasks', 'crew_routes', 'dispatch_plans',
+  'optimization_runs', 'manual_review_queue', 'notifications', 'audit_logs',
+  'reports', 'clusters', 'hotspot_accuracy', 'hotspot_predictions',
+  'sweeper_audit_log', 'fc_operation_log', 'fc_conflict_audit', 'sync_conflicts',
 ];
+const PROTECTED = ['profiles', 'field_crews', 'system_settings', 'system_logs', 'strikes',
+  'optimization_settings', 'optimization_templates', 'sweeper_configuration',
+  'work_time_configuration', 'email_verifications'];
+export { TABLES as PURGE_TABLES, PROTECTED as PROTECTED_TABLES };
+const BUCKETS = ['Report Evidence', 'Cleanup Task Photos', 'Report Cleanup'];
+const key = table => ({dispatch_group_commits:'dispatch_plan_id', fc_operation_log:'operation_id'})[table] || 'id';
 
-// Tables that MUST NEVER be deleted
-const PROTECTED_TABLES = [
-  'profiles',
-  'field_crews',
-  'system_settings',
-  'system_logs',
-  'strikes',
-  'optimization_settings',
-  'optimization_templates',
-  'sweeper_configuration',
-  'work_time_configuration',
-  'email_verifications',
-];
+// Account-only audits/notifications and strike reviews are outside the demo reset.
+function scope(query, table) {
+  if (['notifications', 'audit_logs'].includes(table)) return query.not('report_id', 'is', null);
+  if (table === 'manual_review_queue') return query.is('strike_id', null);
+  return query;
+}
+export async function assertEmpty(countRows, tables = TABLES) {
+  const failures = [];
+  for (const table of tables) {
+    const {count, error} = await countRows(table);
+    if (error || !Number.isInteger(count) || count !== 0) failures.push(`${table}: ${error || (count == null ? 'count unavailable' : `${count} rows remain`)}`);
+  }
+  if (failures.length) throw new Error(`Purge is incomplete:\n${failures.join('\n')}`);
+}
+export async function assertRestPurgeAllowed(countRows) {
+  const {count,error} = await countRows('audit_logs');
+  if (error || !Number.isInteger(count)) throw new Error(`Cannot check audit rows: ${error || 'count unavailable'}. Nothing was modified.`);
+  if (count) throw new Error(`Report-linked audit history requires the SQL demo reset to pause its immutability trigger. Nothing was modified. Run the WHOLE file as postgres:\n${SQL}`);
+}
 
-// Storage buckets associated with reports/tasks (cleaned only if --include-storage is provided)
-const REPORT_STORAGE_BUCKETS = [
-  'Report Evidence',
-  'Cleanup Task Photos',
-  'Report Cleanup'
-];
-
-async function getTableRowCount(tableName) {
-  const keyCol = getKeyColumn(tableName);
-  try {
-    const { count, error } = await supabaseAdmin
-      .from(tableName)
-      .select(keyCol, { count: 'exact', head: true })
-      .not(keyCol, 'is', null);
-
-    if (error) {
-      // Fallback for edge-cases or schema differences
-      const { count: fallbackCount, error: fallbackError } = await supabaseAdmin
-        .from(tableName)
-        .select('*', { count: 'exact', head: true });
-      if (fallbackError) {
-        return { count: null, error: fallbackError.message };
-      }
-      return { count: fallbackCount ?? 0, error: null };
+export async function listStoragePaths(bucket, prefix = '') {
+  const paths = [];
+  for (let offset = 0; ; offset += 1000) {
+    const {data, error} = await bucket.list(prefix, {limit:1000, offset, sortBy:{column:'name', order:'asc'}});
+    if (error) throw new Error(`List ${prefix || '/'}: ${error.message}`);
+    if (!Array.isArray(data)) throw new Error('Storage listing returned no result');
+    for (const item of data) {
+      const objectPath = prefix ? `${prefix}/${item.name}` : item.name;
+      if (item.id == null) paths.push(...await listStoragePaths(bucket, objectPath));
+      else paths.push(objectPath);
     }
-    return { count: count ?? 0, error: null };
-  } catch (err) {
-    return { count: null, error: err.message };
+    if (data.length < 1000) break;
   }
+  return paths;
 }
-
-async function printDatabaseSummary() {
-  console.log('\n======================================================');
-  console.log(' DATABASE PURGE AUDIT: REPORTS, CLUSTERS & RELATED');
-  console.log('======================================================\n');
-
-  console.log('--- TARGET TABLES TO PURGE ---');
-  let totalRowsToPurge = 0;
-  for (const table of TABLES_TO_CLEAR) {
-    const { count, error } = await getTableRowCount(table);
-    const countDisplay = error ? `[ERROR: ${error}]` : `${count} rows`;
-    console.log(`  - ${table.padEnd(28)}: ${countDisplay}`);
-    if (typeof count === 'number') {
-      totalRowsToPurge += count;
+export async function emptyStorageBuckets(db, names = BUCKETS) {
+  for (const name of names) {
+    const bucket = db.storage.from(name);
+    // Finish listing before deleting: offsets otherwise skip objects as pages shrink.
+    const paths = await listStoragePaths(bucket);
+    for (let i = 0; i < paths.length; i += 1000) {
+      const {error} = await bucket.remove(paths.slice(i, i + 1000));
+      if (error) throw new Error(`Remove ${name}: ${error.message}`);
     }
-  }
-  console.log(`\n  Total operational rows to delete: ~${totalRowsToPurge}`);
-
-  console.log('\n--- PROTECTED TABLES (WILL NOT BE MODIFIED) ---');
-  for (const table of PROTECTED_TABLES) {
-    const { count, error } = await getTableRowCount(table);
-    const countDisplay = error ? `[ERROR: ${error}]` : `${count} rows (PRESERVED)`;
-    console.log(`  * ${table.padEnd(28)}: ${countDisplay}`);
-  }
-  console.log('\n======================================================\n');
-}
-
-async function breakCircularForeignKeys() {
-  console.log('Step 1/3: Breaking circular and mutually-referencing foreign keys...');
-
-  // 1. Cancel active cleanup tasks first.
-  // The PostgreSQL trigger workflow_private.guard_report_claim prevents unlinking
-  // reports.cleanup_task_id if the task's status is not ('completed', 'cancelled').
-  const { error: errCancelTasks } = await supabaseAdmin
-    .from('cleanup_tasks')
-    .update({ status: 'cancelled' })
-    .not('id', 'is', null);
-  if (errCancelTasks && errCancelTasks.code !== 'PGRST116') {
-    console.warn('  Notice (cleanup_tasks cancel guard):', errCancelTasks.message);
-  }
-
-  // 2. Nullify reports -> cleanup_tasks, clusters, manual_review_queue
-  const { error: errReports } = await supabaseAdmin
-    .from('reports')
-    .update({ cleanup_task_id: null, cluster_id: null, manual_review_id: null })
-    .not('id', 'is', null);
-  if (errReports && errReports.code !== 'PGRST116') {
-    console.warn('  Notice (reports unlinking):', errReports.message);
-  }
-
-  // 3. Nullify cleanup_tasks -> crew_routes, source_plan_id, cluster_id
-  const { error: errTasks } = await supabaseAdmin
-    .from('cleanup_tasks')
-    .update({ crew_route_id: null, source_plan_id: null, cluster_id: null })
-    .not('id', 'is', null);
-  if (errTasks && errTasks.code !== 'PGRST116') {
-    console.warn('  Notice (cleanup_tasks unlinking):', errTasks.message);
-  }
-
-  // 4. Nullify dispatch_plans -> generation_job_id, optimization_run_id
-  const { error: errPlans } = await supabaseAdmin
-    .from('dispatch_plans')
-    .update({ generation_job_id: null, optimization_run_id: null })
-    .not('id', 'is', null);
-  if (errPlans && errPlans.code !== 'PGRST116') {
-    console.warn('  Notice (dispatch_plans unlinking):', errPlans.message);
-  }
-
-  // 5. Nullify plan_generation_jobs -> plan_id
-  const { error: errJobs } = await supabaseAdmin
-    .from('plan_generation_jobs')
-    .update({ plan_id: null })
-    .not('id', 'is', null);
-  if (errJobs && errJobs.code !== 'PGRST116') {
-    console.warn('  Notice (plan_generation_jobs unlinking):', errJobs.message);
-  }
-
-  // 6. Nullify manual_review_queue -> report_id
-  const { error: errReview } = await supabaseAdmin
-    .from('manual_review_queue')
-    .update({ report_id: null })
-    .not('id', 'is', null);
-  if (errReview && errReview.code !== 'PGRST116') {
-    console.warn('  Notice (manual_review_queue unlinking):', errReview.message);
-  }
-
-  console.log('  Circular foreign keys successfully unlinked.');
-}
-
-async function deleteTableRows(tableName) {
-  process.stdout.write(`  Deleting ${tableName.padEnd(28)}... `);
-  const keyCol = getKeyColumn(tableName);
-
-  let query = supabaseAdmin.from(tableName).delete();
-  query = query.not(keyCol, 'is', null);
-
-  const { error } = await query;
-  if (error && error.code !== 'PGRST116') {
-    if (tableName === 'dispatch_group_commits' && error.message.includes('immutable')) {
-      console.log('[TRIGGER PROTECTED]');
-      console.log('    -> PostgreSQL trigger "immutable_group_result" blocks REST deletion.');
-      return false;
-    }
-    if (tableName === 'dispatch_plans' && error.message.includes('dispatch_group_commits')) {
-      // Archive/discard the plans instead so they are inactive
-      const { error: discardError } = await supabaseAdmin
-        .from('dispatch_plans')
-        .update({ status: 'discarded' })
-        .not('id', 'is', null);
-      if (!discardError) {
-        console.log('[DISCARDED]');
-        console.log('    -> Plans marked as "discarded" due to immutable child commits.');
-        return true;
-      }
-    }
-    console.log(`[FAILED: ${error.message}]`);
-    return false;
-  }
-  console.log('[CLEARED]');
-  return true;
-}
-
-async function emptyStorageBuckets() {
-  console.log('\nCleaning up Supabase Storage buckets for reports & tasks...');
-  for (const bucketName of REPORT_STORAGE_BUCKETS) {
-    try {
-      const { data: files, error: listError } = await supabaseAdmin.storage.from(bucketName).list('', { limit: 1000 });
-      if (listError) {
-        console.warn(`  Failed to list bucket "${bucketName}":`, listError.message);
-        continue;
-      }
-
-      if (!files || files.length === 0) {
-        console.log(`  Bucket "${bucketName}" is already empty.`);
-        continue;
-      }
-
-      // Collect all file paths recursively
-      const pathsToDelete = [];
-      for (const item of files) {
-        if (item.id === null) {
-          // Folder: list contents
-          const { data: subFiles } = await supabaseAdmin.storage.from(bucketName).list(item.name, { limit: 1000 });
-          if (subFiles) {
-            for (const sub of subFiles) {
-              pathsToDelete.push(`${item.name}/${sub.name}`);
-            }
-          }
-        } else {
-          pathsToDelete.push(item.name);
-        }
-      }
-
-      if (pathsToDelete.length > 0) {
-        const { error: removeError } = await supabaseAdmin.storage.from(bucketName).remove(pathsToDelete);
-        if (removeError) {
-          console.warn(`  Error removing files from "${bucketName}":`, removeError.message);
-        } else {
-          console.log(`  Bucket "${bucketName}": removed ${pathsToDelete.length} files.`);
-        }
-      } else {
-        console.log(`  Bucket "${bucketName}" has no removable objects.`);
-      }
-    } catch (err) {
-      console.warn(`  Storage cleanup error for "${bucketName}":`, err.message);
-    }
+    const remaining = await listStoragePaths(bucket);
+    if (remaining.length) throw new Error(`${name}: ${remaining.length} storage objects remain`);
+    console.log(`${name}: verified empty (${paths.length} objects removed)`);
   }
 }
-
-async function promptConfirmation() {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    rl.question(
-      'Are you sure you want to permanently delete all reports, clusters, and related operational data? Type "DELETE" to confirm: ',
-      (answer) => {
-        rl.close();
-        resolve(answer.trim() === 'DELETE');
-      }
-    );
-  });
-}
-
 async function main() {
-  const isDryRun = process.argv.includes('--dry-run');
-  const isConfirmed = process.argv.includes('--confirm') || process.argv.includes('-y');
-  const includeStorage = process.argv.includes('--include-storage');
-
-  await printDatabaseSummary();
-
-  if (isDryRun) {
-    console.log('DRY RUN COMPLETE. No data was modified.');
-    console.log('To execute the purge, run:');
-    console.log('  node scripts/clear-reports-and-clusters.mjs --confirm\n');
-    process.exit(0);
+  const {values} = parseArgs({options:{
+    'dry-run':{type:'boolean'}, confirm:{type:'boolean',short:'y'},
+    'include-storage':{type:'boolean'}, 'storage-only':{type:'boolean'},
+    verify:{type:'boolean'}, help:{type:'boolean'},
+  }});
+  if (values.help) {
+    console.log('node scripts/clear-reports-and-clusters.mjs [--dry-run | --verify | --confirm] [--include-storage]\n'
+      + 'Use scripts/clear-reports-and-clusters.sql in Supabase SQL Editor for an atomic full purge.\n'
+      + '--storage-only --confirm deletes report bucket contents only after database emptiness is verified.');
+    return;
   }
-
-  if (!isConfirmed) {
-    const confirmed = await promptConfirmation();
-    if (!confirmed) {
-      console.log('\nOperation aborted. No changes were made.');
-      process.exit(0);
-    }
+  if (values['dry-run'] && (values.confirm || values.verify || values['storage-only'])) throw new Error('Choose --dry-run, --verify or --confirm');
+  if (values.verify && (values.confirm || values['storage-only'])) throw new Error('--verify is read-only; use it separately');
+  if (values['storage-only'] && !values.confirm) throw new Error('--storage-only requires --confirm');
+  const {config} = await import('dotenv');
+  config({path:path.join(ROOT,'.env'), quiet:true});
+  const {supabaseAdmin:db} = await import('../src/config/supabase.config.js');
+  const countRows = async table => {
+    const {count,error} = await scope(db.from(table).select('*',{count:'exact',head:true}),table);
+    return {count,error:error?.message};
+  };
+  const protectedCounts = new Map();
+  console.log(`Target: ${new URL(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL).host}`);
+  for (const table of TABLES) {
+    const {count,error} = await countRows(table);
+    if (error || !Number.isInteger(count)) throw new Error(`Cannot audit ${table}: ${error || 'count unavailable'}`);
+    console.log(`${table}: ${count} operational rows`);
   }
-
-  console.log('\nStarting database wipe...\n');
-
-  // Step 1: Unlink
-  await breakCircularForeignKeys();
-
-  // Step 2: Delete tables in order
-  console.log('\nStep 2/3: Deleting operational tables in topological order...');
-  for (const table of TABLES_TO_CLEAR) {
-    await deleteTableRows(table);
+  for (const table of PROTECTED) {
+    const {count,error} = await db.from(table).select('*',{count:'exact',head:true});
+    if (error || !Number.isInteger(count)) throw new Error(`Cannot audit protected table ${table}: ${error?.message || 'count unavailable'}`);
+    protectedCounts.set(table,count);
   }
-
-  // Step 3: Optional storage cleanup
-  if (includeStorage) {
-    await emptyStorageBuckets();
-  } else {
-    console.log('\n(Storage buckets untouched. Pass --include-storage to delete report images from Supabase Storage.)');
+  if (values.verify) {
+    await assertEmpty(countRows);
+    console.log('Verified: all targeted operational rows, including report-linked audit history, are gone. Account-only audits/notifications and strike reviews are retained.');
+    return;
   }
-
-  // Step 4: Verification
-  console.log('\nStep 3/3: Verifying database state post-purge...');
-  let hasLeak = false;
-  for (const table of TABLES_TO_CLEAR) {
-    const { count } = await getTableRowCount(table);
-    if (count > 0) {
-      console.error(`  [WARNING] Table ${table} still has ${count} rows!`);
-      hasLeak = true;
-    }
+  if (!values.confirm) {
+    console.log(`Read-only audit complete. The NON-PRODUCTION SQL reset deletes reports and their audit history:\n${SQL}`);
+    return;
   }
-
-  if (!hasLeak) {
-    console.log('  [PASS] All target tables are completely clean (0 rows).');
-  } else {
-    const { count: dgcCount } = await getTableRowCount('dispatch_group_commits');
-    if (dgcCount > 0) {
-      console.log('\n  ℹ️  Note: dispatch_group_commits has a PostgreSQL trigger "immutable_group_result"');
-      console.log('     that blocks deletion over PostgREST. The parent dispatch_plans were marked as "discarded".');
-      console.log('     To physically wipe dispatch_group_commits down to 0 rows:');
-      console.log('     Run scripts/clear-reports-and-clusters.sql in the Supabase SQL Editor.');
-    }
+  await assertRestPurgeAllowed(countRows);
+  if (!values['storage-only']) {
+    const {count,error} = await countRows('dispatch_group_commits');
+    if (error || !Number.isInteger(count)) throw new Error(`Cannot check immutable commits: ${error || 'count unavailable'}. Nothing was modified.`);
+    if (count) throw new Error(`Immutable dispatch commits prevent a complete REST purge. Nothing was modified. Run the WHOLE file in Supabase SQL Editor as postgres:\n${SQL}\nThen run this utility with --verify, or --storage-only --confirm to also remove Supabase report images.`);
+    const mutate = async (label, query) => {
+      const {error} = await query;
+      if (error) throw new Error(`${label}: ${error.message}. REST cleanup stopped; previous requests may have committed. Use the transactional SQL purge: ${SQL}`);
+    };
+    await mutate('Cancel tasks', db.from('cleanup_tasks').update({status:'cancelled'}).not('status','in','(completed,cancelled)'));
+    const unlinks = [
+      ['reports',{cleanup_task_id:null,cluster_id:null,manual_review_id:null}],
+      ['cleanup_tasks',{crew_route_id:null,source_plan_id:null,cluster_id:null}],
+      ['dispatch_plans',{generation_job_id:null,optimization_run_id:null}],
+      ['plan_generation_jobs',{plan_id:null}], ['manual_review_queue',{report_id:null}],
+    ];
+    for (const [table,fields] of unlinks) await mutate(`Unlink ${table}`,db.from(table).update(fields).not(key(table),'is',null));
+    for (const table of TABLES) await mutate(`Delete ${table}`,scope(db.from(table).delete().not(key(table),'is',null),table));
   }
-
-  console.log('\nChecking protected tables integrity:');
-  for (const table of PROTECTED_TABLES) {
-    const { count } = await getTableRowCount(table);
-    console.log(`  * ${table.padEnd(28)}: ${count} rows intact`);
+  await assertEmpty(countRows);
+  for (const [table,before] of protectedCounts) {
+    const {count,error} = await db.from(table).select('*',{count:'exact',head:true});
+    if (error || count !== before) throw new Error(`Protected table ${table} changed or could not be verified; no success claimed`);
   }
-
-  console.log('\nDone! The database is now ready for fresh population.\n');
+  if (values['include-storage'] || values['storage-only']) {
+    // Missing legacy buckets are optional; listing failures for existing buckets are fatal.
+    const {data:buckets,error} = await db.storage.listBuckets();
+    if (error) throw new Error(`Cannot audit storage buckets: ${error.message}`);
+    await emptyStorageBuckets(db, BUCKETS.filter(name=>buckets.some(b=>b.name===name)));
+    const {readFile,writeFile} = await import('node:fs/promises');
+    const manifestPath=path.join(ROOT,'.private/citizen-demo-media.json');
+    try {
+      const manifest=JSON.parse(await readFile(manifestPath,'utf8'));
+      for (const entry of Object.values(manifest)) delete entry.after;
+      await writeFile(manifestPath,JSON.stringify(manifest,null,2));
+    } catch(error) { if(error.code!=='ENOENT') throw error; }
+  }
+  console.log('Verified: operational database rows are empty and protected table counts are unchanged.');
+  if (!values['include-storage'] && !values['storage-only']) console.log('Supabase Storage images were retained. Use --storage-only --confirm to remove them.');
+  console.log('Cloudinary assets are separate and are not deleted by this Supabase utility.');
 }
-
-main().catch((err) => {
-  console.error('\nFatal error during clear operation:', err);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
+  main().catch(error=>{console.error(`Purge failed: ${error.message}`);process.exitCode=1;});
+}
