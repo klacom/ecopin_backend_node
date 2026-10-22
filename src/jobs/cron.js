@@ -1,16 +1,33 @@
 import cron from 'node-cron';
 import { slaDetectionService } from '../modules/sweeper/services/sla-detection.service.js';
 
-// Run SLA detection daily at 02:00 AM or as specified in environment
-const cronSchedule = process.env.SLA_DETECTION_CRON || '0 2 * * *';
+let scheduledTask = null;
+let running = false;
 
-cron.schedule(cronSchedule, async () => {
-  console.log('Running scheduled SLA detection...');
-  try {
-    const result = await slaDetectionService.detectAndFlagOutliers();
-    console.log(`SLA detection completed: ${result.flaggedCount} reports flagged`);
-  } catch (error) {
-    console.error('SLA detection failed:', error);
-    // Send alert to admin
-  }
-});
+export function startSlaSchedule({ env = process.env, scheduler = cron, service = slaDetectionService, logger = console } = {}) {
+  if (env.REPORT_LIFECYCLE_ENABLED !== 'true') return null;
+  if (scheduledTask) return scheduledTask;
+  const schedule = env.SLA_DETECTION_CRON || '0 * * * *';
+  const timezone = env.SLA_DETECTION_TIMEZONE || 'Asia/Manila';
+  if (!scheduler.validate(schedule)) throw new Error('Invalid SLA_DETECTION_CRON');
+  scheduledTask = scheduler.schedule(schedule, async () => {
+    if (running) return;
+    running = true;
+    const startedAt = new Date().toISOString();
+    try {
+      const result = await service.detectAndFlagOutliers();
+      logger.info('[ReportLifecycle] completed', { startedAt, completedAt: new Date().toISOString(), ...result });
+    } catch (error) {
+      logger.error('[ReportLifecycle] failed', { startedAt, error: error.message });
+    } finally {
+      running = false;
+    }
+  }, { timezone });
+  logger.info('[ReportLifecycle] registered', { schedule, timezone });
+  return scheduledTask;
+}
+
+export function stopSlaSchedule() {
+  scheduledTask?.stop();
+  scheduledTask = null;
+}

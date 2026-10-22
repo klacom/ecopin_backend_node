@@ -4,3 +4,36 @@ node_modules/
 # environment files
 env
 .env
+.env.*
+!.env.example
+
+# keys and certificates
+*.pem
+*.key
+*.cert
+*.id_rsa
+
+# Persistent private cleanup jobs
+.private/
+
+# logs and diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# test coverage and artifacts
+coverage/
+.nyc_output/
+tests/*
+!tests/spatial-forward-forecast.test.js
+!tests/spatial-forecast-http.test.js
+!tests/report-evidence-batching.test.js
+!tests/fleet-policy.test.js
+!tests/sql/
+tests/sql/*
+!tests/sql/batch-evidence-access-regression.sql
+
+# Graphify knowledge graph outputs
+graphify-out/
+

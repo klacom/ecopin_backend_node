@@ -1,32 +1,43 @@
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '../config/supabase.config.js';
 import { transporter } from '../config/email.config.js';
 import { SMTP_FROM_NAME, SMTP_USER, APP_BASE_URL, EMAIL_VERIFICATION_EXPIRY_HOURS } from '../config/index.js';
 
 /**
- * Generates a verification token and stores it in the database
+ * Generates a verification token; only its digest crosses the database boundary.
  * @param {string} userId - The Supabase user ID
- * @returns {string} - The generated verification token
+ * @returns {Promise<string|null>} - Token, or null when issuance is deferred.
  */
-export const generateVerificationToken = async (userId) => {
+export const generateVerificationToken = async (userId, email = null) => {
     const token = uuidv4();
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + EMAIL_VERIFICATION_EXPIRY_HOURS);
+    const tokenDigest = createHash('sha256').update(token).digest('hex');
+    const rpcParams = {
+        p_user_id: userId,
+        p_token_digest: tokenDigest,
+        p_ttl_hours: EMAIL_VERIFICATION_EXPIRY_HOURS
+    };
+    if (email) {
+        rpcParams.p_email = email.trim().toLowerCase();
+    }
+    let { data, error } = await supabaseAdmin.rpc('issue_email_verification', rpcParams);
 
-    const { error } = await supabaseAdmin
-        .from('email_verifications')
-        .insert({
-            user_id: userId,
-            token: token,
-            expires_at: expiresAt.toISOString(),
-        });
+    if (error && rpcParams.p_email && (error.code === 'PGRST202' || error.message?.includes('p_email'))) {
+        // Backward-compatible fallback for unmigrated live database
+        delete rpcParams.p_email;
+        const retryResult = await supabaseAdmin.rpc('issue_email_verification', rpcParams);
+        data = retryResult.data;
+        error = retryResult.error;
+    }
 
     if (error) {
-        console.error('Error storing verification token:', error);
+        console.error('Error storing verification token', {
+            code: /^[0-9A-Z]{5}$/.test(error?.code ?? '') ? error.code : 'UNKNOWN'
+        });
         throw new Error('Failed to generate verification token');
     }
 
-    return token;
+    return data ? token : null;
 };
 
 /**
@@ -37,7 +48,7 @@ export const generateVerificationToken = async (userId) => {
 export const sendVerificationEmail = async (toEmail, token) => {
     console.log(`[Email Service] Preparing to send email to ${toEmail}`);
     const verificationUrl = `${APP_BASE_URL}/api/auth/verify-email?token=${token}`;
-    console.log(`[Email Service] Verification URL created: ${verificationUrl}`);
+    console.log('[Email Service] Verification link prepared');
     
     // EcoPin Branded HTML Email Template
     const htmlContent = `
@@ -151,7 +162,9 @@ export const sendVerificationEmail = async (toEmail, token) => {
         const info = await transporter.sendMail(mailOptions);
         console.log(`[Email Service] ✅ Verification email sent successfully! MessageId: ${info.messageId}`);
     } catch (error) {
-        console.error('[Email Service] ❌ Error caught inside sendVerificationEmail:', error);
-        throw new Error(`Failed to send verification email via SMTP: ${error.message}`);
+        console.error('[Email Service] Verification email delivery failed', {
+            code: /^[A-Z0-9_]{1,24}$/.test(error?.code ?? '') ? error.code : 'UNKNOWN'
+        });
+        throw new Error('Failed to send verification email via SMTP');
     }
 };

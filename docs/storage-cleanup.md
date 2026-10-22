@@ -1,0 +1,11 @@
+# Persistent Storage cleanup
+
+Photo replacement, deletion, and uncertain upload attachment failures persist a cleanup intent before trying to remove bytes. The worker checks the current task's before/after references before deletion. Referenced objects are retained. Read failures postpone deletion rather than assuming the object is orphaned.
+
+The journal defaults to `.private/storage-cleanup/` relative to the backend repository. Keep this directory on persistent storage across restarts; configure `STORAGE_CLEANUP_DIRECTORY` when running in a container or moving the checkout. The directory is ignored by Git. It contains object identifiers and sanitized error codes, never signed links or image bytes.
+
+The worker starts with the backend, polls every minute, and serializes local drains. File locks prevent independent workers from processing the same job concurrently. Locks older than five minutes are reclaimed on a later poll. Failures retry with exponential backoff, at most five attempts. Terminal jobs remain as JSON records with `status: failed` and are logged by identifier.
+
+To retry a terminal job: diagnose its sanitized error, stop workers, retain the record for audit, set its status to pending, attempts to zero, and availableAt to the current Unix epoch in milliseconds; restart workers. The worker rechecks references before removal. Never substitute a different bucket/path into a job. Back up the journal with the backend's private operational files.
+
+Verification: `npm test -- --runInBand --no-cache --coverage=false tests/storage-cleanup.queue.test.js tests/cleanup-task-photo.test.js tests/server-scheduler-startup.test.js`. The queue tests include process restart, concurrent workers, reference preservation, retry limits, and prevention of starvation by failed jobs. Full backend: 30 suites / 211 tests passed on 12 October 2026. Actual Supabase Storage byte integration passed eight assertions via `node scripts/test-real-storage-cleanup.mjs`: referenced and replacement images retained with exact bytes, detached images removed, deletion failure persisted, and a new worker process resumed the job and removed bytes. The script uses only the protected localhost recovery stack and deletes its disposable task and objects. Evidence: `C:/dev/App-Builders-Hackathon/.ecopin-optimization/REAL_STORAGE_CLEANUP_VERIFICATION.json`.

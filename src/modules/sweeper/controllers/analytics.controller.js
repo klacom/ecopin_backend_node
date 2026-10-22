@@ -33,13 +33,9 @@ export const exportMetrics = async (req, res) => {
       const assignedCrew = Array.isArray(task.assigned_crew_ids) ? task.assigned_crew_ids.join(';') : '';
       const clusterCount = Array.isArray(task.clusters) ? task.clusters.length : 0;
       
-      // Since we don't have exact travel/work time split easily accessible here without joining crew_routes
-      // we'll use a 40/60 estimated split of the total duration for the export.
-      const travelTime = Math.floor((task.estimated_duration_minutes || 0) * 0.4); 
-      const workTime = Math.floor((task.estimated_duration_minutes || 0) * 0.6);
-      
-      const breachDurations = JSON.stringify([]); // Placeholder for breach durations
-      
+      const workTime = task.estimated_work_minutes ?? '';
+      const travelTime = task.estimated_work_minutes == null ? '' : Math.max(0,(task.estimated_duration_minutes ?? 0)-task.estimated_work_minutes);
+      const breachDurations = ''; // Not collected by this export; never fabricate an empty measurement.
       csv += `${task.id},${task.created_at},${assignedCrew},${clusterCount},${travelTime},${workTime},${task.completed_at || ''},"${breachDurations.replace(/"/g, '""')}"\n`;
     }
 

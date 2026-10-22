@@ -11,13 +11,22 @@ export const CLASSIFIER_SERVICE_URL = process.env.CLASSIFIER_SERVICE_URL || 'htt
 export const USE_AWS_CLASSIFIER = process.env.USE_AWS_CLASSIFIER === 'true';
 export const AWS_CLASSIFIER_URL = process.env.AWS_CLASSIFIER_URL;
 export const MOBILE_REDIRECT_URL = process.env.MOBILE_REDIRECT_URL || 'ecopin://auth/callback';
-export const NEXT_PUBLIC_SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-export const SUPABASE_SERVICE_ROLE_KEY = process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY;
-export const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+export const NEXT_PUBLIC_SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+export const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY;
+export const SUPABASE_SERVICE_ROLE_KEY = SUPABASE_SECRET_KEY; // Backward-compatibility alias
+export const SUPABASE_ANON_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+export const SUPABASE_PUBLISHABLE_KEY = SUPABASE_ANON_KEY; // Modern publishable alias
 export const JWT_SECRET = process.env.JWT_SECRET;
 export const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
-export const RATE_LIMIT_WINDOW_MS = process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000;
-export const RATE_LIMIT_MAX_REQUESTS = process.env.RATE_LIMIT_MAX_REQUESTS || 100;
+export const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || (15 * 60 * 1000), 10);
+export const RATE_LIMIT_MAX_REQUESTS = parseInt(
+    process.env.RATE_LIMIT_MAX_REQUESTS || (NODE_ENV === 'production' ? '150' : '2500'),
+    10
+);
+export const OPS_RATE_LIMIT_MAX_REQUESTS = parseInt(
+    process.env.OPS_RATE_LIMIT_MAX_REQUESTS || (NODE_ENV === 'production' ? '600' : '5000'),
+    10
+);
 export const MIN_PASSWORD_LENGTH = 8;
 
 export const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';

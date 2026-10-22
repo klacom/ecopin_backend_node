@@ -7,7 +7,7 @@ export const assignTask = async (req, res, next) => {
     // Fetch task details
     const { data: task, error: fetchError } = await supabase
       .from('cleanup_tasks')
-      .select('*, clusters(is_outlier)')
+      .select('*')
       .eq('id', taskId)
       .single();
       
@@ -15,17 +15,17 @@ export const assignTask = async (req, res, next) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    const isOutlier = task.clusters?.is_outlier || task.is_outlier;
+    const isSweeper = task.dispatch_kind === 'sweeper';
     
     // For sweeper tasks, validate route time against shift duration
-    if (isOutlier) {
+    if (isSweeper) {
       const { data: config } = await supabase
-        .from('sweeper_config')
-        .select('value')
-        .eq('key', 'shift_duration_hours')
+        .from('sweeper_configuration')
+        .select('parameter_value')
+        .eq('parameter_name', 'shift_duration')
         .single();
         
-      const shiftDuration = config?.value || 8; // Default 8 hours
+      const shiftDuration = Number(config?.parameter_value?.hours) || 8;
       const shiftDurationMins = shiftDuration * 60;
       
       // Assume total_route_time is stored in estimated_duration_min or calculated elsewhere
@@ -43,7 +43,7 @@ export const assignTask = async (req, res, next) => {
       .from('cleanup_tasks')
       .update({
         assigned_crew_ids: [crewId],
-        status: 'Assigned',
+        status: 'pending',
         assigned_at: new Date().toISOString(),
         assigned_by: req.user?.id || null
       })

@@ -1,16 +1,23 @@
+export {getPublicReports,getReportById,getReportsByClusterId,getStaffReports} from './report-read.controller.js';
+import {readReportForViewer,canReadReportEvidence} from '../services/report-access.service.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
 import cloudinary from '../config/cloudinary.config.js';
-import { classifyImage, mapClassifierToValidation } from '../services/classifierClient.service.js';
+import { classifyImage, mapClassifierToValidation, ALLOWED_CLASSIFIER_CATEGORIES } from '../services/classifierClient.service.js';
 import { extractVideoFrames } from '../services/videoFrameExtractor.service.js';
 import { classifyVideoFrames } from '../services/videoFrameClassifier.service.js';
 import { aggregateVideoValidation } from '../services/videoFrameAggregator.service.js';
 import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, VALID_VIDEO_MIME_TYPES, VALID_VIDEO_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE, REPORT_VIDEO_FILE_SIZE, REPORT_PHOTOS_STORAGE_PATH, BEFORE_AFTER_PHOTO_FILE_SIZE, CLASSIFIER_SERVICE_URL } from '../config/index.js';
 import { clusterReports } from '../modules/clustering/index.js';
 import { uploadFromBuffer, deleteFromCloudinary, uploadVideoFromBuffer } from '../services/cloudinary.service.js';
-import { calculateSeverity } from '../services/severity.service.js';
+import { calculateSeverity, getSeverityLevel } from '../services/severity.service.js';
+import { ROLE_GROUPS } from '../constants/roles.js';
+import { classifyReportHazard } from '../services/hazard-classifier.service.js';
 import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
+import { notifyOfficers } from '../services/officer-notification.service.js';
+import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
+import { checkUserReportQuota, recordReportSubmission } from '../services/reportQuota.service.js';
 
 // Helper function to determine issue type from text
 const determineIssueTypeFromText = (title, description) => {
@@ -80,6 +87,29 @@ export const addReportNote = async (req, res, next) => {
     const { note } = req.body;
 
     try {
+        const { data: currentReport, error: reportFetchError } = await supabase
+            .from('reports')
+            .select('cleanup_task_id')
+            .eq('id', id)
+            .maybeSingle();
+
+        if (reportFetchError || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        if (req.user.role !== 'admin' && currentReport.cleanup_task_id) {
+            const { data: task } = await supabase
+                .from('cleanup_tasks')
+                .select('lgu_user_id, created_by')
+                .eq('id', currentReport.cleanup_task_id)
+                .maybeSingle();
+            if (task && (task.lgu_user_id || task.created_by)) {
+                const isTaskOwner = task.lgu_user_id === req.user.id || task.created_by === req.user.id;
+                if (!isTaskOwner) {
+                    return res.status(403).json({ message: 'Access denied: report belongs to a task under another LGU jurisdiction' });
+                }
+            }
+        }
 
         const { data, error } = await supabase
             .from('reports')
@@ -114,6 +144,8 @@ export const uploadReportPhoto = async (req, res, next) => {
     if (!req.file) {
         return res.status(400).json({ message: 'No file uploaded' });
     }
+
+    validateUploadedPhotoBuffer(req.file.buffer, req.file.mimetype);
 
     try {
         // ── Phase 5: server-side photo deduplication ────────────────────────
@@ -280,7 +312,17 @@ export const uploadEvidence = async (req, res, next) => {
     const { reportId } = req.params;
     const { latitude, longitude } = req.body;
 
-    console.log('Uploading evidence for report:', reportId);
+    try {
+        const access = await readReportForViewer(supabase, reportId, req.user);
+        if (!access) return res.status(404).json({ message: 'Report not found' });
+
+        const isOwner = access.report?.user_id === req.user?.id;
+        const isStaff = ['admin', 'officer', 'field_crew'].includes(req.user?.role);
+        if (!isOwner && !isStaff) {
+            return res.status(403).json({ message: 'You are not authorized to upload evidence for this report' });
+        }
+
+        console.log('Uploading evidence for report:', reportId);
     console.log('Files received:', req.files);
 
     // Check for media files (image or video)
@@ -353,7 +395,7 @@ export const uploadEvidence = async (req, res, next) => {
     }
 
     // For images, proceed with existing upload logic
-    try {
+    // Process image evidence
         // Extract EXIF metadata from image
         let imageMetadata = {
             latitude: null,
@@ -436,37 +478,37 @@ export const uploadEvidence = async (req, res, next) => {
     }
 };
 
+// Server-side in-memory cache for report evidence to prevent Cloudinary rate limits and bottlenecking
+const evidenceServerCache = new Map(); // reportId -> { data, expiresAt }
+const EVIDENCE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+export const invalidateEvidenceCache = (reportId) => {
+    if (reportId) {
+        evidenceServerCache.delete(String(reportId));
+    }
+};
+
+export const clearEvidenceServerCache = () => {
+    evidenceServerCache.clear();
+};
+
 export const getReportEvidence = async (req, res, next) => {
     const { reportId } = req.params;
-    const user_id = req.user?.id;
-    const user_role = req.user?.role || 'public';
 
     try {
         console.log('Fetching evidence for report:', reportId);
 
-        // Security: Check if user has access to this report
-        const { data: report, error: reportError } = await supabase
-            .from('reports_view')
-            .select('user_id, validation_status')
-            .eq('id', reportId)
-            .single();
-
-        if (reportError || !report) {
-            return res.status(404).json({
-                message: 'Report not found',
-                error: reportError?.message || 'Report does not exist'
-            });
+        // 1. ALWAYS perform authorization check first before checking or returning cached evidence (QA-03)
+        const access = await readReportForViewer(supabase, reportId, req.user);
+        if (!access) return res.status(404).json({ message: 'Report not found' });
+        if (!canReadReportEvidence(access)) {
+            return res.status(403).json({ message: 'Evidence requires authorized report access' });
         }
 
-        // Security: Ownership check - users can only access evidence for their own reports or validated public reports
-        const isOwner = user_id && report.user_id === user_id;
-        const isApprovedPublic = ['approved', 'automatically_valid'].includes(report.validation_status);
-        const isOfficerOrAdmin = ['admin', 'officer', 'field_crew'].includes(user_role);
-
-        if (!isOwner && !isApprovedPublic && !isOfficerOrAdmin) {
-            return res.status(403).json({
-                message: 'Access denied: You can only access evidence for your own reports or validated public reports'
-            });
+        // 2. Check in-memory cache ONLY AFTER viewer is verified authorized
+        const cached = evidenceServerCache.get(String(reportId));
+        if (cached && cached.expiresAt > Date.now()) {
+            return res.status(200).json(cached.data);
         }
 
         const prefix = `report_evidence/${reportId}`;
@@ -514,11 +556,206 @@ export const getReportEvidence = async (req, res, next) => {
             };
         });
 
+        evidenceServerCache.set(String(reportId), {
+            data: evidence,
+            expiresAt: Date.now() + EVIDENCE_CACHE_TTL
+        });
+
         console.log('Returning evidence count:', evidence.length);
         res.status(200).json(evidence);
     } catch (error) {
         console.error('Error in getReportEvidence:', error);
         next(error);
+    }
+};
+
+export const getBatchReportEvidence = async (req, res, next) => {
+    const strict = req.body?.strict === true;
+    const rawIds = Array.isArray(req.body?.reportIds) ? req.body.reportIds : [];
+    if (!rawIds.length) {
+        return res.status(200).json({});
+    }
+
+    const reportIds = [...new Set(rawIds)].slice(0, 100);
+    const results = {};
+
+    try {
+        // 1. ALWAYS determine permissions for all requested IDs FIRST (QA-03: prevent cross-user cached evidence leak)
+        const authorizedIds = new Set();
+        if (req.user?.id) {
+            const validIds = reportIds.filter(id => typeof id === 'string' &&
+                /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
+            if (validIds.length) {
+                const { data, error } = await supabase.rpc('read_authorized_report_evidence_ids', {
+                    actor: req.user.id,
+                    report_ids: validIds
+                });
+                if (error) throw error;
+                const allowedIds = new Set((data || []).map(row => row.id));
+                for (const id of validIds) {
+                    if (allowedIds.has(id.toLowerCase())) authorizedIds.add(id);
+                }
+            }
+        } else {
+            // Public viewer: ONE SINGLE query to Supabase using .in()
+            const { data: publicReports, error: pubError } = await supabase
+                .from('public_reports')
+                .select('id, location_precision')
+                .in('id', reportIds);
+
+            if (!pubError && Array.isArray(publicReports)) {
+                for (const row of publicReports) {
+                    if (row.location_precision === 'exact') authorizedIds.add(row.id);
+                }
+            }
+        }
+
+        // Set empty array for unauthorized report IDs
+        for (const id of reportIds) {
+            if (!authorizedIds.has(id)) {
+                results[id] = [];
+            }
+        }
+
+        // 2. For authorized IDs: check in-memory cache first
+        const missingAuthorizedIds = [];
+        for (const id of authorizedIds) {
+            const cached = evidenceServerCache.get(String(id));
+            if (cached && cached.expiresAt > Date.now()) {
+                results[id] = cached.data;
+            } else {
+                missingAuthorizedIds.push(id);
+            }
+        }
+
+        if (missingAuthorizedIds.length === 0) {
+            return res.status(200).json(results);
+        }
+
+        // 3. Fetch evidence from Cloudinary only for authorized IDs not in cache
+        await Promise.all(missingAuthorizedIds.map(async (reportId) => {
+            try {
+                const prefix = `report_evidence/${reportId}`;
+                const [imageResources, videoResources] = await Promise.all([
+                    cloudinary.api.resources({
+                        type: 'upload',
+                        prefix,
+                        max_results: 100,
+                        resource_type: 'image'
+                    }).catch(error => { if (strict) throw error; return { resources: [] }; }),
+                    cloudinary.api.resources({
+                        type: 'upload',
+                        prefix,
+                        max_results: 100,
+                        resource_type: 'video'
+                    }).catch(error => { if (strict) throw error; return { resources: [] }; })
+                ]);
+
+                const allResources = [...(imageResources.resources || []), ...(videoResources.resources || [])];
+                const mapped = allResources.map(resource => {
+                    const fullPublicId = resource.public_id;
+                    const parts = fullPublicId.split('/');
+                    const fileName = parts[parts.length - 1] + (resource.format ? '.' + resource.format : '');
+                    return {
+                        name: fileName,
+                        url: resource.secure_url,
+                        size: resource.bytes,
+                        public_id: resource.public_id,
+                        createdAt: resource.created_at,
+                        resource_type: resource.resource_type
+                    };
+                });
+
+                evidenceServerCache.set(String(reportId), {
+                    data: mapped,
+                    expiresAt: Date.now() + EVIDENCE_CACHE_TTL
+                });
+
+                results[reportId] = mapped;
+            } catch (err) {
+                console.error(`Error fetching batch evidence for report ${reportId}:`, err.message);
+                if (strict) throw err;
+                results[reportId] = [];
+            }
+        }));
+
+        res.status(200).json(results);
+    } catch (error) {
+        console.error('Error in getBatchReportEvidence:', error);
+        next(error);
+    }
+};
+
+export const getBatchReportPublishers = async (req, res, next) => {
+    const rawIds = Array.isArray(req.body?.reportIds) ? req.body.reportIds : [];
+    if (!rawIds.length) {
+        return res.status(200).json({});
+    }
+
+    const reportIds = [...new Set(rawIds)].slice(0, 200);
+    const results = {};
+
+    try {
+        const { data, error } = await supabase
+            .from('reports')
+            .select('id, user_id, profiles(id, full_name, data_consent)')
+            .in('id', reportIds);
+
+        if (error) throw error;
+
+        for (const row of (data || [])) {
+            const consent = row.profiles?.data_consent === true;
+            results[row.id] = {
+                publisher_name: consent && row.profiles?.full_name ? row.profiles.full_name : 'Anonymous',
+                has_consent: consent
+            };
+        }
+
+        // Fill remaining with Anonymous
+        for (const id of reportIds) {
+            if (!results[id]) {
+                results[id] = { publisher_name: 'Anonymous', has_consent: false };
+            }
+        }
+
+        res.status(200).json(results);
+    } catch (error) {
+        console.error('Error in getBatchReportPublishers:', error);
+        next(error);
+    }
+};
+
+export const validateReportImage = async (req, res, next) => {
+    try {
+        const imageFile = req.file || (req.files && req.files['image'] ? req.files['image'][0] : null);
+        if (!imageFile) {
+            return res.status(400).json({ error: 'No image file provided for validation' });
+        }
+        const classifierResult = await classifyImage(
+            imageFile.buffer,
+            imageFile.originalname,
+            imageFile.mimetype
+        );
+        if (!classifierResult.ok) {
+            return res.status(502).json({ error: classifierResult.error || 'Classifier service unavailable' });
+        }
+        const mapped = mapClassifierToValidation(classifierResult);
+        const checkAvailable = ['VALID', 'INVALID'].includes(classifierResult.predicted_class) &&
+            Number.isFinite(classifierResult.confidence) && classifierResult.confidence >= 0 && classifierResult.confidence <= 1 &&
+            (!classifierResult.decision || ['APPROVED', 'REJECTED', 'MANUAL_REVIEW'].includes(classifierResult.decision));
+        return res.json({
+            ok: true,
+            predicted_class: classifierResult.predicted_class,
+            confidence: classifierResult.confidence,
+            decision: classifierResult.decision,
+            validation_status: mapped.status,
+            predicted_category: classifierResult.predicted_category,
+            check_available: checkAvailable,
+            is_valid: checkAvailable && mapped.status === VALIDATION_STATUS.APPROVED
+        });
+    } catch (err) {
+        console.error('[validateReportImage] Error:', err);
+        return res.status(500).json({ error: err.message });
     }
 };
 
@@ -531,15 +768,36 @@ export const createReport = async (req, res, next) => {
         on_private_property,
         scale_level,
         obstruction_level,
+        photo_lat,
+        photo_lng,
+        photo_accuracy,
+        photo_captured_at,
+        photo_source,
+        is_mocked,
     } = req.body;
     const user_id = req.user.id;
 
-    // Check for media files (image or video)
+    // Check for media files (image, clean_image for ML, or video)
     const imageFiles = req.files && req.files['image'] ? req.files['image'] : [];
+    const cleanImageFiles = req.files && req.files['clean_image'] ? req.files['clean_image'] : [];
     const videoFile = req.files && req.files['video'] ? req.files['video'][0] : null;
 
+    const reviewFlag = req.body.request_manual_review;
+    if (reviewFlag !== undefined && ![true, false, 'true', 'false'].includes(reviewFlag)) {
+        return res.status(400).json({ message: 'request_manual_review must be a boolean.' });
+    }
+    const requestManualReview = reviewFlag === true || reviewFlag === 'true';
+    const reviewReason = req.body.manual_review_reason;
+    if (requestManualReview && (typeof reviewReason !== 'string' || !reviewReason.trim() || reviewReason.length > 3000)) {
+        return res.status(400).json({ message: 'Describe the environmental concern for manual review (up to 3000 characters).' });
+    }
+    if (requestManualReview && imageFiles.length === 0) {
+        return res.status(400).json({ message: 'Attach a photo to request manual review.' });
+    }
+    const manualReviewNotes = requestManualReview ? `Reporter requested manual review: ${reviewReason.trim()}` : null;
+
     // Require at least one media type
-    if (imageFiles.length === 0 && !videoFile) {
+    if (imageFiles.length === 0 && cleanImageFiles.length === 0 && !videoFile) {
         return res.status(400).json({
             message: 'Please provide either an image or a video.'
         });
@@ -584,6 +842,87 @@ export const createReport = async (req, res, next) => {
         // Determine initial issue type from text to avoid pending state
         const initialIssueType = determineIssueTypeFromText(title, description);
 
+        // Photo location verification
+        let locationVerificationStatus = 'unverified_gallery';
+        let photoDistanceMeters = null;
+
+        let parsedPhotoLat = photo_lat ? parseFloat(photo_lat) : null;
+        let parsedPhotoLng = photo_lng ? parseFloat(photo_lng) : null;
+        const parsedPhotoAccuracy = photo_accuracy ? parseFloat(photo_accuracy) : 15;
+        const mockDetected = is_mocked === 'true' || is_mocked === true;
+
+        // If no explicit photo GPS was provided from device, check EXIF tags from first image
+        if ((parsedPhotoLat == null || parsedPhotoLng == null) && imageFiles.length > 0) {
+            try {
+                const parser = exifParser.create(imageFiles[0].buffer);
+                const exifResult = parser.parse();
+                if (exifResult.tags?.GPSLatitude && exifResult.tags?.GPSLongitude) {
+                    const toDecimal = (degrees, minutes, seconds, direction) => {
+                        let decimal = degrees + (minutes / 60) + (seconds / 3600);
+                        if (direction === 'S' || direction === 'W') decimal = -decimal;
+                        return decimal;
+                    };
+                    parsedPhotoLat = toDecimal(
+                        exifResult.tags.GPSLatitude[0],
+                        exifResult.tags.GPSLatitude[1],
+                        exifResult.tags.GPSLatitude[2],
+                        exifResult.tags.GPSLatitudeRef
+                    );
+                    parsedPhotoLng = toDecimal(
+                        exifResult.tags.GPSLongitude[0],
+                        exifResult.tags.GPSLongitude[1],
+                        exifResult.tags.GPSLongitude[2],
+                        exifResult.tags.GPSLongitudeRef
+                    );
+                }
+            } catch (exifErr) {
+                // Ignore EXIF parsing error
+            }
+        }
+
+        if (parsedPhotoLat != null && parsedPhotoLng != null && !isNaN(parsedPhotoLat) && !isNaN(parsedPhotoLng)) {
+            // Haversine formula
+            const R = 6371e3; // Earth radius in meters
+            const reportLat = parseFloat(latitude);
+            const reportLng = parseFloat(longitude);
+            const phi1 = (reportLat * Math.PI) / 180;
+            const phi2 = (parsedPhotoLat * Math.PI) / 180;
+            const deltaPhi = ((parsedPhotoLat - reportLat) * Math.PI) / 180;
+            const deltaLambda = ((parsedPhotoLng - reportLng) * Math.PI) / 180;
+
+            const a =
+                Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+                Math.cos(phi1) * Math.cos(phi2) *
+                Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            photoDistanceMeters = Math.round(R * c);
+
+            if (mockDetected) {
+                locationVerificationStatus = 'location_mismatch';
+            } else if (photoDistanceMeters <= (75 + parsedPhotoAccuracy)) {
+                locationVerificationStatus = 'verified_on_site';
+            } else if (photoDistanceMeters <= 300) {
+                locationVerificationStatus = 'nearby_approximate';
+            } else {
+                locationVerificationStatus = 'location_mismatch';
+            }
+        } else if (photo_source === 'camera') {
+            locationVerificationStatus = 'nearby_approximate';
+        } else {
+            locationVerificationStatus = 'unverified_gallery';
+        }
+
+        let sanitizedPhotoCapturedAt = null;
+        if (photo_captured_at) {
+            const parsed = new Date(photo_captured_at);
+            if (!isNaN(parsed.getTime())) {
+                sanitizedPhotoCapturedAt = parsed.toISOString();
+            }
+        }
+        if (!sanitizedPhotoCapturedAt) {
+            sanitizedPhotoCapturedAt = new Date().toISOString();
+        }
+
         const { data: report, error } = await supabase
             .from('reports')
             .insert({
@@ -592,13 +931,23 @@ export const createReport = async (req, res, next) => {
                 description,
                 // Set initial issue type based on text analysis, will be updated by AI validation
                 issue_type: initialIssueType,
+                ...classifyReportHazard({ issue_type: initialIssueType, title, description }),
                 location: point,
                 on_private_property: onPrivateProperty,
                 property_owner_consent_status: propertyOwnerConsentStatus,
                 status: onPrivateProperty ? 'pending_owner_consent' : 'unresolved',
                 validation_status: validationStatus,
+                ...(requestManualReview ? { notes: manualReviewNotes } : {}),
                 scale_level: scale_level || 'medium',
-                obstruction_level: obstruction_level || 'none'
+                obstruction_level: obstruction_level || 'none',
+                photo_lat: parsedPhotoLat,
+                photo_lng: parsedPhotoLng,
+                photo_accuracy: parsedPhotoAccuracy,
+                photo_captured_at: sanitizedPhotoCapturedAt,
+                photo_source: photo_source || (imageFiles.length > 0 ? 'unknown' : null),
+                is_mocked: mockDetected,
+                location_verification_status: locationVerificationStatus,
+                photo_distance_meters: photoDistanceMeters,
             })
             .select()
             .single();
@@ -610,10 +959,26 @@ export const createReport = async (req, res, next) => {
             });
         }
 
+        // Record submission in Redis cache if available
+        recordReportSubmission(user_id, report.id, report.created_at);
+
+        const remainingQuota = req.reportQuota ? Math.max(0, req.reportQuota.remaining - 1) : null;
+        const quotaWarning = req.reportQuota && remainingQuota <= 2 && remainingQuota > 0
+            ? `You have ${remainingQuota} report${remainingQuota === 1 ? '' : 's'} remaining for today.`
+            : null;
+
         // Send response to user immediately
         res.status(201).json({
             message: 'Report submitted successfully! AI validation is in progress.',
-            report: report
+            report: report,
+            quota: req.reportQuota ? {
+                limit: req.reportQuota.limit,
+                used: req.reportQuota.used + 1,
+                remaining: remainingQuota,
+                resetAt: req.reportQuota.resetAt,
+                countdown: req.reportQuota.countdown,
+                warning: quotaWarning
+            } : undefined
         });
 
         // Send pending validation notification
@@ -631,6 +996,8 @@ export const createReport = async (req, res, next) => {
                 let finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
                 let finalRejectionReason = null;
                 let finalIssueType = null; // Will be set from AI classification
+                let finalScaleLevel = report.scale_level || null;
+                let finalObstructionLevel = report.obstruction_level || null;
 
                 // Upload media to Cloudinary FIRST (independent of AI validation)
                 console.log(`[Evidence] Starting media upload for report ${report.id}`);
@@ -713,7 +1080,7 @@ export const createReport = async (req, res, next) => {
                         if (imageFiles.length === 0) {
                             finalValidationStatus = aggregated.validation_status;
                             finalRejectionReason = aggregated.rejection_reason;
-                            if (aggregated.dominant_class) {
+                            if (aggregated.dominant_class && ALLOWED_CLASSIFIER_CATEGORIES.includes(aggregated.dominant_class)) {
                                 finalIssueType = aggregated.dominant_class;
                             } else {
                                 // Fallback if video classification didn't provide a class
@@ -722,7 +1089,7 @@ export const createReport = async (req, res, next) => {
                             }
                         } else {
                             // For combined reports, still use video dominant class if available
-                            if (aggregated.dominant_class && !finalIssueType) {
+                            if (aggregated.dominant_class && ALLOWED_CLASSIFIER_CATEGORIES.includes(aggregated.dominant_class) && !finalIssueType) {
                                 finalIssueType = aggregated.dominant_class;
                                 console.log(`[VIDEO-PIPELINE] Using video dominant_class for combined report: ${finalIssueType}`);
                             }
@@ -744,17 +1111,18 @@ export const createReport = async (req, res, next) => {
                     }
                 }
 
-                // Run EfficientNet classifier on all images in background if images are present
-                if (imageFiles.length > 0) {
+                // Run classifier on clean images if provided to prevent watermark interference, otherwise imageFiles
+                const classificationImages = cleanImageFiles.length > 0 ? cleanImageFiles : imageFiles;
+                if (classificationImages.length > 0) {
                     console.log(`[Classifier] ══════════════════════════════════════════`);
                     console.log(`[Classifier] Starting classification for report ${report.id}`);
-                    console.log(`[Classifier]   images to classify : ${imageFiles.length}`);
+                    console.log(`[Classifier]   images to classify : ${classificationImages.length} (clean=${cleanImageFiles.length > 0})`);
                     console.log(`[Classifier]   target             : ${CLASSIFIER_SERVICE_URL}/classify`);
                     console.log(`[Classifier] ══════════════════════════════════════════`);
 
                     const imageResults = [];
-                    for (let i = 0; i < imageFiles.length; i++) {
-                        const imageFile = imageFiles[i];
+                    for (let i = 0; i < classificationImages.length; i++) {
+                        const imageFile = classificationImages[i];
                         const sizeKB = (imageFile.buffer.byteLength / 1024).toFixed(1);
                         console.log(`[Classifier] ──────────────────────────────────────`);
                         console.log(`[Classifier] → SEND image [${i + 1}/${imageFiles.length}]`);
@@ -792,8 +1160,10 @@ export const createReport = async (req, res, next) => {
                             manual_review: 0
                         };
 
-                        // Tally category votes from non-rejected images.
+                        // Tally category, scale & obstruction votes from non-rejected images.
                         const categoryCounts = {};
+                        const scaleCounts = {};
+                        const obstructionCounts = {};
 
                         for (const result of imageResults) {
                             const mapped = mapClassifierToValidation(result);
@@ -805,6 +1175,20 @@ export const createReport = async (req, res, next) => {
                             if (mapped.predicted_category) {
                                 categoryCounts[mapped.predicted_category] =
                                     (categoryCounts[mapped.predicted_category] || 0) + 1;
+                            }
+
+                            // Accumulate scale votes (weighted by confidence if available)
+                            if (mapped.predicted_scale) {
+                                const weight = mapped.scale_confidence ?? 1.0;
+                                scaleCounts[mapped.predicted_scale] =
+                                    (scaleCounts[mapped.predicted_scale] || 0) + weight;
+                            }
+
+                            // Accumulate obstruction votes (weighted by confidence if available)
+                            if (mapped.predicted_obstruction) {
+                                const weight = mapped.obstruction_confidence ?? 1.0;
+                                obstructionCounts[mapped.predicted_obstruction] =
+                                    (obstructionCounts[mapped.predicted_obstruction] || 0) + weight;
                             }
                         }
 
@@ -821,7 +1205,10 @@ export const createReport = async (req, res, next) => {
                             finalRejectionReason = 'Mixed or unclear image validation results.';
                         }
 
-                        // Pick the majority-voted category (only when not fully rejected).
+                        finalScaleLevel = report.scale_level || finalScaleLevel;
+                        finalObstructionLevel = report.obstruction_level || finalObstructionLevel;
+
+                        // Pick majority-voted category, scale & obstruction (only when not fully rejected).
                         if (finalValidationStatus !== VALIDATION_STATUS.REJECTED) {
                             const categoryEntries = Object.entries(categoryCounts);
                             if (categoryEntries.length > 0) {
@@ -830,7 +1217,6 @@ export const createReport = async (req, res, next) => {
                                 console.log(`[Classifier] Majority category: ${finalIssueType} (counts: ${JSON.stringify(categoryCounts)})`);
                             } else {
                                 console.log(`[Classifier] No category votes collected — trying fallback`);
-                                // If no category votes but validation succeeded, try to use the first image's category
                                 if (imageResults.length > 0 && imageResults[0].predicted_category) {
                                     finalIssueType = imageResults[0].predicted_category;
                                     console.log(`[Classifier] Using first image's category as fallback: ${finalIssueType}`);
@@ -838,8 +1224,22 @@ export const createReport = async (req, res, next) => {
                                     console.log(`[Classifier] No AI category available, will use text-based fallback`);
                                 }
                             }
+
+                            const scaleEntries = Object.entries(scaleCounts);
+                            if (scaleEntries.length > 0) {
+                                scaleEntries.sort((a, b) => b[1] - a[1]);
+                                finalScaleLevel = scaleEntries[0][0];
+                                console.log(`[Classifier] Predicted scale: ${finalScaleLevel} (weights: ${JSON.stringify(scaleCounts)})`);
+                            }
+
+                            const obstructionEntries = Object.entries(obstructionCounts);
+                            if (obstructionEntries.length > 0) {
+                                obstructionEntries.sort((a, b) => b[1] - a[1]);
+                                finalObstructionLevel = obstructionEntries[0][0];
+                                console.log(`[Classifier] Predicted obstruction: ${finalObstructionLevel} (weights: ${JSON.stringify(obstructionCounts)})`);
+                            }
                         } else {
-                            console.log(`[Classifier] Report rejected — skipping category assignment`);
+                            console.log(`[Classifier] Report rejected — skipping category, scale, and obstruction assignment`);
                         }
 
                         console.log(`[Classifier] ══════════════════════════════════════════`);
@@ -870,6 +1270,12 @@ export const createReport = async (req, res, next) => {
                     }
                 }
 
+                // A citizen appeal can request officer review, never automatic approval.
+                if (requestManualReview) {
+                    finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
+                    finalRejectionReason = manualReviewNotes;
+                }
+
                 // Final database update with combined validation status
                 console.log(`[DATABASE-UPDATE] START report=${report.id}, status=${finalValidationStatus}, issue_type=${finalIssueType}`);
 
@@ -877,22 +1283,41 @@ export const createReport = async (req, res, next) => {
                     validation_status: finalValidationStatus,
                     updated_at: new Date().toISOString(),
                 };
+                if (requestManualReview) updatePayload.notes = finalRejectionReason;
 
                 // Always set issue_type - use AI category if available, otherwise fallback
-                if (finalIssueType && finalIssueType !== 'pending') {
+                if (finalIssueType && finalIssueType !== 'pending' && ALLOWED_CLASSIFIER_CATEGORIES.includes(finalIssueType)) {
                     updatePayload.issue_type = finalIssueType;
                     console.log(`[DATABASE-UPDATE] Using AI-determined issue_type: ${finalIssueType}`);
                 } else {
                     // Fallback: try to determine issue type from title/description if AI failed
                     console.log(`[DATABASE-UPDATE] No valid AI category determined, using fallback for issue_type`);
-                    updatePayload.issue_type = determineIssueTypeFromText(title, description);
+                    const fallbackType = determineIssueTypeFromText(title, description);
+                    updatePayload.issue_type = ALLOWED_CLASSIFIER_CATEGORIES.includes(fallbackType) ? fallbackType : 'waste';
                     console.log(`[DATABASE-UPDATE] Fallback issue_type: ${updatePayload.issue_type}`);
+                }
+
+                // Automated scale assignment from ML model
+                if (finalScaleLevel) {
+                    updatePayload.scale_level = finalScaleLevel;
+                    console.log(`[DATABASE-UPDATE] Using AI-determined scale_level: ${finalScaleLevel}`);
+                }
+
+                // Automated obstruction assignment from ML model
+                if (finalObstructionLevel) {
+                    updatePayload.obstruction_level = finalObstructionLevel;
+                    console.log(`[DATABASE-UPDATE] Using AI-determined obstruction_level: ${finalObstructionLevel}`);
                 }
 
                 // Severity calculation for approved reports
                 if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
                     try {
-                        const reportForSeverity = { ...report, issue_type: updatePayload.issue_type };
+                        const reportForSeverity = {
+                            ...report,
+                            issue_type: updatePayload.issue_type,
+                            scale_level: updatePayload.scale_level || report.scale_level || 'medium',
+                            obstruction_level: updatePayload.obstruction_level || report.obstruction_level || 'none'
+                        };
                         const severityResult = await calculateSeverity(reportForSeverity);
                         updatePayload.severity_score = severityResult.severityScore;
                         updatePayload.severity_level = severityResult.severityLevel;
@@ -903,11 +1328,10 @@ export const createReport = async (req, res, next) => {
                     }
                 }
 
-                // Record the rejection timestamp when the AI rejects the report.
+                // Record rejection reason in notes for schema compatibility
                 if (finalValidationStatus === VALIDATION_STATUS.REJECTED) {
-                    updatePayload.rejected_at = new Date().toISOString();
                     if (finalRejectionReason) {
-                        updatePayload.rejection_reason = finalRejectionReason;
+                        updatePayload.notes = finalRejectionReason;
                     }
                 }
 
@@ -923,16 +1347,35 @@ export const createReport = async (req, res, next) => {
                     updatePayload.issue_type = 'waste';
                 }
 
+                Object.assign(updatePayload, classifyReportHazard({
+                    issue_type: updatePayload.issue_type, title, description, notes: report.notes,
+                }));
+
                 console.log(`[DATABASE-UPDATE] Final payload: ${JSON.stringify(updatePayload)}`);
 
-                const { error: dbError } = await supabase
+                let { error: dbError } = await supabase
                     .from('reports')
                     .update(updatePayload)
                     .eq('id', report.id);
 
                 if (dbError) {
-                    console.error(`[DATABASE-UPDATE] FAILED report=${report.id}, error=${dbError.message}`);
-                    throw new Error(`Database update failed: ${dbError.message}`);
+                    console.error(`[DATABASE-UPDATE] Primary update failed for report=${report.id}, error=${dbError.message}. Retrying with safe core payload...`);
+                    // Resilient fallback: ensure validation_status and issue_type are updated even if extended columns differ
+                    const safePayload = {
+                        validation_status: finalValidationStatus,
+                        issue_type: updatePayload.issue_type || 'waste',
+                        notes: finalRejectionReason || updatePayload.notes || null,
+                        updated_at: new Date().toISOString()
+                    };
+                    const { error: retryError } = await supabase
+                        .from('reports')
+                        .update(safePayload)
+                        .eq('id', report.id);
+
+                    if (retryError) {
+                        console.error(`[DATABASE-UPDATE] FAILED safe retry report=${report.id}, error=${retryError.message}`);
+                        throw new Error(`Database update failed: ${retryError.message}`);
+                    }
                 } else {
                     console.log(`[DATABASE-UPDATE] SUCCESS report=${report.id}`);
                 }
@@ -962,11 +1405,43 @@ export const createReport = async (req, res, next) => {
                         'Report Under Review',
                         'Your report has been flagged for manual review.'
                     ).catch(err => console.error('Failed to send manual review notification:', err));
+
+                    // Notify officers that a report requires manual review
+                    notifyOfficers({
+                        reportId: report.id,
+                        type: 'pending_validation',
+                        title: 'Report Flagged for Manual Review',
+                        body: `Report "${report.title || 'Untitled'}" requires manual review (${finalRejectionReason || 'unclear AI validation'}).`
+                    }).catch(err => console.error('Failed to notify officers for manual review:', err));
                 }
-                // Trigger clustering
-                await clusterReports();
+
+                // Notify officers of newly approved incoming reports
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
+                    notifyOfficers({
+                        reportId: report.id,
+                        type: 'approved',
+                        title: 'New Validated Report',
+                        body: `New report "${report.title || 'Untitled'}" has been validated and added to the queue.`
+                    }).catch(err => console.error('Failed to notify officers for approved report:', err));
+                }
+                // Clustering failures must not overwrite an already valid AI decision.
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
+                    await clusterReports().catch(err => console.error('Approved report clustering failed:', err));
+                }
             } catch (err) {
                 console.error('Error in background tasks:', err);
+                try {
+                    await supabase
+                        .from('reports')
+                        .update({
+                            validation_status: VALIDATION_STATUS.MANUAL_REVIEW,
+                            notes: `AI validation background task encountered an error: ${err.message}`,
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', report.id);
+                } catch (fallbackErr) {
+                    console.error('Failed to update report to manual_review fallback:', fallbackErr);
+                }
             }
         })();
     } catch (error) {
@@ -975,7 +1450,11 @@ export const createReport = async (req, res, next) => {
 };
 
 export const getMyReports = async (req, res, next) => {
-    const user_id = req.user.id;
+    const user_id = req.user?.id;
+
+    if (!user_id) {
+        return res.status(401).json({ message: 'User not authenticated' });
+    }
 
     try {
         const { data, error } = await supabase
@@ -991,86 +1470,13 @@ export const getMyReports = async (req, res, next) => {
             });
         }
 
-        res.status(200).json(data);
+        res.status(200).json(data || []);
     } catch (error) {
         next(error);
     }
 };
 
-export const getPublicReports = async (req, res, next) => {
-    try {
-        const { data, error } = await supabase
-            .from('reports_view')
-            .select('*');
 
-        if (error) {
-            return res.status(400).json({
-                message: 'Failed to fetch public reports from view',
-                error: error.message
-            });
-        }
-
-        // Filter out rejected reports and reports with denied consent
-        const filteredData = (data || []).filter(report =>
-            report.validation_status !== 'rejected' &&
-            !(report.on_private_property && report.property_owner_consent_status === 'denied')
-        );
-
-        res.status(200).json(filteredData);
-    } catch (error) {
-        next(error);
-    }
-};
-
-export const getReportById = async (req, res, next) => {
-    const { id } = req.params;
-    const user_id = req.user.id;
-    const user_role = req.user.role || 'citizen';
-
-    try {
-        const { data: report, error: reportError } = await supabase
-            .from('reports_view')
-            .select('*, profiles(id, full_name, data_consent)')
-            .eq('id', id)
-            .single();
-
-        if (reportError) {
-            return res.status(404).json({
-                message: 'Report not found',
-                error: reportError.message
-            });
-        }
-
-        // Security: Ownership check - users can only access their own reports or approved public reports
-        const isOwner = report.user_id === user_id;
-        const isApprovedPublic = report.validation_status === 'approved';
-        const isOfficerOrAdmin = ['admin', 'officer', 'field_crew'].includes(user_role);
-
-        if (!isOwner && !isApprovedPublic && !isOfficerOrAdmin) {
-            return res.status(403).json({
-                message: 'Access denied: You can only access your own reports or approved public reports'
-            });
-        }
-
-        // Fetch response logs (activity logs and agency responses)
-        const { data: responseLogs, error: logsError } = await supabase
-            .from('audit_logs')
-            .select('*, profiles(full_name)')
-            .eq('report_id', id)
-            .order('created_at', { ascending: false });
-
-        if (logsError) {
-            console.error('Error fetching response logs:', logsError);
-        }
-
-        res.status(200).json({
-            ...report,
-            response_logs: responseLogs || []
-        });
-    } catch (error) {
-        next(error);
-    }
-};
 
 export const updateReportStatus = async (req, res, next) => {
     const { id } = req.params;
@@ -1078,12 +1484,92 @@ export const updateReportStatus = async (req, res, next) => {
     const user_id = req.user.id;
 
     try {
-        // Get current status for audit log
-        const { data: currentReport } = await supabase
+        // Get current status and photos for verification
+        const { data: currentReport, error: reportFetchError } = await supabase
             .from('reports')
-            .select('status')
+            .select('status, before_photo_url, after_photo_url, issue_type, cleanup_task_id')
             .eq('id', id)
             .single();
+
+        if (reportFetchError || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        if (req.user.role !== 'admin' && currentReport.cleanup_task_id) {
+            const { data: task } = await supabase
+                .from('cleanup_tasks')
+                .select('lgu_user_id, created_by')
+                .eq('id', currentReport.cleanup_task_id)
+                .maybeSingle();
+            if (task && (task.lgu_user_id || task.created_by)) {
+                const isTaskOwner = task.lgu_user_id === user_id || task.created_by === user_id;
+                if (!isTaskOwner) {
+                    return res.status(403).json({ message: 'Access denied: report belongs to a task under another LGU jurisdiction' });
+                }
+            }
+        }
+
+        if (status === 'resolved' || status === 'waiting_for_feedback') {
+            const isScouting = currentReport?.issue_type === 'scouting' || currentReport?.issue_type === 'acknowledge_only';
+            if (!isScouting && (!currentReport?.before_photo_url || !currentReport?.after_photo_url)) {
+                return res.status(400).json({
+                    message: 'Before and after photos are required before resolving this report.'
+                });
+            }
+        }
+
+        // Monotonic transition enforcement
+        const currentStatus = (currentReport.status || 'unresolved').toLowerCase();
+        const targetStatus = (status || '').toLowerCase();
+
+        // Idempotent duplicate check
+        if (currentStatus === targetStatus) {
+            return res.status(200).json({
+                message: `Report is already ${status}`,
+                report: currentReport
+            });
+        }
+
+        const allowedTransitions = {
+            'unresolved': ['acknowledged'],
+            'submitted': ['acknowledged'],
+            'pending': ['acknowledged'],
+            'new': ['acknowledged'],
+            'open': ['acknowledged'],
+            'acknowledged': ['responded', 'in_progress'],
+            'responded': ['resolved', 'waiting_for_feedback'],
+            'in_progress': ['resolved', 'waiting_for_feedback'],
+            'waiting_for_feedback': ['closed', 'resolved'],
+            'resolved': ['closed'],
+            'closed': [],
+            'rejected': []
+        };
+
+        const isDeskOps = ['admin', 'officer'].includes(req.user.role);
+        const isTerminalOrAdminAction = isDeskOps && ['closed', 'rejected'].includes(targetStatus);
+
+        const validNextStatuses = allowedTransitions[currentStatus] || [];
+        if (!validNextStatuses.includes(targetStatus) && !isTerminalOrAdminAction) {
+            const statusOrder = ['unresolved', 'acknowledged', 'responded', 'resolved', 'closed'];
+            const currentIndex = statusOrder.indexOf(currentStatus);
+            const targetIndex = statusOrder.indexOf(targetStatus);
+
+            let reason = `Invalid status transition from "${currentReport.status}" to "${status}".`;
+            if (currentIndex !== -1 && targetIndex !== -1) {
+                if (targetIndex < currentIndex) {
+                    reason = `Status cannot move backwards from "${currentReport.status}" to "${status}".`;
+                } else if (targetIndex > currentIndex + 1) {
+                    reason = `Reports per task must move monotonically one status to the next. Current status is "${currentReport.status}", expected next is "${validNextStatuses.join(' or ')}".`;
+                }
+            }
+
+            return res.status(409).json({
+                message: reason,
+                current_status: currentReport.status,
+                attempted_status: status,
+                valid_next_statuses: validNextStatuses
+            });
+        }
 
         const { data, error } = await supabase
             .from('reports')
@@ -1113,31 +1599,62 @@ export const updateReportStatus = async (req, res, next) => {
 
 export const updateReportValidation = async (req, res, next) => {
     const { id } = req.params;
-    const { validation_status } = req.body;
+    const { validation_status, rejection_reason, severity_score } = req.body;
     const user_id = req.user.id;
+    const hasSeverity = severity_score !== undefined;
+
+    if (hasSeverity && !ROLE_GROUPS.DESK_OPS.includes(req.user.role)) {
+        return res.status(403).json({ message: 'Only officers and administrators can assign severity.' });
+    }
+    if (hasSeverity && (!Number.isInteger(severity_score) || severity_score < 0 || severity_score > 100)) {
+        return res.status(400).json({ message: 'Choose a whole-number severity score from 0 to 100.' });
+    }
+    if (hasSeverity && validation_status !== 'approved') {
+        return res.status(400).json({ message: 'Severity can only be assigned when approving an accepted report.' });
+    }
 
     try {
         // Get current validation status for audit log
-        const { data: currentReport } = await supabase
+        const { data: currentReport, error: readError } = await supabase
             .from('reports')
-            .select('validation_status, user_id')
+            .select('validation_status, user_id, severity_score, notes')
             .eq('id', id)
             .single();
+        if (readError) throw readError;
+        if (!currentReport) return res.status(404).json({ message: 'Report not found.' });
+        if (validation_status === 'approved' && !hasSeverity &&
+            (currentReport.validation_status === 'manual_review' || currentReport.severity_score == null)) {
+            return res.status(400).json({ message: 'Assign a severity score from 0 to 100 before approving this report.' });
+        }
 
         const updateData = {
             validation_status,
             updated_at: new Date().toISOString()
         };
+        if (hasSeverity) {
+            updateData.severity_score = severity_score;
+            updateData.severity_level = getSeverityLevel(severity_score);
+            updateData.severity_factors = {
+                source: 'officer_manual', assigned_by: user_id, assigned_at: updateData.updated_at,
+                explanation: 'Severity assigned by an officer during report review.',
+            };
+        }
 
-        // Record the rejection timestamp when an officer manually rejects a report.
+        // Record rejection reason in notes for schema compatibility
         if (validation_status === 'rejected') {
-            updateData.rejected_at = new Date().toISOString();
+            if (rejection_reason !== undefined) {
+                updateData.notes = typeof currentReport.notes === 'string' &&
+                    currentReport.notes.startsWith('Reporter requested manual review:')
+                    ? `${currentReport.notes}\n\nOfficer rejection reason: ${rejection_reason}`
+                    : rejection_reason;
+            }
         }
 
         const { data, error } = await supabase
             .from('reports')
             .update(updateData)
             .eq('id', id)
+            .eq('validation_status', currentReport.validation_status)
             .select()
             .single();
 
@@ -1150,12 +1667,15 @@ export const updateReportValidation = async (req, res, next) => {
 
         // Create notification for the report owner if rejected
         if (validation_status === 'rejected' && currentReport?.user_id) {
+            const message = rejection_reason
+                ? `Your report has been rejected: ${rejection_reason}`
+                : 'Your report has been rejected.';
             await createNotification(
                 currentReport.user_id,
                 id,
                 'rejected',
                 'Report Rejected',
-                'Your report has been rejected.'
+                message
             );
         }
 
@@ -1168,34 +1688,6 @@ export const updateReportValidation = async (req, res, next) => {
     }
 };
 
-export const getReportsByClusterId = async (req, res, next) => {
-    const { clusterId } = req.params;
-
-    try {
-        const { data, error } = await supabase
-            .from('reports_view')
-            .select('*')
-            .eq('cluster_id', clusterId)
-            .order('created_at', { ascending: false });
-
-        if (error) {
-            return res.status(400).json({
-                message: 'Failed to fetch reports by cluster',
-                error: error.message
-            });
-        }
-
-        // Filter out rejected and denied reports
-        const filteredData = (data || []).filter(report =>
-            report.validation_status !== 'rejected' &&
-            !(report.on_private_property && report.property_owner_consent_status === 'denied')
-        );
-
-        res.status(200).json(filteredData);
-    } catch (error) {
-        next(error);
-    }
-};
 
 export const batchCompleteReportsByCluster = async (req, res, next) => {
     const { clusterId } = req.params;
@@ -1293,6 +1785,13 @@ export const updateLifecycleStage = async (req, res, next) => {
             .select('stage, user_id, status')
             .eq('id', id)
             .single();
+
+        if (currentReport && currentReport.stage === stage) {
+            return res.status(200).json({
+                message: `Report stage is already ${stage}`,
+                report: currentReport
+            });
+        }
 
         // Determine status based on lifecycle stage
         let status = currentReport?.status || 'unresolved';
@@ -1402,6 +1901,30 @@ export const logAgencyResponse = async (req, res, next) => {
     const user_id = req.user.id;
 
     try {
+        const { data: currentReport, error: reportFetchError } = await supabase
+            .from('reports')
+            .select('cleanup_task_id')
+            .eq('id', id)
+            .maybeSingle();
+
+        if (reportFetchError || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        if (req.user.role !== 'admin' && currentReport.cleanup_task_id) {
+            const { data: task } = await supabase
+                .from('cleanup_tasks')
+                .select('lgu_user_id, created_by')
+                .eq('id', currentReport.cleanup_task_id)
+                .maybeSingle();
+            if (task && (task.lgu_user_id || task.created_by)) {
+                const isTaskOwner = task.lgu_user_id === user_id || task.created_by === user_id;
+                if (!isTaskOwner) {
+                    return res.status(403).json({ message: 'Access denied: report belongs to a task under another LGU jurisdiction' });
+                }
+            }
+        }
+
         const { data, error } = await supabase
             .from('audit_logs')
             .insert({
@@ -1443,6 +1966,18 @@ export const updateReportDetails = async (req, res, next) => {
         if (landmark !== undefined) updateData.landmark = landmark;
         if (city !== undefined) updateData.city = city;
         if (district !== undefined) updateData.district = district;
+
+        if (description !== undefined || issue_type !== undefined) {
+            const { data: current, error: readError } = await supabase.from('reports')
+                .select('title,description,notes,issue_type').eq('id', id).single();
+            if (readError) return res.status(400).json({ message: 'Failed to read report for hazard review', error: readError.message });
+            Object.assign(updateData, classifyReportHazard({
+                title: current.title,
+                description: description ?? current.description,
+                notes: current.notes,
+                issue_type: issue_type ?? current.issue_type,
+            }));
+        }
 
         const { data, error } = await supabase
             .from('reports')
@@ -1538,11 +2073,36 @@ export const lguResolveReport = async (req, res, next) => {
     const user_id = req.user.id;
 
     try {
-        const { data: currentReport } = await supabase
+        const { data: currentReport, error: reportFetchError } = await supabase
             .from('reports')
-            .select('user_id')
+            .select('user_id, before_photo_url, after_photo_url, issue_type, cleanup_task_id')
             .eq('id', id)
             .single();
+
+        if (reportFetchError || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        if (req.user.role !== 'admin' && currentReport.cleanup_task_id) {
+            const { data: task } = await supabase
+                .from('cleanup_tasks')
+                .select('lgu_user_id, created_by')
+                .eq('id', currentReport.cleanup_task_id)
+                .maybeSingle();
+            if (task && (task.lgu_user_id || task.created_by)) {
+                const isTaskOwner = task.lgu_user_id === user_id || task.created_by === user_id;
+                if (!isTaskOwner) {
+                    return res.status(403).json({ message: 'Access denied: report belongs to a task under another LGU jurisdiction' });
+                }
+            }
+        }
+
+        const isScouting = currentReport?.issue_type === 'scouting' || currentReport?.issue_type === 'acknowledge_only';
+        if (!isScouting && (!currentReport?.before_photo_url || !currentReport?.after_photo_url)) {
+            return res.status(400).json({
+                message: 'Before and after photos are required before resolving this report.'
+            });
+        }
 
         const { data, error } = await supabase
             .from('reports')
@@ -1630,6 +2190,130 @@ export const citizenCloseReport = async (req, res, next) => {
         res.status(200).json({
             message: 'Report closed successfully',
             report: data
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Citizen withdraws/deletes their own report before triage/dispatch
+export const citizenWithdrawReport = async (req, res, next) => {
+    const { id } = req.params;
+    const user_id = req.user?.id;
+    const user_role = req.user?.role;
+
+    if (!user_id) {
+        return res.status(401).json({ message: 'User not authenticated' });
+    }
+
+    try {
+        const { data: currentReport, error: fetchError } = await supabase
+            .from('reports')
+            .select('id, user_id, status, stage, lifecycle_state, cleanup_task_id, cluster_id')
+            .eq('id', id)
+            .maybeSingle();
+
+        if (fetchError || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        const isOwner = currentReport.user_id === user_id;
+        const isAdmin = user_role === 'admin';
+
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({
+                message: 'You are not authorized to delete this report'
+            });
+        }
+
+        // Check specific operational constraints to provide clear, actionable feedback
+        if (currentReport.cleanup_task_id) {
+            return res.status(409).json({
+                message: 'Cannot withdraw report: This report has already been assigned to an active cleanup task.'
+            });
+        }
+
+        if (currentReport.cluster_id) {
+            const { data: clusterTask } = await supabase
+                .from('cleanup_tasks')
+                .select('id, status')
+                .eq('cluster_id', currentReport.cluster_id)
+                .not('status', 'in', '("completed","cancelled")')
+                .maybeSingle();
+
+            if (clusterTask) {
+                return res.status(409).json({
+                    message: 'Cannot withdraw report: This report is part of a cluster currently assigned to an active cleanup task.'
+                });
+            }
+        }
+
+        if (currentReport.lifecycle_state === 'dispatched' || currentReport.stage === 'assigned') {
+            return res.status(409).json({
+                message: 'Cannot withdraw report: This report has already been dispatched to a field crew.'
+            });
+        }
+
+        if (currentReport.status === 'in_progress' || currentReport.stage === 'in_progress') {
+            return res.status(409).json({
+                message: 'Cannot withdraw report: Cleanup operations are currently in progress for this report.'
+            });
+        }
+
+        if (currentReport.status === 'resolved' || currentReport.stage === 'resolved') {
+            return res.status(409).json({
+                message: 'Cannot withdraw report: This report has already been resolved.'
+            });
+        }
+
+        if (currentReport.status === 'closed' || currentReport.stage === 'closed' || currentReport.lifecycle_state === 'closed') {
+            return res.status(409).json({
+                message: 'Cannot withdraw report: This report has already been closed.'
+            });
+        }
+
+        // Clean up linked auxiliary queue items, access blocks, and notifications before deletion
+        await supabase
+            .from('manual_review_queue')
+            .delete()
+            .eq('report_id', id);
+
+        await supabase
+            .from('notifications')
+            .delete()
+            .eq('report_id', id);
+
+        await supabase
+            .from('dispatch_access_blocks')
+            .delete()
+            .eq('report_id', id);
+
+        // Delete the report from database
+        const { error: deleteError } = await supabase
+            .from('reports')
+            .delete()
+            .eq('id', id);
+
+        if (deleteError) {
+            console.error('Failed to delete report:', deleteError);
+            let userFriendlyMessage = 'Failed to delete report from database.';
+            if (deleteError.code === '23503' || deleteError.message?.includes('foreign key')) {
+                userFriendlyMessage = 'Cannot withdraw report: This report is currently linked to an active operational task or route.';
+            } else if (deleteError.message) {
+                userFriendlyMessage = `Failed to withdraw report: ${deleteError.message}`;
+            }
+            return res.status(400).json({
+                message: userFriendlyMessage,
+                error: deleteError.message
+            });
+        }
+
+        // Log audit action after successful deletion
+        await logAuditAction(id, user_id, 'citizen_withdraw', `Citizen withdrew report ${id} prior to triage`);
+
+        res.status(200).json({
+            message: 'Report withdrawn successfully',
+            reportId: id
         });
     } catch (error) {
         next(error);
@@ -1743,6 +2427,12 @@ export const createReportFromRejected = async (req, res, next) => {
                 title: originalReport.title,
                 description: originalReport.description,
                 issue_type: originalReport.issue_type,
+                ...classifyReportHazard({
+                    issue_type: originalReport.issue_type,
+                    title: originalReport.title,
+                    description: originalReport.description,
+                    notes: originalReport.notes,
+                }),
                 location: originalReport.location,
                 on_private_property: originalReport.on_private_property,
                 property_owner_consent_status: originalReport.on_private_property ? 'pending' : 'not_required',
@@ -1759,9 +2449,24 @@ export const createReportFromRejected = async (req, res, next) => {
             });
         }
 
+        recordReportSubmission(user_id, newReport.id, newReport.created_at);
+
+        const remainingQuota = req.reportQuota ? Math.max(0, req.reportQuota.remaining - 1) : null;
+        const quotaWarning = req.reportQuota && remainingQuota <= 2 && remainingQuota > 0
+            ? `You have ${remainingQuota} report${remainingQuota === 1 ? '' : 's'} remaining for today.`
+            : null;
+
         res.status(201).json({
             message: 'New report created successfully from rejected report',
-            report: newReport
+            report: newReport,
+            quota: req.reportQuota ? {
+                limit: req.reportQuota.limit,
+                used: req.reportQuota.used + 1,
+                remaining: remainingQuota,
+                resetAt: req.reportQuota.resetAt,
+                countdown: req.reportQuota.countdown,
+                warning: quotaWarning
+            } : undefined
         });
     } catch (error) {
         next(error);
@@ -1844,6 +2549,8 @@ export const syncReportMedia = async (req, res, next) => {
                 let finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
                 let finalRejectionReason = null;
                 let finalIssueType = null;
+                let finalScaleLevel = report.scale_level || null;
+                let finalObstructionLevel = report.obstruction_level || null;
 
                 console.log(`[Evidence] Starting media upload for synced report ${report.id}`);
 
@@ -1884,13 +2591,13 @@ export const syncReportMedia = async (req, res, next) => {
                         if (imageFiles.length === 0) {
                             finalValidationStatus = aggregated.validation_status;
                             finalRejectionReason = aggregated.rejection_reason;
-                            if (aggregated.dominant_class) {
+                            if (aggregated.dominant_class && ALLOWED_CLASSIFIER_CATEGORIES.includes(aggregated.dominant_class)) {
                                 finalIssueType = aggregated.dominant_class;
                             } else {
                                 finalIssueType = determineIssueTypeFromText(report.title, report.description);
                             }
                         } else {
-                            if (aggregated.dominant_class && !finalIssueType) {
+                            if (aggregated.dominant_class && ALLOWED_CLASSIFIER_CATEGORIES.includes(aggregated.dominant_class) && !finalIssueType) {
                                 finalIssueType = aggregated.dominant_class;
                             }
                         }
@@ -1926,6 +2633,8 @@ export const syncReportMedia = async (req, res, next) => {
                     if (imageResults.length > 0) {
                         const statusCounts = { approved: 0, rejected: 0, manual_review: 0 };
                         const categoryCounts = {};
+                        const scaleCounts = {};
+                        const obstructionCounts = {};
 
                         for (const result of imageResults) {
                             const mapped = mapClassifierToValidation(result);
@@ -1935,6 +2644,16 @@ export const syncReportMedia = async (req, res, next) => {
 
                             if (mapped.predicted_category) {
                                 categoryCounts[mapped.predicted_category] = (categoryCounts[mapped.predicted_category] || 0) + 1;
+                            }
+
+                            if (mapped.predicted_scale) {
+                                const weight = mapped.scale_confidence ?? 1.0;
+                                scaleCounts[mapped.predicted_scale] = (scaleCounts[mapped.predicted_scale] || 0) + weight;
+                            }
+
+                            if (mapped.predicted_obstruction) {
+                                const weight = mapped.obstruction_confidence ?? 1.0;
+                                obstructionCounts[mapped.predicted_obstruction] = (obstructionCounts[mapped.predicted_obstruction] || 0) + weight;
                             }
                         }
 
@@ -1948,6 +2667,9 @@ export const syncReportMedia = async (req, res, next) => {
                             finalRejectionReason = 'Mixed or unclear image validation results.';
                         }
 
+                        finalScaleLevel = report.scale_level || finalScaleLevel;
+                        finalObstructionLevel = report.obstruction_level || finalObstructionLevel;
+
                         if (finalValidationStatus !== VALIDATION_STATUS.REJECTED) {
                             const categoryEntries = Object.entries(categoryCounts);
                             if (categoryEntries.length > 0) {
@@ -1955,6 +2677,18 @@ export const syncReportMedia = async (req, res, next) => {
                                 finalIssueType = categoryEntries[0][0];
                             } else if (imageResults.length > 0 && imageResults[0].predicted_category) {
                                 finalIssueType = imageResults[0].predicted_category;
+                            }
+
+                            const scaleEntries = Object.entries(scaleCounts);
+                            if (scaleEntries.length > 0) {
+                                scaleEntries.sort((a, b) => b[1] - a[1]);
+                                finalScaleLevel = scaleEntries[0][0];
+                            }
+
+                            const obstructionEntries = Object.entries(obstructionCounts);
+                            if (obstructionEntries.length > 0) {
+                                obstructionEntries.sort((a, b) => b[1] - a[1]);
+                                finalObstructionLevel = obstructionEntries[0][0];
                             }
                         }
 
@@ -1977,15 +2711,29 @@ export const syncReportMedia = async (req, res, next) => {
                     updated_at: new Date().toISOString(),
                 };
 
-                if (finalIssueType && finalIssueType !== 'pending') {
+                if (finalIssueType && finalIssueType !== 'pending' && ALLOWED_CLASSIFIER_CATEGORIES.includes(finalIssueType)) {
                     updatePayload.issue_type = finalIssueType;
                 } else {
-                    updatePayload.issue_type = determineIssueTypeFromText(report.title, report.description);
+                    const fallbackType = determineIssueTypeFromText(report.title, report.description);
+                    updatePayload.issue_type = ALLOWED_CLASSIFIER_CATEGORIES.includes(fallbackType) ? fallbackType : 'waste';
+                }
+
+                if (finalScaleLevel) {
+                    updatePayload.scale_level = finalScaleLevel;
+                }
+
+                if (finalObstructionLevel) {
+                    updatePayload.obstruction_level = finalObstructionLevel;
                 }
 
                 if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
                     try {
-                        const reportForSeverity = { ...report, issue_type: updatePayload.issue_type };
+                        const reportForSeverity = {
+                            ...report,
+                            issue_type: updatePayload.issue_type,
+                            scale_level: updatePayload.scale_level || report.scale_level || 'medium',
+                            obstruction_level: updatePayload.obstruction_level || report.obstruction_level || 'none'
+                        };
                         const severityResult = await calculateSeverity(reportForSeverity);
                         updatePayload.severity_score = severityResult.severityScore;
                         updatePayload.severity_level = severityResult.severityLevel;
@@ -2011,6 +2759,12 @@ export const syncReportMedia = async (req, res, next) => {
                     updatePayload.issue_type = 'waste';
                 }
 
+                Object.assign(updatePayload, classifyReportHazard({
+                    issue_type: updatePayload.issue_type,
+                    title: report.title, description: report.description,
+                    notes: updatePayload.notes ?? report.notes,
+                }));
+
                 await supabase.from('reports').update(updatePayload).eq('id', report.id);
 
                 // Notifications
@@ -2022,11 +2776,41 @@ export const syncReportMedia = async (req, res, next) => {
                     createNotification(user_id, report.id, 'pending_validation', 'Report Under Review', 'Your report has been flagged for manual review.').catch(console.error);
                 }
 
-                await clusterReports();
+                if (finalValidationStatus === VALIDATION_STATUS.APPROVED) {
+                    await clusterReports().catch(err => console.error('Approved report clustering failed:', err));
+                }
             } catch (err) {
                 console.error('Error in background tasks:', err);
+                try {
+                    await supabase
+                        .from('reports')
+                        .update({
+                            validation_status: VALIDATION_STATUS.MANUAL_REVIEW,
+                            notes: `AI validation background task encountered an error: ${err.message}`,
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', report.id);
+                } catch (fallbackErr) {
+                    console.error('Failed to update report to manual_review fallback:', fallbackErr);
+                }
             }
         })();
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * Returns current citizen report quota status for the authenticated user (WT-97).
+ */
+export const getReportQuota = async (req, res, next) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+        const quota = await checkUserReportQuota(userId);
+        res.status(200).json(quota);
     } catch (error) {
         next(error);
     }

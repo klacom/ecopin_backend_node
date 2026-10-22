@@ -4,6 +4,9 @@
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
 import { MOBILE_REDIRECT_URL } from "../config/index.js";
 import { generateVerificationToken, sendVerificationEmail } from "../services/email.service.js";
+import { createHash } from 'node:crypto';
+import { invalidateToken } from "../services/auth-cache.service.js";
+import { verifyJwtToken } from "../services/jwt-verifier.service.js";
 
 // Helper function to log audit action
 export const logAuditAction = async (userId, actionType, actionDetails, ipAddress = null, userAgent = null) => {
@@ -18,7 +21,7 @@ export const logAuditAction = async (userId, actionType, actionDetails, ipAddres
                 user_agent: userAgent
             });
     } catch (error) {
-        console.error('Failed to log audit action:', error);
+        console.error('Failed to log system audit action:', error);
         // Don't throw error - logging is secondary to main operation
     }
 };
@@ -71,11 +74,11 @@ export const register = async (req, res, next) => {
             console.log(`[Email Flow] Starting verification email process for ${email}...`);
             
             console.log(`[Email Flow] Generating token for user ID: ${data.user.id}`);
-            const token = await generateVerificationToken(data.user.id);
-            console.log(`[Email Flow] Token generated successfully: ${token.substring(0, 10)}...`);
+            const token = await generateVerificationToken(data.user.id, email);
+            console.log('[Email Flow] Verification token generated');
             
             console.log(`[Email Flow] Invoking sendVerificationEmail to SMTP transporter...`);
-            await sendVerificationEmail(email, token);
+            if (token) await sendVerificationEmail(email, token);
             console.log(`[Email Flow] sendVerificationEmail completed successfully!`);
             
         } catch (emailError) {
@@ -86,8 +89,8 @@ export const register = async (req, res, next) => {
         }
 
         // Log user creation
-        const ipAddress = req.ip || req.connection.remoteAddress;
-        const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
         await logAuditAction(data.user.id, 'user_created', 'User registered', ipAddress, userAgent);
 
         res.status(201).json({
@@ -104,8 +107,15 @@ export const register = async (req, res, next) => {
 
 export const login = async (req, res, next) => {
     const { email, password } = req.body;
-    const ipAddress = req.ip || req.connection.remoteAddress;
-    const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.[ 'user-agent'] || null);
+
+    if (!email || !password) {
+        return res.status(400).json({
+            message: 'Email and password are required',
+            error: 'Missing required credentials'
+        });
+    }
 
     try {
         const { data, error } = await supabase.auth.signInWithPassword({
@@ -114,8 +124,17 @@ export const login = async (req, res, next) => {
         });
 
         if (error) {
+            let userFriendlyMessage = 'Invalid email or password. Please check your credentials and try again.';
+            const errMsg = (error.message || '').toLowerCase();
+
+            if (errMsg.includes('email not confirmed')) {
+                userFriendlyMessage = 'Email not verified. Please check your inbox for the confirmation link.';
+            } else if (errMsg.includes('too many requests') || errMsg.includes('rate limit')) {
+                userFriendlyMessage = 'Too many login attempts. Please wait a few moments and try again.';
+            }
+
             return res.status(401).json({
-                message: 'Login failed',
+                message: userFriendlyMessage,
                 error: error.message
             });
         }
@@ -123,7 +142,7 @@ export const login = async (req, res, next) => {
         // Fetch role and verification status from profiles table
         const { data: profile, error: profileError } = await supabaseAdmin
             .from('profiles')
-            .select('role, is_email_verified, require_password_change')
+            .select('role, is_email_verified, require_password_change, suspended_until')
             .eq('id', data.user.id)
             .single();
 
@@ -137,12 +156,22 @@ export const login = async (req, res, next) => {
             });
         }
 
+        // Check if user is suspended
+        if (profile.suspended_until && new Date(profile.suspended_until) > new Date()) {
+            await supabase.auth.signOut();
+            return res.status(403).json({
+                message: `Your account is temporarily suspended until ${new Date(profile.suspended_until).toLocaleString()}.`,
+                code: 'ACCOUNT_SUSPENDED',
+                suspended_until: profile.suspended_until
+            });
+        }
+
         // Check if email is verified — treat false OR null as unverified
         if (profile.is_email_verified !== true) {
             // Sign the user out since they shouldn't be logged in
             await supabase.auth.signOut();
             return res.status(403).json({
-                message: 'Email not verified. Please check your inbox.',
+                message: 'Email not verified. Please check your inbox for the verification link.',
                 code: 'EMAIL_NOT_VERIFIED'
             });
         }
@@ -211,8 +240,12 @@ export const getMe = async (req, res, next) => {
  
 export const logout = async (req, res, next) => {
     try {
-        const ipAddress = req.ip || req.connection.remoteAddress;
-        const userAgent = req.get('user-agent');
+        const authHeader = req.headers.authorization;
+        if (authHeader?.startsWith('Bearer ')) {
+            invalidateToken(authHeader.split(' ')[1]);
+        }
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
         if (req.user && req.user.id) {
             await logAuditAction(req.user.id, 'logout', 'User logged out', ipAddress, userAgent);
         }
@@ -255,8 +288,8 @@ export const forgotPassword = async (req, res, next) => {
 
 export const resetPassword = async (req, res, next) => {
     const { token, password } = req.body;
-    const ipAddress = req.ip || req.connection.remoteAddress;
-    const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
 
     try {
         const { data, error } = await supabaseAdmin.auth.updateUser(token, {
@@ -281,8 +314,8 @@ export const resetPassword = async (req, res, next) => {
 
 export const changePassword = async (req, res, next) => {
     const { current_password, new_password } = req.body;
-    const ipAddress = req.ip || req.connection.remoteAddress;
-    const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
 
     try {
         // First verify current password by attempting to sign in
@@ -321,8 +354,8 @@ export const changePassword = async (req, res, next) => {
 
 export const forceChangePassword = async (req, res, next) => {
     const { new_password } = req.body;
-    const ipAddress = req.ip || req.connection.remoteAddress;
-    const userAgent = req.get('user-agent');
+    const ipAddress = req.ip || req.connection?.remoteAddress || null;
+    const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
 
     if (!new_password) {
         return res.status(400).json({ message: 'New password is required' });
@@ -347,6 +380,12 @@ export const forceChangePassword = async (req, res, next) => {
             .update({ require_password_change: false })
             .eq('id', req.user.id);
 
+        // Invalidate current temporary token from fast cache upon password change
+        const authHeader = req.headers.authorization;
+        if (authHeader?.startsWith('Bearer ')) {
+            invalidateToken(authHeader.split(' ')[1]);
+        }
+
         // Log password change event
         await logAuditAction(req.user.id, 'password_change', `User changed password upon login`, ipAddress, userAgent);
 
@@ -356,7 +395,7 @@ export const forceChangePassword = async (req, res, next) => {
     }
 };
 
-// Lightweight session validation - JWT only, no database operations
+// Lightweight session validation - cryptographically verifies JWT signature, algorithm allowlist (HS256), issuer, and expiry
 export const validateSession = async (req, res, next) => {
     try {
         const authHeader = req.headers.authorization;
@@ -367,24 +406,16 @@ export const validateSession = async (req, res, next) => {
 
         const token = authHeader.split(' ')[1];
 
-        // Decode and validate JWT only (no database lookup for free tier optimization)
-        try {
-            const parts = token.split('.');
-            if (parts.length !== 3) {
-                return res.status(401).json({ valid: false, message: 'Invalid token format' });
-            }
-
-            const payload = JSON.parse(atob(parts[1]));
-            const currentTime = Math.floor(Date.now() / 1000);
-
-            if (payload.exp && payload.exp < currentTime) {
-                return res.status(401).json({ valid: false, expired: true, message: 'Token expired' });
-            }
-
-            res.status(200).json({ valid: true, message: 'Session valid' });
-        } catch (jwtError) {
-            return res.status(401).json({ valid: false, message: 'Invalid token format' });
+        const verification = verifyJwtToken(token);
+        if (!verification.valid) {
+            return res.status(401).json({
+                valid: false,
+                expired: verification.expired || false,
+                message: verification.message || 'Session validation failed'
+            });
         }
+
+        res.status(200).json({ valid: true, message: 'Session valid', user: verification.payload });
     } catch (error) {
         res.status(401).json({ valid: false, message: 'Session validation failed' });
     }
@@ -392,93 +423,133 @@ export const validateSession = async (req, res, next) => {
 
 export const verifyEmail = async (req, res, next) => {
     const { token } = req.query;
+    res.set('Cache-Control', 'no-store');
 
-    if (!token) {
+    if (typeof token !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
         return res.status(400).send('Verification token is required');
     }
 
     try {
-        // 1. Find token
-        const { data: verificationData, error: fetchError } = await supabaseAdmin
+        // 1. Find token by digest (backward-compatible across migrated and unmigrated live schemas)
+        const tokenDigest = createHash('sha256').update(token.toLowerCase()).digest('hex');
+        let fetchResult = await supabaseAdmin
             .from('email_verifications')
-            .select('*')
-            .eq('token', token)
-            .single();
+            .select('id,user_id,issued_to_email,expires_at,used_at')
+            .eq('token_digest', tokenDigest)
+            .maybeSingle();
 
-        if (fetchError || !verificationData) {
+        if (fetchResult.error && (fetchResult.error.code === '42703' || fetchResult.error.message?.includes('issued_to_email'))) {
+            // Graceful fallback for unmigrated live database where issued_to_email does not exist
+            fetchResult = await supabaseAdmin
+                .from('email_verifications')
+                .select('id,user_id,expires_at,used_at')
+                .eq('token_digest', tokenDigest)
+                .maybeSingle();
+        }
+
+        if (fetchResult.error || !fetchResult.data) {
             return res.status(400).send(renderVerificationHtml('Invalid or expired token', false));
         }
 
+        const verificationData = fetchResult.data;
+
         // 2. Check if already used
         if (verificationData.used_at) {
-            return res.status(400).send(renderVerificationHtml('Email already verified. You can log in.', false));
+            return res.status(400).send(renderVerificationHtml('Email already verified or link has already been used. You can log in.', false));
         }
 
-        // 3. Check expiry
-        if (new Date(verificationData.expires_at) < new Date()) {
-            return res.status(400).send(renderVerificationHtml('Verification link has expired. Please request a new one.', false));
+        // 4. Fetch authoritative Auth user state
+        const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(verificationData.user_id);
+        if (userError || !userData?.user) {
+            return res.status(503).send(renderVerificationHtml('Account not found for this verification link.', false));
         }
 
-        // 4. Update verification record
-        await supabaseAdmin
-            .from('email_verifications')
-            .update({ used_at: new Date().toISOString() })
-            .eq('id', verificationData.id);
+        if (userData.user.id !== verificationData.user_id) {
+            return res.status(503).send(renderVerificationHtml('Verification is temporarily unavailable.', false));
+        }
+        const currentAuthEmail = userData.user.email?.toLowerCase().trim();
+        if (!currentAuthEmail) {
+            return res.status(400).send(renderVerificationHtml('No active email found for this account.', false));
+        }
 
-        // 5. Update profile
-        await supabaseAdmin
-            .from('profiles')
-            .update({ is_email_verified: true })
-            .eq('id', verificationData.user_id);
+        if (!verificationData.issued_to_email) {
+            return res.status(400).send(renderVerificationHtml('Please request a new verification link.', false));
+        }
 
-        // 6. Update Supabase Auth user (optional, but good practice for sync)
-        await supabaseAdmin.auth.admin.updateUserById(verificationData.user_id, { email_confirm: true });
+        // Validate bound email address if recorded on token
+        if (verificationData.issued_to_email) {
+            const boundEmail = verificationData.issued_to_email.toLowerCase().trim();
+            if (currentAuthEmail !== boundEmail) {
+                // Changed email rejects the old link
+                return res.status(400).send(renderVerificationHtml('Verification link is not valid for the current account email.', false));
+            }
+        }
+
+        // Final authoritative email check, Auth confirmation, profile and token writes
+        // occur together. A missing migration fails closed rather than using the old race.
+        const rpcResult = await supabaseAdmin.rpc('redeem_email_verification_atomic', {
+            p_verification_id: verificationData.id,
+            p_user_id: verificationData.user_id,
+            p_expected_email: currentAuthEmail
+        });
+        const { data: completed, error: completionError } = rpcResult;
+
+        if (completionError) {
+            // Database transient failure: do not fake rollback with email_confirm: false.
+            // Leave token unconsumed so the user can safely retry and converge.
+            console.error('Database completion error during verification', {
+                code: completionError.code || 'UNKNOWN'
+            });
+            return res.status(503).send(renderVerificationHtml('Verification is temporarily unavailable. Please try this link again.', false));
+        }
+
+        if (completed !== true) {
+            // Token was already consumed, expired, or invalid.
+            // Do not attempt invalid Auth unconfirmation; winner's confirmation is preserved.
+            return res.status(400).send(renderVerificationHtml('Invalid, expired, already used link, or incomplete account setup.', false));
+        }
 
         // 7. Return success HTML with deep link
         return res.status(200).send(renderVerificationHtml('Email verified successfully!', true));
     } catch (error) {
-        console.error('Error in verifyEmail:', error);
+        console.error('Email verification failed');
         return res.status(500).send(renderVerificationHtml('An error occurred during verification.', false));
     }
 };
 
 export const resendVerification = async (req, res, next) => {
-    const { email } = req.body;
+    const { email } = req.body ?? {};
 
     if (!email) {
         return res.status(400).json({ message: 'Email is required' });
     }
 
-    try {
-        // Find user by email
-        const { data: { users }, error: authError } = await supabaseAdmin.auth.admin.listUsers();
-        if (authError) throw authError;
+    if (typeof email !== 'string' || email.length > 320) {
+        return res.status(400).json({ message: 'Invalid email' });
+    }
+    const normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(normalizedEmail)) {
+        return res.status(400).json({ message: 'Invalid email' });
+    }
 
-        const user = users.find(u => u.email === email);
-        
-        if (!user) {
+    try {
+        const { data: userId, error: lookupError } = await supabaseAdmin.rpc(
+            'find_email_verification_user', { p_email: normalizedEmail }
+        );
+        if (lookupError) throw lookupError;
+        if (!userId) {
             // Return 200 to not leak existence of user
             return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
         }
 
-        // Check profile
-        const { data: profile } = await supabaseAdmin
-            .from('profiles')
-            .select('is_email_verified')
-            .eq('id', user.id)
-            .single();
+        // Generate and send new token with bound email
+        const token = await generateVerificationToken(userId, normalizedEmail);
+        if (token) await sendVerificationEmail(normalizedEmail, token);
 
-        if (profile && profile.is_email_verified) {
-            return res.status(400).json({ message: 'Email is already verified.' });
-        }
-
-        // Generate and send new token
-        const token = await generateVerificationToken(user.id);
-        await sendVerificationEmail(email, token);
-
-        return res.status(200).json({ message: 'Verification email resent successfully.' });
+        return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
     } catch (error) {
-        next(error);
+        console.error('Verification resend failed');
+        return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
     }
 };
 
@@ -568,3 +639,134 @@ export const getPasswordRequirements = async (req, res, next) => {
         next(error);
     }
 };
+
+export const deleteAccount = async (req, res, next) => {
+    let signedOut = false;
+    try {
+        let userId = req.user?.id;
+        let sessionToken = req.headers?.authorization?.startsWith('Bearer ')
+            ? req.headers.authorization.slice(7) : null;
+        const { email, password, confirmation } = req.body || {};
+
+        // If no authenticated Bearer user, authenticate using provided credentials (e.g. from web deletion form)
+        if (!userId) {
+            if (!email || !password) {
+                return res.status(400).json({
+                    message: 'Email and password are required to verify account deletion.',
+                    error: 'Missing credentials'
+                });
+            }
+
+            const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+                email: email.trim().toLowerCase(),
+                password
+            });
+
+            if (authError || !authData?.user) {
+                return res.status(401).json({
+                    message: 'Invalid email or password.',
+                    error: authError?.message || 'Authentication failed'
+                });
+            }
+
+            userId = authData.user.id;
+            sessionToken = authData.session?.access_token;
+        }
+
+        // Verify that the user has a citizen role (staff/officer accounts must be handled by administrative channels)
+        const { data: profile, error: profileError } = await supabaseAdmin
+            .from('profiles')
+            .select('id, role')
+            .eq('id', userId)
+            .maybeSingle();
+
+        if (profileError || profile?.role !== 'citizen') {
+            return res.status(403).json({
+                message: 'Self-service account deletion is only available for citizen accounts. Staff accounts must be managed through administrative channels.',
+                error: 'Forbidden'
+            });
+        }
+
+        if (confirmation !== 'I confirm') {
+            return res.status(400).json({ message: 'Type "I confirm" to confirm permanent account deletion.' });
+        }
+
+        if (!sessionToken) {
+            return res.status(401).json({ message: 'Sign in again before deleting your account.' });
+        }
+
+        // Revoke sessions before touching account data; stop if logout cannot be confirmed.
+        const { error: signOutError } = await supabaseAdmin.auth.admin.signOut(sessionToken, 'global');
+        if (signOutError) {
+            return res.status(503).json({ message: 'Could not sign out your sessions. Account was not deleted. Please try again.' });
+        }
+        signedOut = true;
+        invalidateToken(sessionToken, userId);
+
+        const ipAddress = req.ip || req.connection?.remoteAddress || null;
+        const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
+
+        // 1. Anonymize user's waste reports to preserve municipal statistics and cleanup records
+        // Setting user_id = null severs all personal identification while leaving location, waste category, resolution, etc. intact
+        const { error: reportsError } = await supabaseAdmin
+            .from('reports')
+            .update({ user_id: null })
+            .eq('user_id', userId);
+
+        if (reportsError) {
+            console.error('Failed to anonymize reports during account deletion:', reportsError);
+            return res.status(500).json({
+                signed_out: true,
+                message: 'Failed to anonymize user reports for account deletion. Sign in again to retry.',
+                error: reportsError.message
+            });
+        }
+
+        // 2. Delete user profile from 'profiles' table
+        const { error: profileDeleteError } = await supabaseAdmin
+            .from('profiles')
+            .delete()
+            .eq('id', userId);
+
+        if (profileDeleteError) {
+            console.error('Failed to delete user profile during account deletion:', profileDeleteError);
+            return res.status(500).json({
+                signed_out: true,
+                message: 'Failed to delete user profile. Sign in again to retry.',
+                error: profileDeleteError.message
+            });
+        }
+
+        // 3. Delete user from auth.users via Supabase Admin (removes auth credentials, cascades to notifications and email verifications)
+        const { error: deleteAuthError } = await supabaseAdmin.auth.admin.deleteUser(userId);
+
+        if (deleteAuthError) {
+            console.error('Failed to delete user credentials from auth.users:', deleteAuthError);
+            return res.status(500).json({
+                signed_out: true,
+                message: 'Failed to delete authentication credentials. Please contact support.',
+                error: deleteAuthError.message
+            });
+        }
+
+        // Invalidate token from cache if Bearer token was provided
+        const authHeader = req.headers?.authorization;
+        if (authHeader?.startsWith('Bearer ')) {
+            invalidateToken(authHeader.split(' ')[1]);
+        }
+
+        // Log audit event (anonymized at system level)
+        await logAuditAction(null, 'account_deletion', `Citizen account ${userId} permanently deleted and waste reports anonymized`, ipAddress, userAgent);
+
+        return res.status(200).json({
+            success: true,
+            message: 'Account deleted successfully. Personal data removed and waste reports anonymized for public statistics.'
+        });
+    } catch (error) {
+        if (signedOut) {
+            return res.status(500).json({ signed_out: true, message: 'Deletion could not be completed. Please contact support.' });
+        }
+        next(error);
+    }
+};
+

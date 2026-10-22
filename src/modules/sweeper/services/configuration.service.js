@@ -9,9 +9,7 @@ export async function getConfigurationValue(parameterName, defaultValue = null) 
     .single();
     
   if (error || !data) {
-    if (error && error.code !== 'PGRST116') { // PGRST116 is "no rows returned"
-      console.error(`Error fetching config ${parameterName}:`, error);
-    }
+    if (error && error.code !== 'PGRST116') throw new Error(`Configuration unavailable: ${parameterName}`);
     return defaultValue;
   }
   return data.parameter_value;
@@ -51,6 +49,21 @@ export async function updateSlaThreshold(hours, adminId) {
     throw new Error('SLA threshold must be between 1 and 168 hours');
   }
   return updateConfigurationValue('sla_threshold', { hours }, adminId);
+}
+
+export async function getMaturationThreshold() {
+  const config = await getConfigurationValue('maturation_threshold_hours', { hours: 6 });
+  if (config && typeof config === 'object' && config.hours !== undefined) {
+    return Number(config.hours);
+  }
+  return typeof config === 'number' ? config : 6;
+}
+
+export async function updateMaturationThreshold(hours, adminId) {
+  if (!hours || typeof hours !== 'number' || hours < 1 || hours > 168) {
+    throw new Error('Maturation threshold must be between 1 and 168 hours');
+  }
+  return updateConfigurationValue('maturation_threshold_hours', { hours }, adminId);
 }
 
 export async function getShiftDuration(crewId) {

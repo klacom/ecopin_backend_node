@@ -32,7 +32,7 @@ export const getWorkflows = async (filters = {}) => {
     cleanup_tasks (
       id,
       status,
-      is_outlier,
+      dispatch_kind,
       estimated_duration_min
     )
   `);

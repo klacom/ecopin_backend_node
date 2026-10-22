@@ -1,9 +1,10 @@
+import mediaRoutes from './routes/media.routes.js';
 // Main application file for the EcoPin backend API server. Sets up Express, middleware, and routes.
 
 import express, { json, urlencoded } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import morgan from 'morgan';
+import { requestLogger } from './middleware/requestLogging.middleware.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { FRONTEND_URL } from './config/index.js';
@@ -24,6 +25,8 @@ import strikeRoutes from './routes/strike.routes.js';
 import manualReviewRoutes from './routes/manualReview.routes.js';
 import conflictRoutes from './routes/conflict.routes.js';
 import fcSyncRoutes from './routes/fc_sync.routes.js';
+import sweeperRoutes from './modules/sweeper/routes/sweeper.routes.js';
+import contactRoutes from './routes/contact.routes.js';
 
 // Import middleware
 import { errorHandler } from './middleware/errorHandler.middleware.js';
@@ -40,14 +43,16 @@ app.use(cors({
         if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
             callback(null, true);
         } else {
-            callback(new Error('Not allowed by CORS'));
+            const error = new Error('Not allowed by CORS');
+            error.statusCode = 403;
+            callback(error);
         }
     },
     credentials: true,
 }));
 app.use(json({ limit: '10mb' }));
 app.use(urlencoded({ extended: true }));
-app.use(morgan('combined')); // Logging
+app.use(requestLogger());
 
 // Apply rate limiting to all routes
 app.use(rateLimiter);
@@ -123,10 +128,12 @@ app.get('/health', async (req, res) => {
 });
 
 // Routes
+app.use('/api/media', mediaRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/clusters', clusterRoutes);
 app.use('/api/spatial-forecast', spatialRoutes);
+app.use('/api/spatial', spatialRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/cleanup-tasks', cleanupTaskRoutes);
 app.use('/api/admin', adminRoutes);
@@ -135,6 +142,8 @@ app.use('/api/strikes', strikeRoutes);
 app.use('/api/manual-review', manualReviewRoutes);
 app.use('/api/optimization', optimizationRoutes);
 app.use('/api/fc', fcSyncRoutes);
+app.use('/api/sweeper', sweeperRoutes);
+app.use('/api/contact', contactRoutes);
 
 // 404 handler
 app.use((req, res) => {

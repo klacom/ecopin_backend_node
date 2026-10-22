@@ -6,12 +6,14 @@ import {
     getCleanupTaskById,
     uploadCleanupPhoto,
     deleteCleanupPhoto,
+    getCleanupPhotoMedia,
     markTaskComplete,
     getTasksByClusterId,
     assignCleanupTask,
     getAvailableCrew,
     upload,
-    updateCleanupTaskTitle
+    updateCleanupTaskTitle,
+    updateCleanupTaskStatus
 } from '../controllers/cleanup_task.controller.js';
 import { batchSyncTaskUpdates } from '../controllers/sync.controller.js';
 import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
@@ -32,8 +34,8 @@ router.get('/cluster/:clusterId', getTasksByClusterId);
 router.use(authorize(ROLE_GROUPS.FIELD_OPS));
 
 router.post('/sync/batch', batchSyncTaskUpdates);
-router.post('/', createCleanupTask);
-router.post('/custom', createCustomCleanupTask);
+router.post('/', authorize(ROLE_GROUPS.DESK_OPS), createCleanupTask);
+router.post('/custom', authorize(ROLE_GROUPS.DESK_OPS), createCustomCleanupTask);
 router.get('/', getAllCleanupTasks);
 router.get('/available-crew', getAvailableCrew);
 router.get('/:id', getCleanupTaskById);
@@ -41,12 +43,18 @@ router.get('/:id', getCleanupTaskById);
 // Assignment routes (officer only)
 router.patch('/:id/assign', authorize(ROLE_GROUPS.DESK_OPS), assignCleanupTask);
 
-// Photo upload routes
+// Photo routes
 router.post('/:taskId/photo', upload.single('image'), uploadCleanupPhoto);
 router.delete('/:taskId/photo', deleteCleanupPhoto);
+router.get('/:taskId/photo/:slot', getCleanupPhotoMedia);
+
+// Task status transitions (field crew and desk ops)
+router.patch('/:id/status', updateCleanupTaskStatus);
+router.patch('/:id/en-route', (req, res, next) => { req.body = req.body || {}; req.body.status = 'en_route'; return updateCleanupTaskStatus(req, res, next); });
 
 // Task completion (field crew only)
 router.patch('/:id/complete', markTaskComplete);
+router.post('/:id/complete', markTaskComplete);
 
 // Title update
 router.patch('/:id/title', authorize(ROLE_GROUPS.DESK_OPS), updateCleanupTaskTitle);

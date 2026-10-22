@@ -1,38 +1,17 @@
+import { readActiveCrewRoutes } from '../services/activeCrewRoutes.service.js';
+import { fleetSettings } from '../services/fleetPolicy.js';
 import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
-import { OPTIMIZATION_CONFIG } from '../config/optimization.config.js';
-import { sweeperOptimizerService } from '../services/sweeper-optimizer.service.js';
 
-import { calculateClusterPriorities } from '../services/mcdaPrioritizer.service.js';
-import { mapClustersToTasks } from '../services/clusterTaskMapper.service.js';
-import { assignTasksToCrews } from '../services/crewAssigner.service.js';
-import { generateRouteForCrew } from '../services/routeGenerator.service.js';
-import { applyWeatherSimulation } from '../services/weatherSimulator.service.js';
-import { applyTrafficSimulation } from '../services/trafficSimulator.service.js';
 import { prioritizeBacklog, getWorkQueue } from '../services/workQueue.service.js';
 import { dispatchClusters } from '../services/dispatch.service.js';
+import { commitAndRoutePlan } from '../services/dispatchCommit.service.js';
 import { generateDispatchPlan } from '../services/dispatchPlanner.service.js';
+import { enqueuePlan, readPlanJob, processNextPlanningJob } from '../services/planJobs.service.js';
 import { processTaskFeedback } from '../services/taskFeedback.service.js';
-import { getLiveWeatherCondition } from '../services/weather.service.js';
-
-async function loadWeights() {
-  const { data } = await supabase.from('optimization_settings').select('value').eq('key', 'mcda_weights').single();
-  return data?.value || { severity: 0.40, urgency: 0.25, report_count: 0.15, waiting_time: 0.15, weather: 0.05 };
-}
-
-async function getDepot() {
-  const { data } = await supabase.from('optimization_settings').select('value').eq('key', 'swmo_depot').single();
-  return data?.value || { latitude: 14.561433, longitude: 121.075636 };
-}
-
-async function findEligibleClusters() {
-  const { data } = await supabase.from('clusters').select('id').eq('status', 'unresolved');
-  return data || [];
-}
-
-async function loadFieldCrews() {
-  const { data } = await supabase.from('field_crews').select('*').eq('availability_status', 'available');
-  return data || [];
-}
+import { metresBetween } from '../services/geoTime.js';
+import { previewPlanDisassembly as svcPreviewDisassembly, disassemblePlan as svcDisassemblePlan } from '../services/planDisassembly.service.js';
+import { getIncompletePriorTasks } from '../services/incompleteTasksService.js';
+import { safeAuditLog } from '../../sweeper/services/audit-log.service.js';
 
 // Phase 2: Work Queue Endpoints
 export const prioritizeQueue = async (req, res, next) => {
@@ -43,9 +22,6 @@ export const prioritizeQueue = async (req, res, next) => {
 };
 
 export const fetchWorkQueue = async (req, res, next) => {
-  console.log("Is Target Outlier Only: ", req.query.target_outliers_only);
-  console.log("Type of Target Outlier: ", typeof req.query.target_outliers_only);
-  console.log("Is Target Outlier True: ", req.query.target_outliers_only === 'true');
   try {
     await prioritizeBacklog();
     
@@ -58,24 +34,39 @@ export const fetchWorkQueue = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+export const getIncompleteTasks = async (req, res, next) => {
+  try {
+    const result = await getIncompletePriorTasks();
+    res.json(result);
+  } catch (error) { next(error); }
+};
+
 export const explicitDispatch = async (req, res, next) => {
   try {
     const { cluster_ids } = req.body;
     if (!cluster_ids || !Array.isArray(cluster_ids)) {
       return res.status(400).json({ message: 'cluster_ids array is required' });
     }
-    const tasks = await dispatchClusters(cluster_ids, req.user.id);
-    res.status(201).json({ message: `Dispatched ${tasks.length} tasks from ${cluster_ids.length} clusters`, tasks });
+    const result = await dispatchClusters(cluster_ids, req.user.id);
+    res.status(result.routing_status === 'needs_replan' ? 202 : 201).json(result);
   } catch (error) { next(error); }
 };
 
 // Phase 3: Capacity-Aware Planning Endpoints
 export const generatePlan = async (req, res, next) => {
   try {
-    // Accept officer-configured settings from the request body
     const { settings = {} } = req.body;
-    const result = await generateDispatchPlan(req.user.id, settings);
-    res.status(201).json({ message: 'Dispatch plan generated successfully', ...result });
+    const job = await enqueuePlan(req.user.id, settings, req.get('Idempotency-Key'));
+    void processNextPlanningJob().catch(err => console.error('Immediate job processing error:', err));
+    res.status(202).json(job);
+  } catch (error) { next(error); }
+};
+
+export const getPlanJob = async (req, res, next) => {
+  try {
+    const job = await readPlanJob(req.params.jobId, req.user.id);
+    if (!job) return res.status(404).json({ message: 'Planning job not found' });
+    res.json(job);
   } catch (error) { next(error); }
 };
 
@@ -158,9 +149,21 @@ export const deleteTemplate = async (req, res, next) => {
 export const getPlanItems = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const planQuery = supabase.from?.('dispatch_plans');
+    if (planQuery?.select) {
+      const { data: plan, error: planError } = await planQuery
+        .select('id, created_by')
+        .eq('id', id)
+        .maybeSingle();
+      if (planError) throw planError;
+      if (!plan) return res.status(404).json({ message: 'Plan not found' });
+      if (req.user.role !== 'admin' && plan.created_by && plan.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: plan belongs to another officer or tenant' });
+      }
+    }
     const { data, error } = await supabase
       .from('dispatch_plan_items')
-      .select('*, clusters(issue_type, priority_score, recommended_task_type)')
+      .select('*, clusters(issue_type, priority_score, recommended_task_type), reports!dispatch_plan_items_report_id_fkey(issue_type, severity_score)')
       .eq('dispatch_plan_id', id)
       .order('is_selected', { ascending: false });
 
@@ -169,345 +172,203 @@ export const getPlanItems = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-export const commitPlan = async (req, res, next) => {
+export const getPlan = async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const { traffic_condition = 'low' } = req.body;
-    
-    // Fetch live weather
-    const weather_condition = await getLiveWeatherCondition();
-    
-    console.log(`[Optimization] Committing plan ${id}...`);
-    // 1. Fetch the plan
-    console.log(`[Optimization] Step 1: Fetching draft plan...`);
-    const { data: plan, error: planError } = await supabase.from('dispatch_plans').select('status').eq('id', id).single();
-    if (planError || !plan) return res.status(404).json({ message: 'Plan not found' });
-    if (plan.status !== 'draft') return res.status(400).json({ message: 'Only draft plans can be committed' });
-
-    // 2. Fetch selected items
-    console.log(`[Optimization] Step 2: Fetching selected items...`);
-    const { data: selectedItems } = await supabase
-      .from('dispatch_plan_items')
-      .select('cluster_id')
-      .eq('dispatch_plan_id', id)
-      .eq('is_selected', true);
-      
-    const clusterIds = (selectedItems || []).map(i => i.cluster_id);
-    
-    // 3. Dispatch the clusters
-    console.log(`[Optimization] Step 3: Dispatching ${clusterIds.length} clusters...`);
-    let tasks = [];
-    let assignments = [];
-    let optimization_run = null;
-    
-    // We only route the clusters selected in the dispatch plan. 
-    // Re-routing existing tasks should be a separate explicit user action if needed.
-    
-    if (clusterIds.length > 0) {
-      tasks = await dispatchClusters(clusterIds, req.user.id);
-      
-      // 3.1 Load crews and assign intelligently
-      console.log(`[Optimization] Step 3.1: Loading field crews and assigning ${tasks.length} tasks...`);
-      const crews = await loadFieldCrews();
-      const depot = await getDepot();
-      assignments = await assignTasksToCrews(tasks, crews, depot);
-      
-      // 3.2 Apply assignments directly to the tasks
-      console.log(`[Optimization] Step 3.2: Applying assignments...`);
-      for (const assignment of assignments) {
-        const crew = crews.find(c => c.id === assignment.crew_id);
-        const memberIds = crew ? (crew.member_profile_ids || []) : [];
-        
-        if (assignment.task_ids_ordered.length > 0) {
-          await supabase
-            .from('cleanup_tasks')
-            .update({
-              assigned_crew_ids: memberIds,
-              assigned_at: new Date().toISOString(),
-              assigned_by: req.user.id,
-              last_assigned_at: new Date().toISOString()
-            })
-            .in('id', assignment.task_ids_ordered);
-        }
+    const planQuery = supabase.from?.('dispatch_plans');
+    let plan = null;
+    if (planQuery?.select) {
+      const { data: fetchedPlan, error } = await planQuery
+        .select('id,mode,status,planned_date,created_at,settings_snapshot,capacity_breakdown,rejected_bundles,solver_diagnostics,planning_as_of,total_capacity_minutes,total_crews_available,route_proposal,created_by')
+        .eq('id', req.params.id).maybeSingle();
+      if (error) throw error;
+      if (!fetchedPlan) return res.status(404).json({ message: 'Plan not found' });
+      if (req.user.role !== 'admin' && fetchedPlan.created_by && fetchedPlan.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: plan belongs to another officer or tenant' });
       }
-
-      // 3.3 Create Optimization Run (for frontend route rendering)
-      console.log(`[Optimization] Step 3.3: Creating Optimization Run...`);
-      const { data: run, error: runError } = await supabase
-        .from('optimization_runs')
-        .insert({
-          triggered_by: req.user.id,
-          status: 'approved',
-          approved_by: req.user.id,
-          approved_at: new Date().toISOString(),
-          criteria: {},
-          num_tasks_optimized: tasks.length,
-          num_crews: crews.length,
-          weather_condition,
-          traffic_condition
-        })
-        .select()
-        .single();
-        
-      if (runError) throw runError;
-      optimization_run = run;
-
-      // 3.4 Generate and Save Routes
-      console.log(`[Optimization] Step 3.4: Generating routes for ${assignments.length} crews...`);
-      for (const assignment of assignments) {
-        if (assignment.task_ids_ordered.length === 0) continue;
-        
-        const rawRoute = await generateRouteForCrew(
-          assignment.crew_id,
-          assignment.task_ids_ordered,
-          depot,
-          OPTIMIZATION_CONFIG.directions.provider
-        );
-        
-        const { data: crewRoute, error: crewRouteError } = await supabase
-          .from('crew_routes')
-          .insert({
-            optimization_run_id: run.id,
-            crew_id: assignment.crew_id,
-            start_depot: `POINT(${depot.longitude} ${depot.latitude})`,
-            end_depot: `POINT(${depot.longitude} ${depot.latitude})`,
-            total_distance_meters: rawRoute.totalDistance,
-            total_duration_min: rawRoute.totalTime,
-            task_count: assignment.task_ids_ordered.length
-          })
-          .select()
-          .single();
-          
-        if (crewRouteError) throw crewRouteError;
-        
-        if (rawRoute.waypoints.length > 0) {
-          const waypointsData = rawRoute.waypoints.map(wp => ({
-            ...wp,
-            crew_route_id: crewRoute.id
-          }));
-          await supabase.from('route_waypoints').insert(waypointsData);
-        }
-        
-        for (let i = 0; i < assignment.task_ids_ordered.length; i++) {
-          const taskId = assignment.task_ids_ordered[i];
-          const wp = rawRoute.waypoints.find(w => w.cleanup_task_id === taskId);
-          const updatePayload = {
-            crew_route_id: crewRoute.id,
-            sequence_in_route: i + 1
-          };
-          
-          if (wp && wp.estimated_time_from_previous_min !== undefined) {
-            updatePayload.estimated_duration_min = wp.estimated_time_from_previous_min;
-          }
-
-          const { error: updateError } = await supabase
-            .from('cleanup_tasks')
-            .update(updatePayload)
-            .eq('id', taskId);
-            
-          if (updateError) {
-            console.error(`[Optimization] Failed to update cleanup task ${taskId}:`, updateError);
-          }
-        }
-      }
+      plan = fetchedPlan;
     }
+    if (!plan) return res.status(404).json({ message: 'Plan not found' });
+    const { data: items, error: itemError } = await supabase.from('dispatch_plan_items')
+      .select('*').eq('dispatch_plan_id', plan.id).order('group_key').order('bundle_order');
+    if (itemError) throw itemError;
+    const groups = [];
+    const byKey = new Map();
+    for (const item of items ?? []) {
+      if (item.item_type === 'bundled_report') continue;
+      const group = { group_key: item.group_key, anchor: item, satellites: [] };
+      byKey.set(item.group_key, group);
+      groups.push(group);
+    }
+    for (const item of items ?? []) if (item.item_type === 'bundled_report')
+      byKey.get(item.group_key)?.satellites.push(item);
+    const selected = (items ?? []).filter(item => item.is_selected);
+    const selectedMinutes = selected.reduce((sum, item) => sum + Number(item.estimated_duration_minutes || 0), 0);
+    const plannedCrews = new Set(selected.map(item => item.planned_crew_id).filter(Boolean));
+    const capacity = plan.mode === 'mixed' ? plan.capacity_breakdown ?? {} : {
+      availableCrews: plan.total_crews_available ?? 0,
+      totalMinutes: plan.total_capacity_minutes ?? 0,
+      generalist: { used: plan.mode === 'standard' ? selectedMinutes : 0,
+        minutes: plan.mode === 'standard' ? plan.total_capacity_minutes ?? 0 : 0,
+        reserved: 0 },
+      specialist: { used: plan.mode === 'sweeper' ? selectedMinutes : 0,
+        minutes: plan.mode === 'sweeper' ? plan.total_capacity_minutes ?? 0 : 0 },
+      used: selectedMinutes
+    };
+    if (plan.solver_diagnostics?.capacity_filtering && !capacity.capacity_filtering) {
+      capacity.capacity_filtering = plan.solver_diagnostics.capacity_filtering;
+    }
+    const depotSetting = plan.settings_snapshot?.depot;
+    const depotLat = Number(depotSetting?.lat ?? depotSetting?.latitude ?? 14.561433);
+    const depotLng = Number(depotSetting?.lng ?? depotSetting?.longitude ?? 121.075636);
 
-    // 4. Update plan status
-    console.log(`[Optimization] Plan committed successfully!`);
-    await supabase.from('dispatch_plans').update({ status: 'approved' }).eq('id', id);
+    const { data: dbCrews } = await supabase.from('field_crews').select('id, name');
+    const crewNameMap = new Map((dbCrews ?? []).map(c => [c.id, c.name]));
 
-    res.status(200).json({ message: `Committed plan, created and assigned ${tasks.length} task(s)`, tasks, assignments, optimization_run });
+    const taskLocations = plan.route_proposal?.task_locations ?? {};
+    const travelMatrix = plan.route_proposal?.travel_time_matrix_min;
+    const nodeIds = plan.route_proposal?.node_ids ?? [];
+    const nodeIndexMap = new Map(nodeIds.map((id, index) => [id, index]));
+
+    const proposedRoutes = (plan.route_proposal?.routes ?? []).filter(route => route.stops?.length).map((route, routeIdx) => {
+      const waypoints = [];
+      waypoints.push({
+        id: `depot-start-${route.vehicle_id}`,
+        sequence_order: 0,
+        latitude: depotLat,
+        longitude: depotLng,
+        waypoint_type: 'depot_start',
+        distance_from_previous_meters: 0,
+        estimated_time_from_previous_min: 0,
+      });
+
+      let prevLoc = { lat: depotLat, lng: depotLng };
+      let prevNodeId = route.vehicle_id;
+
+      (route.stops ?? []).forEach((stop, stopIdx) => {
+        const loc = taskLocations[stop.task_id];
+        const lat = Number(loc?.lat);
+        const lng = Number(loc?.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+        let distMeters = 0;
+        try {
+          distMeters = Math.ceil(metresBetween(prevLoc, { lat, lng }));
+        } catch (_) {}
+
+        const fromIdx = nodeIndexMap.get(prevNodeId);
+        const toIdx = nodeIndexMap.get(stop.task_id);
+        const durMin = (fromIdx != null && toIdx != null && travelMatrix?.[fromIdx]?.[toIdx] != null)
+          ? Math.ceil(travelMatrix[fromIdx][toIdx])
+          : Math.ceil(distMeters / 500);
+
+        const matchedItem = (items ?? []).find(it => it.group_key === stop.task_id || it.report_id === stop.task_id.replace(/^(satellite|sweeper):/, ''));
+
+        waypoints.push({
+          id: `stop-${route.vehicle_id}-${stopIdx + 1}`,
+          sequence_order: stopIdx + 1,
+          latitude: lat,
+          longitude: lng,
+          cleanup_task_id: stop.task_id,
+          waypoint_type: 'task',
+          cleanup_tasks: {
+            id: stop.task_id,
+            task_type: stop.task_id.startsWith('satellite:') || stop.task_id.startsWith('sweeper:') ? 'Scouting' : 'Cleanup',
+            report_ids: matchedItem?.report_ids ?? []
+          },
+          distance_from_previous_meters: distMeters,
+          estimated_time_from_previous_min: durMin
+        });
+
+        prevLoc = { lat, lng };
+        prevNodeId = stop.task_id;
+      });
+
+      let returnDistMeters = 0;
+      try {
+        returnDistMeters = Math.ceil(metresBetween(prevLoc, { lat: depotLat, lng: depotLng }));
+      } catch (_) {}
+
+      const lastFromIdx = nodeIndexMap.get(prevNodeId);
+      const depotIdx = nodeIndexMap.get(route.vehicle_id);
+      const returnDurMin = (lastFromIdx != null && depotIdx != null && travelMatrix?.[lastFromIdx]?.[depotIdx] != null)
+        ? Math.ceil(travelMatrix[lastFromIdx][depotIdx])
+        : Math.ceil(returnDistMeters / 500);
+
+      waypoints.push({
+        id: `depot-end-${route.vehicle_id}`,
+        sequence_order: waypoints.length,
+        latitude: depotLat,
+        longitude: depotLng,
+        waypoint_type: 'depot_end',
+        distance_from_previous_meters: returnDistMeters,
+        estimated_time_from_previous_min: returnDurMin
+      });
+
+      const totalDist = Number(route.total_distance_m) || waypoints.reduce((sum, w) => sum + (w.distance_from_previous_meters || 0), 0);
+      const totalDur = Number(route.total_duration_min) || waypoints.reduce((sum, w) => sum + (w.estimated_time_from_previous_min || 0), 0);
+      const crewName = crewNameMap.get(route.vehicle_id) || `Crew ${routeIdx + 1}`;
+
+      return {
+        id: route.vehicle_id,
+        crewId: route.vehicle_id,
+        vehicle_id: route.vehicle_id,
+        field_crews: { id: route.vehicle_id, name: crewName },
+        task_count: (route.stops ?? []).length,
+        distanceMeters: totalDist,
+        total_distance_meters: totalDist,
+        durationMinutes: totalDur,
+        total_duration_min: totalDur,
+        waypoints,
+        isDraft: true
+      };
+    });
+    const { route_proposal: _routeProposal, ...publicPlan } = plan;
+    res.json({ plan: publicPlan, items, groups, capacity, plannedCrewCount: plannedCrews.size,
+      proposedRoutes,
+      rejectedBundles: plan.rejected_bundles ?? [], settings: plan.settings_snapshot });
   } catch (error) { next(error); }
 };
 
-// Phase 8 + 9 implementation - Now upgraded to Phase 1-6 Capacity Aware Pipeline seamlessly!
-export const runOptimization = async (req, res, next) => {
-  const { traffic_condition = 'low' } = req.body;
-
+export const commitPlan = async (req, res, next) => {
   try {
-    const weather_condition = await getLiveWeatherCondition();
-    console.log(`[Optimization] Run initiated by user ${req.user?.id || 'admin'}`);
-    console.log(`[Optimization] Conditions: Weather=${weather_condition}, Traffic=${traffic_condition}`);
-    
-    const depot = await getDepot();
-
-    // 1. Prioritize backlog (Phase 1 & 2)
-    console.log(`[Optimization] Prioritizing backlog...`);
-    await prioritizeBacklog();
-
-    // 2. Capacity-Aware Auto-Planner (Phase 3)
-    console.log(`[Optimization] Generating capacity-aware dispatch plan...`);
-    const { plan, selectedCount } = await generateDispatchPlan(req.user?.id || null);
-    
-    if (selectedCount === 0) {
-      console.log(`[Optimization] Aborting: No capacity or no tasks available.`);
-      return res.status(200).json({ message: 'No new tasks needed optimization', tasks: [] });
-    }
-
-    // Extract selected clusters from the plan
-    const { data: items } = await supabase
-      .from('dispatch_plan_items')
-      .select('cluster_id')
-      .eq('dispatch_plan_id', plan.id)
-      .eq('is_selected', true);
-      
-    const clusterIds = items.map(i => i.cluster_id);
-
-    // 3. Dispatch Clusters to Tasks (Phase 4)
-    console.log(`[Optimization] Generating tasks for ${clusterIds.length} selected clusters...`);
-    const tasks = await dispatchClusters(clusterIds, req.user?.id || null);
-
-    // 4. Load field crews
-    console.log(`[Optimization] Finding available field crews...`);
-    const crews = await loadFieldCrews();
-
-    // 5. Assign tasks to crews
-    console.log(`[Optimization] Executing capacity-aware greedy assignment...`);
-    const assignments = await assignTasksToCrews(tasks, crews, depot);
-
-    // 6. Create optimization_run record (so UI can read it)
-    console.log(`[Optimization] Saving optimization proposal...`);
-    const { data: run, error } = await supabase
-      .from('optimization_runs')
-      .insert({
-        triggered_by: req.user?.id,
-        status: 'proposed',
-        criteria: { info: 'Generated via Capacity-Aware Pipeline' },
-        weather_condition,
-        traffic_condition,
-        num_tasks_optimized: tasks.length,
-        num_crews: crews.length
-      })
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    // 7. Generate routes and save to DB (Phase 5)
-    console.log(`[Optimization] Generating simulated routes...`);
-    for (const assignment of assignments) {
-      if (assignment.task_ids_ordered.length === 0) continue;
-
-      const rawRoute = await generateRouteForCrew(
-        assignment.crew_id,
-        assignment.task_ids_ordered,
-        depot,
-        OPTIMIZATION_CONFIG.directions.provider
-      );
-
-      const { data: crewRoute, error: crewRouteError } = await supabase
-        .from('crew_routes')
-        .insert({
-          optimization_run_id: run.id,
-          crew_id: assignment.crew_id,
-          start_depot: `POINT(${depot.longitude} ${depot.latitude})`,
-          end_depot: `POINT(${depot.longitude} ${depot.latitude})`,
-          total_distance_meters: rawRoute.totalDistance,
-          total_duration_min: rawRoute.totalTime,
-          task_count: assignment.task_ids_ordered.length
-        })
-        .select()
-        .single();
-        
-      if (crewRouteError) throw crewRouteError;
-
-      if (rawRoute.waypoints.length > 0) {
-        const waypointsData = rawRoute.waypoints.map(wp => ({
-          ...wp,
-          crew_route_id: crewRoute.id
-        }));
-        await supabase.from('route_waypoints').insert(waypointsData);
-      }
-
-      for (let i = 0; i < assignment.task_ids_ordered.length; i++) {
-        await supabase
-          .from('cleanup_tasks')
-          .update({
-            crew_route_id: crewRoute.id,
-            sequence_in_route: i + 1,
-            estimated_duration_min: rawRoute.waypoints.find(w => w.cleanup_task_id === assignment.task_ids_ordered[i])?.estimated_time_from_previous_min
-          })
-          .eq('id', assignment.task_ids_ordered[i]);
+    const planQuery = supabase.from?.('dispatch_plans');
+    if (planQuery?.select) {
+      const { data: plan, error: planError } = await planQuery
+        .select('id, created_by')
+        .eq('id', req.params.id)
+        .maybeSingle();
+      if (planError) throw planError;
+      if (!plan) return res.status(404).json({ message: 'Plan not found' });
+      if (req.user.role !== 'admin' && plan.created_by && plan.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: cannot commit a plan created by another officer or tenant' });
       }
     }
-
-    return res.status(200).json({
-      message: 'Optimization proposal generated',
-      optimization_run: run,
-      assignments,
-      simulation: {
-        weather: weatherSim,
-        traffic: trafficSim
-      }
-    });
-  } catch (error) { 
-    console.error('[Optimization] FATAL ERROR during optimization:', error);
-    next(error); 
-  }
+    const result = await commitAndRoutePlan(req.params.id, req.user.id);
+    res.status(result.routing_status === 'needs_replan' || result.routing_status === 'routing' ? 202 : 200).json(result);
+  } catch (error) { next(error); }
 };
 
-// Phase 9 implementation
-export const approveOptimization = async (req, res, next) => {
-  const { id } = req.params;
-  
+export const runOptimization = async (req, res, next) => {
   try {
-    // 1. Verify run
-    const { data: run, error: runError } = await supabase
-      .from('optimization_runs')
-      .select('status')
-      .eq('id', id)
-      .single();
-      
-    if (runError) throw runError;
-    if (run.status !== 'proposed') {
-      return res.status(400).json({ message: 'Can only approve proposed optimization runs' });
-    }
-    
-    // 2. Approve run
-    const { data: updatedRun, error: updateError } = await supabase
-      .from('optimization_runs')
-      .update({
-        status: 'approved',
-        approved_by: req.user.id,
-        approved_at: new Date().toISOString()
-      })
-      .eq('id', id)
-      .select()
-      .single();
-      
-    if (updateError) throw updateError;
-    
-    // 3. Update tasks and send notifications
-    const { data: crewRoutes } = await supabase
-      .from('crew_routes')
-      .select('*, field_crews(member_profile_ids)')
-      .eq('optimization_run_id', id);
+    const generated = await generateDispatchPlan(req.user.id, req.body.settings ?? {});
+    const result = await commitAndRoutePlan(generated.plan.id, req.user.id);
+    res.status(result.routing_status === 'needs_replan' ? 202 : 200).json({ ...generated, ...result });
+  } catch (error) { next(error); }
+};
 
-    for (const route of (crewRoutes || [])) {
-      const crewMembers = route.field_crews?.member_profile_ids || [];
-      
-      const { data: waypoints } = await supabase
-        .from('route_waypoints')
-        .select('cleanup_task_id')
-        .eq('crew_route_id', route.id)
-        .eq('waypoint_type', 'task');
-
-      const taskIds = waypoints.map(wp => wp.cleanup_task_id);
-      
-      if (taskIds.length > 0) {
-        await supabase
-          .from('cleanup_tasks')
-          .update({
-            assigned_crew_ids: crewMembers,
-            assigned_at: new Date().toISOString(),
-            assigned_by: req.user.id,
-            last_assigned_at: new Date().toISOString()
-          })
-          .in('id', taskIds);
+export const approveOptimization = async (req, res, next) => {
+  try {
+    const planQuery = supabase.from?.('dispatch_plans');
+    if (planQuery?.select) {
+      const { data, error } = await planQuery.select('id, created_by').eq('optimization_run_id',req.params.id).maybeSingle();
+      if (error) throw error;
+      if (!data) return res.status(409).json({ message: 'Legacy runs cannot claim reports. Generate a new dispatch plan.' });
+      if (req.user.role !== 'admin' && data.created_by && data.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: cannot approve run created by another officer or tenant' });
       }
+      return res.json(await commitAndRoutePlan(data.id, req.user.id));
     }
-    
-    res.status(200).json({ message: 'Optimization approved', run: updatedRun });
+    res.json(await commitAndRoutePlan(req.params.id, req.user.id));
   } catch (error) { next(error); }
 };
 
@@ -539,6 +400,42 @@ export const discardOptimization = async (req, res, next) => {
     if (updateError) throw updateError;
     
     res.status(200).json({ message: 'Optimization discarded', run: discardedRun });
+  } catch (error) { next(error); }
+};
+
+export const previewPlanDisassembly = async (req, res, next) => {
+  try {
+    const planQuery = supabase.from?.('dispatch_plans');
+    if (planQuery?.select) {
+      const { data: plan, error: planError } = await planQuery
+        .select('id, created_by')
+        .or(`id.eq.${req.params.id},optimization_run_id.eq.${req.params.id}`)
+        .maybeSingle();
+      if (planError) throw planError;
+      if (plan && req.user.role !== 'admin' && plan.created_by && plan.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: cannot preview disassembly for another officer or tenant' });
+      }
+    }
+    const preview = await svcPreviewDisassembly(req.params.id);
+    res.status(200).json(preview);
+  } catch (error) { next(error); }
+};
+
+export const disassemblePlan = async (req, res, next) => {
+  try {
+    const planQuery = supabase.from?.('dispatch_plans');
+    if (planQuery?.select) {
+      const { data: plan, error: planError } = await planQuery
+        .select('id, created_by')
+        .or(`id.eq.${req.params.id},optimization_run_id.eq.${req.params.id}`)
+        .maybeSingle();
+      if (planError) throw planError;
+      if (plan && req.user.role !== 'admin' && plan.created_by && plan.created_by !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied: cannot disassemble a plan created by another officer or tenant' });
+      }
+    }
+    const result = await svcDisassemblePlan(req.params.id, req.user.id);
+    res.status(200).json(result);
   } catch (error) { next(error); }
 };
 
@@ -589,42 +486,34 @@ export const getOptimizationRunById = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+async function visibleCrewIds(req) {
+  if (req.user.role !== 'field_crew') return null;
+  const { data, error } = await supabase.from('field_crews').select('id, member_profile_ids, team_lead_profile_id');
+  if (error) throw error;
+  return (data ?? []).filter(crew => crew.team_lead_profile_id === req.user.id || crew.member_profile_ids?.includes(req.user.id)).map(crew => crew.id);
+}
+
+async function canReadCrewRoute(req, routeId) {
+  const ids = await visibleCrewIds(req);
+  if (ids === null) return true;
+  const { data, error } = await supabase.from('crew_routes').select('crew_id').eq('id', routeId).maybeSingle();
+  if (error) throw error;
+  return Boolean(data && ids.includes(data.crew_id));
+}
+
 // Get active (approved) routes
 export const getActiveRoutes = async (req, res, next) => {
   try {
-    // Find the most recent approved run
-    const { data: run } = await supabase
-      .from('optimization_runs')
-      .select('id')
-      .eq('status', 'approved')
-      .not('approved_at', 'is', null)
-      .order('approved_at', { ascending: false })
-      .limit(1)
-      .single();
-
-    if (!run) return res.json({ routes: [] });
-
-    const { data: routes } = await supabase
-      .from('crew_routes')
-      .select('*, field_crews(name)')
-      .eq('optimization_run_id', run.id);
-
-    for (const route of (routes || [])) {
-      const { data: waypoints } = await supabase
-        .from('route_waypoints')
-        .select('*, cleanup_tasks(id, task_type)')
-        .eq('crew_route_id', route.id)
-        .order('sequence_order');
-      route.waypoints = waypoints || [];
-    }
-
-    res.json({ optimization_run_id: run.id, routes });
+    const routes = await readActiveCrewRoutes(supabase, await visibleCrewIds(req));
+    const runIds = [...new Set(routes.map(route => route.optimization_run_id))];
+    res.json({optimization_run_id: runIds.length === 1 ? runIds[0] : null, routes});
   } catch (error) { next(error); }
 };
 
 export const getRouteById = async (req, res, next) => {
   try {
     const { routeId } = req.params;
+    if (!await canReadCrewRoute(req, routeId)) return res.status(403).json({ message: 'Route is not assigned to your crew' });
     const { data, error } = await supabase
       .from('crew_routes')
       .select('*, field_crews(name)')
@@ -646,6 +535,7 @@ export const getRouteById = async (req, res, next) => {
 export const getRouteWaypoints = async (req, res, next) => {
   try {
     const { routeId } = req.params;
+    if (!await canReadCrewRoute(req, routeId)) return res.status(403).json({ message: 'Route is not assigned to your crew' });
     const { data, error } = await supabase
       .from('route_waypoints')
       .select('*')
@@ -666,18 +556,54 @@ export const getFieldCrews = async (req, res, next) => {
 
     if (error) return res.status(400).json({ message: 'Failed to fetch crews' });
 
-    // Enrich each crew with member profile data
+    // Fetch active cleanup tasks (not completed and not cancelled)
+    const { data: activeTasks, error: tasksError } = await supabase
+      .from('cleanup_tasks')
+      .select('id, title, status, priority_score, scheduled_date, assigned_field_crew_id, assigned_crew_ids')
+      .in('status', ['created', 'pending', 'in_progress', 'partially_completed']);
+
+    if (tasksError) {
+      console.warn('Failed to fetch active tasks for crews:', tasksError.message);
+    }
+
+    const tasksList = activeTasks || [];
+
+    // Enrich each crew with member profile data and active task count/list
     const enriched = await Promise.all(
       crews.map(async (crew) => {
         const memberIds = crew.member_profile_ids || [];
-        if (memberIds.length === 0) return { ...crew, members: [] };
+        let members = [];
+        if (memberIds.length > 0) {
+          const { data: profiles } = await supabase
+            .from('profiles')
+            .select('id, full_name, avatar_url')
+            .in('id', memberIds);
+          members = profiles || [];
+        }
 
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, full_name, avatar_url')
-          .in('id', memberIds);
+        const crewTasks = tasksList.filter((t) =>
+          t.assigned_field_crew_id === crew.id ||
+          (Array.isArray(t.assigned_crew_ids) && memberIds.some((mId) => t.assigned_crew_ids.includes(mId)))
+        );
 
-        return { ...crew, members: profiles || [] };
+        const maxTasks = Number(crew.max_tasks_per_shift) || 10;
+        const activeTaskCount = crewTasks.length;
+
+        return {
+          ...crew,
+          members,
+          active_task_count: activeTaskCount,
+          assigned_tasks_count: activeTaskCount,
+          active_tasks: crewTasks.map((t) => ({
+            id: t.id,
+            title: t.title || 'Cleanup Task',
+            status: t.status,
+            priority_score: t.priority_score,
+            scheduled_date: t.scheduled_date
+          })),
+          max_tasks_per_shift: maxTasks,
+          is_at_capacity: activeTaskCount >= maxTasks
+        };
       })
     );
 
@@ -686,58 +612,43 @@ export const getFieldCrews = async (req, res, next) => {
 };
 
 export const updateCrewMembers = async (req, res, next) => {
-  const { id } = req.params;
-  const { user_id, action } = req.body;
-
-  if (!user_id || !['add', 'remove'].includes(action)) {
-    return res.status(400).json({ message: 'user_id and action (add|remove) are required' });
-  }
-
   try {
-    const { data: crew, error: fetchError } = await supabase
-      .from('field_crews')
-      .select('id, name, member_profile_ids')
-      .eq('id', id)
-      .single();
+    const { user_id, action } = req.body;
+    const crew_id = req.params.id;
 
-    if (fetchError || !crew) return res.status(404).json({ message: 'Crew not found' });
-
-    let memberIds = crew.member_profile_ids || [];
-
-    if (action === 'add') {
-      // Enforce one crew per user — check if user is in any other crew
-      const { data: allCrews } = await supabase
-        .from('field_crews')
-        .select('id, name, member_profile_ids')
-        .neq('id', id);
-
-      const existingCrew = (allCrews || []).find(
-        c => (c.member_profile_ids || []).includes(user_id)
-      );
-
-      if (existingCrew) {
-        return res.status(409).json({
-          message: `User is already a member of "${existingCrew.name}". Remove them first.`
-        });
-      }
-
-      if (!memberIds.includes(user_id)) {
-        memberIds = [...memberIds, user_id];
-      }
-    } else {
-      memberIds = memberIds.filter(mid => mid !== user_id);
+    if (!crew_id) {
+      return res.status(400).json({ message: 'Crew ID is required in URL path' });
+    }
+    if (!user_id) {
+      return res.status(400).json({ message: 'user_id is required in request body' });
+    }
+    if (!action || !['add', 'remove'].includes(action)) {
+      return res.status(400).json({ message: 'action must be either "add" or "remove"' });
     }
 
-    const { data: updated, error: updateError } = await supabase
-      .from('field_crews')
-      .update({ member_profile_ids: memberIds })
-      .eq('id', id)
-      .select()
-      .single();
+    const { data, error } = await supabase.rpc('change_field_crew_member', {
+      crew_id,
+      actor: req.user.id,
+      member_id: user_id,
+      action
+    });
 
-    if (updateError) return res.status(400).json({ message: 'Failed to update crew members', error: updateError.message });
-    res.json(updated);
-  } catch (error) { next(error); }
+    if (error) {
+      return res.status(400).json({
+        message: error.message || error.details || 'Failed to update crew member',
+        error: error.message
+      });
+    }
+
+    await safeAuditLog('CREW_MEMBERS_UPDATED', 'crew', crew_id, req.user.id, { member_id: user_id, action });
+
+    return res.status(200).json(data);
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      message: error.message || 'Failed to update crew member',
+      error: error.message
+    });
+  }
 };
 
 export const getUnassignedMembers = async (req, res, next) => {
@@ -751,13 +662,16 @@ export const getUnassignedMembers = async (req, res, next) => {
 
     if (profilesError) return res.status(400).json({ message: 'Failed to fetch field crew users' });
 
-    // Get all assigned member IDs across all crews
+    // Get all assigned member IDs across all crews (including team leads)
     const { data: crews } = await supabase
       .from('field_crews')
-      .select('member_profile_ids');
+      .select('member_profile_ids, team_lead_profile_id');
 
     const assignedIds = new Set(
-      (crews || []).flatMap(c => c.member_profile_ids || [])
+      (crews || []).flatMap(c => [
+        ...(c.member_profile_ids || []),
+        c.team_lead_profile_id
+      ]).filter(Boolean)
     );
 
     const unassigned = (fcUsers || []).filter(u => !assignedIds.has(u.id));
@@ -788,53 +702,97 @@ export const updateOptimizationSettings = async (req, res, next) => {
       .single();
 
     if (error) return res.status(400).json({ message: 'Failed to update setting', error: error.message });
+    await safeAuditLog('OPTIMIZATION_SETTINGS_UPDATED', 'settings', key, req.user.id, { key, value });
     res.json(data);
   } catch (error) { next(error); }
 };
 
 // Phase 15: Admin crew management
-export const createFieldCrew = async (req, res, next) => {
-  const { name, shift_start, shift_end, max_tasks_per_shift } = req.body;
-  if (!name) return res.status(400).json({ message: 'Name is required' });
-
+export const createFieldCrew = async (req,res,next) => {
   try {
-    const { data, error } = await supabase
-      .from('field_crews')
-      .insert({
-        name,
-        shift_start: shift_start || '08:00:00',
-        shift_end: shift_end || '17:00:00',
-        max_tasks_per_shift: parseInt(max_tasks_per_shift) || 10,
-        availability_status: 'available'
-      })
-      .select()
-      .single();
-
-    if (error) return res.status(400).json({ message: 'Failed to create crew', error: error.message });
-    res.json(data);
-  } catch (error) { next(error); }
+    const fleet = fleetSettings(req.body,true);
+    if (fleet.hazmat_certified) fleet.certification_reviewed_by = req.user.id;
+    const {data,error}=await supabase.from('field_crews').insert(fleet).select().single();
+    if(error) throw error;
+    await safeAuditLog('CREW_CREATED', 'crew', data.id, req.user.id, { name: data.name, vehicle_type: data.vehicle_type });
+    res.status(201).json(data);
+  } catch(error){next(error);}
 };
-
-export const updateFieldCrew = async (req, res, next) => {
-  const { id } = req.params;
-  const { shift_start, shift_end, max_tasks_per_shift } = req.body;
-
+export const updateFieldCrew = async (req,res,next) => {
   try {
-    const updateData = { updated_at: new Date().toISOString() };
-    if (shift_start !== undefined) updateData.shift_start = shift_start;
-    if (shift_end !== undefined) updateData.shift_end = shift_end;
-    if (max_tasks_per_shift !== undefined) updateData.max_tasks_per_shift = parseInt(max_tasks_per_shift);
-
-    const { data, error } = await supabase
-      .from('field_crews')
-      .update(updateData)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) return res.status(400).json({ message: 'Failed to update crew', error: error.message });
+    const fleet = fleetSettings(req.body);
+    if (fleet.hazmat_certified !== undefined) fleet.certification_reviewed_by = req.user.id;
+    const {data,error}=await supabase.from('field_crews').update({...fleet,updated_at:new Date().toISOString()}).eq('id',req.params.id).select().single();
+    if(error) throw error;
+    await safeAuditLog('CREW_UPDATED', 'crew', data.id, req.user.id, { name: data.name, vehicle_type: data.vehicle_type });
     res.json(data);
-  } catch (error) { next(error); }
+  } catch(error){next(error);}
+};
+export const deleteFieldCrew = async (req, res, next) => {
+  const { id } = req.params;
+  try {
+    const { data: crew, error: crewError } = await supabase
+      .from('field_crews')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (crewError || !crew) {
+      return res.status(404).json({ message: 'Field crew not found' });
+    }
+
+    // Safety check 1: tasks assigned
+    const { count: taskCount, error: taskError } = await supabase
+      .from('cleanup_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('assigned_field_crew_id', id);
+
+    if (taskError) throw taskError;
+    if (taskCount > 0) {
+      return res.status(400).json({
+        message: `Cannot delete crew "${crew.name}": There are ${taskCount} task(s) assigned to this crew. Crews with tasks cannot be deleted to prevent data inconsistencies.`
+      });
+    }
+
+    // Safety check 2: members attached
+    const memberIds = crew.member_profile_ids || [];
+    if (memberIds.length > 0 || crew.team_lead_profile_id) {
+      return res.status(400).json({
+        message: `Cannot delete crew "${crew.name}": Crew still has ${memberIds.length} member(s) or an assigned team lead. Remove all members in Crew Management first.`
+      });
+    }
+
+    // Safety check 3: routes referencing crew
+    const { count: routeCount, error: routeError } = await supabase
+      .from('crew_routes')
+      .select('id', { count: 'exact', head: true })
+      .eq('crew_id', id);
+
+    if (!routeError && routeCount > 0) {
+      return res.status(400).json({
+        message: `Cannot delete crew "${crew.name}": Crew has ${routeCount} route record(s) associated with it.`
+      });
+    }
+
+    const { error: deleteError } = await supabase
+      .from('field_crews')
+      .delete()
+      .eq('id', id);
+
+    if (deleteError) throw deleteError;
+
+    await safeAuditLog('CREW_DELETED', 'crew', id, req.user.id, {
+      name: crew.name,
+      vehicle_type: crew.vehicle_type
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `Field crew "${crew.name}" was successfully deleted.`
+    });
+  } catch (error) {
+    next(error);
+  }
 };
 
 // Phase 6: Field Feedback Loop
@@ -847,7 +805,7 @@ export const completeTask = async (req, res, next) => {
   }
 
   try {
-    const updatedTask = await processTaskFeedback(id, outcome, notes, req.user?.id);
+    const updatedTask = await processTaskFeedback(id, outcome, notes, req.user.id, req.body);
     res.status(200).json({ 
       message: 'Task completed and clusters updated successfully', 
       task: updatedTask 
@@ -855,115 +813,92 @@ export const completeTask = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-export const generateSweeperRoutes = async (req, res) => {
-  // Check role-based access control (dispatch officer)
-  if (req.user?.role !== 'dispatch_officer' && req.user?.role !== 'admin' && req.user?.role !== 'system_administrator') {
-    return res.status(403).json({ error: 'Access denied: Dispatch Officer role required' });
-  }
-
-  const { clusterIds, crewId, shiftDuration } = req.body;
-
-  if (!clusterIds || !Array.isArray(clusterIds) || clusterIds.length === 0) {
-    return res.status(400).json({ error: 'clusterIds array is required and must not be empty' });
-  }
-
-  if (!crewId) {
-    return res.status(400).json({ error: 'crewId is required' });
-  }
-
+export const generateSweeperRoutes = async (req, res, next) => {
   try {
-    const rawRoutes = await sweeperOptimizerService.generateSweeperRoutes(clusterIds, crewId);
-
-    // Transform raw routes to match the expected API response format
-    const routes = rawRoutes.map(route => {
-      let currentOffsetMinutes = 0; // Starts at 0 minutes offset from now
-      const startTime = new Date();
-      
-      const waypoints = route.clusters.map(cluster => {
-        const arrivalTime = new Date(startTime.getTime() + currentOffsetMinutes * 60000);
-        currentOffsetMinutes += cluster.workTime + Math.ceil(route.totalTravelTime / route.clusters.length);
-        
-        return {
-          clusterId: cluster.id,
-          coordinates: cluster.coordinates,
-          estimatedArrival: arrivalTime.toISOString(),
-          workDuration: cluster.workTime
-        };
-      });
-
-      return {
-        taskId: route.taskId,
-        clusterIds: route.clusters.map(c => c.id),
-        totalTravelTime: route.totalTravelTime,
-        totalWorkTime: route.totalWorkTime,
-        totalRouteTime: route.totalRouteTime,
-        waypoints: waypoints
-      };
-    });
-
-    res.json({
-      success: true,
-      routes: routes
-    });
-  } catch (error) {
-    console.error('Error generating sweeper routes:', error);
-    res.status(500).json({ error: 'Internal server error during route optimization' });
-  }
+    if (req.body.clusterIds?.length || req.body.crewId) return res.status(400).json({ message: 'Sweeper dispatch uses eligible report IDs and fleet capabilities. Use settings.report_ids.' });
+    const generated = await generateDispatchPlan(req.user.id, { ...req.body.settings, mode: 'sweeper' });
+    const result = await commitAndRoutePlan(generated.plan.id, req.user.id);
+    res.status(result.routing_status === 'needs_replan' ? 202 : 200).json({ ...generated, ...result });
+  } catch (error) { next(error); }
 };
 
-export const getUnassignedOutlierClusters = async (req, res) => {
-  // Check role-based access control
-  if (req.user?.role !== 'dispatch_officer' && req.user?.role !== 'admin' && req.user?.role !== 'system_administrator') {
-    return res.status(403).json({ error: 'Access denied: Dispatch Officer role required' });
-  }
-
-  const statusFilter = req.query.status || 'Pending Assignment';
-
+export const getDispatchBlocks = async (req,res,next) => {
   try {
-    const { data: clusters, error, count } = await supabase
-      .from('clusters')
-      .select(`
-        id,
-        centroid,
-        issue_type,
-        severity,
-        created_at,
-        reports!inner(id)
-      `, { count: 'exact' })
-      .eq('is_outlier', true)
-      .eq('status', statusFilter);
+    const {data,error}=await supabase.from('dispatch_access_blocks').select('*').is('cleared_at',null).order('blocked_at').limit(200);
+    if(error) throw error;res.json(data);
+  } catch(error){next(error);}
+};
+export const clearDispatchBlock = async (req,res,next) => {
+  try {
+    const {data,error}=await supabase.rpc('clear_dispatch_block',{block_id:req.params.id,actor:req.user.id,notes:req.body.notes});
+    if(error) throw error;res.json(data);
+  } catch(error){next(error);}
+};
 
-    if (error) {
-      throw error;
-    }
+export const getOptimizationOptions = async (req, res, next) => {
+  try {
+    const { data: settingsRows, error: settingsError } = await supabase
+      .from('optimization_settings')
+      .select('key, value');
+    if (settingsError) throw settingsError;
 
-    // Format response
-    const formattedClusters = clusters.map(c => {
-      let lat = 0;
-      let lng = 0;
-      if (c.centroid && c.centroid.coordinates) {
-        lng = c.centroid.coordinates[0];
-        lat = c.centroid.coordinates[1];
+    const settingsMap = Object.fromEntries(
+      (settingsRows || []).map(r => [r.key, r.value])
+    );
+
+    const { data: crewVehicles } = await supabase
+      .from('field_crews')
+      .select('vehicle_type')
+      .not('vehicle_type', 'is', null);
+
+    const activeVehicleTypes = Array.from(
+      new Set((crewVehicles || []).map(c => c.vehicle_type).filter(Boolean))
+    );
+
+    const options = {
+      travel_modes: [
+        { value: 'WALKING', label: 'Walking' },
+        { value: 'BICYCLE', label: 'Bicycle' },
+        { value: 'MOTORCYCLE', label: 'Motorcycle' },
+        { value: 'DRIVING', label: 'Vehicle' }
+      ],
+      task_types: [
+        'Cleanup',
+        'Investigation',
+        'Verification',
+        'Emergency Response',
+        'Reinspection',
+        'Monitoring',
+        'Escalation',
+        'Deferred'
+      ],
+      overtime_options: [
+        { label: '+0 min', value: 0 },
+        { label: '+15 min', value: 15 },
+        { label: '+30 min', value: 30 },
+        { label: '+60 min', value: 60 }
+      ],
+      break_durations: [0, 15, 30, 60, 90],
+      workflow_targets: [
+        { value: 'standard', label: 'Clusters' },
+        { value: 'sweeper', label: 'Sweepers' },
+        { value: 'mixed', label: 'Mixed' }
+      ],
+      vehicle_types: activeVehicleTypes.length ? activeVehicleTypes : ['compactor', 'pickup', 'tricycle', 'motorcycle', 'walking'],
+      depot: settingsMap.swmo_depot || {
+        name: 'SWMO Depot (PLP Center)',
+        latitude: 14.561616769364207,
+        longitude: 121.07466280460359
+      },
+      defaults: {
+        travel_mode: 'DRIVING',
+        break_duration_min: 60,
+        overtime_tolerance_min: 15,
+        max_tasks_per_shift: 15,
+        capacity_utilization: 1.0
       }
+    };
 
-      const reportId = c.reports && c.reports.length > 0 ? c.reports[0].id : null;
-
-      return {
-        id: c.id,
-        reportId: reportId,
-        coordinates: { lat, lng },
-        issueType: c.issue_type,
-        severity: c.severity,
-        createdAt: c.created_at
-      };
-    });
-
-    res.json({
-      count: count || formattedClusters.length,
-      clusters: formattedClusters
-    });
-  } catch (error) {
-    console.error('Error fetching unassigned outlier clusters:', error);
-    res.status(500).json({ error: 'Failed to fetch unassigned outlier clusters' });
-  }
+    res.status(200).json(options);
+  } catch (error) { next(error); }
 };

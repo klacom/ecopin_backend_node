@@ -3,22 +3,21 @@ import {
   getConfig, 
   updateSlaThresholdConfig, 
   updateShiftDurationConfig, 
-  updateWorkTimeConfig 
+  updateWorkTimeConfig,
+  updateMaturationThresholdConfig
 } from '../controllers/configuration.controller.js';
 import { getAuditLogs } from '../controllers/audit.controller.js';
 
 const router = express.Router();
 
-// Mock authentication/authorization middleware for these routes
-// In a real application, replace this with your actual auth middleware
-const authenticate = (req, res, next) => {
-  // Assume req.user is set by prior middleware
-  next();
-};
+import { authenticate, authorize } from '../../../middleware/auth.middleware.js';
+import { ROLE_GROUPS } from '../../../constants/roles.js';
+router.use(authenticate, authorize(ROLE_GROUPS.DESK_OPS));
 
 // Configuration Routes
 router.get('/config', authenticate, getConfig);
 router.put('/config/sla-threshold', authenticate, updateSlaThresholdConfig);
+router.put('/config/maturation-threshold', authenticate, updateMaturationThresholdConfig);
 router.put('/config/shift-duration', authenticate, updateShiftDurationConfig);
 router.put('/config/work-time', authenticate, updateWorkTimeConfig);
 
@@ -32,10 +31,9 @@ router.post('/sla/trigger', authenticate, triggerSlaDetection);
 router.get('/sla/status', authenticate, getSlaStatus);
 
 // Sweeper Optimization Routes
-import { generateSweeperRoutes, getUnassignedOutlierClusters } from '../../optimization/controllers/optimization.controller.js';
+import { generateSweeperRoutes } from '../../optimization/controllers/optimization.controller.js';
 
 router.post('/optimize', authenticate, generateSweeperRoutes);
-router.get('/clusters', authenticate, getUnassignedOutlierClusters);
 
 // Sweeper Analytics Routes
 import { getMetrics, exportMetrics } from '../controllers/analytics.controller.js';

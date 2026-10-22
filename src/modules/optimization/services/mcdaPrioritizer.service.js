@@ -1,4 +1,5 @@
 import { supabaseAdmin as supabase } from '../../../config/supabase.config.js';
+import { normalizeWeights } from './planningPolicy.js';
 import { OPTIMIZATION_CONFIG } from '../config/optimization.config.js';
 
 /**
@@ -9,6 +10,7 @@ import { OPTIMIZATION_CONFIG } from '../config/optimization.config.js';
  * @returns {Array} Sorted array of prioritized clusters
  */
 export async function calculateClusterPriorities(clusterIds, weatherCondition = 'normal', weights = OPTIMIZATION_CONFIG.mcda.weights) {
+  weights=normalizeWeights(weights);
   if (!clusterIds || clusterIds.length === 0) return [];
 
   // Weather scores
@@ -23,12 +25,13 @@ export async function calculateClusterPriorities(clusterIds, weatherCondition = 
 
   for (const clusterId of clusterIds) {
     // 1. Fetch cluster and its reports
-    const { data: cluster } = await supabase
+    const { data: cluster, error: clusterError } = await supabase
       .from('clusters')
-      .select('id, issue_type, severity, reports(severity_score, urgency_score, created_at)')
+      .select('id, issue_type, severity, reports(severity_score, urgency_score, sla_started_at, created_at)')
       .eq('id', clusterId)
       .single();
 
+    if (clusterError) throw clusterError;
     if (!cluster) continue;
 
     // 2. Aggregate factors
@@ -47,7 +50,7 @@ export async function calculateClusterPriorities(clusterIds, weatherCondition = 
     // b. Urgency
     let maxUrgency = 50; // default
     if (reports.length > 0 && reports.some(r => r.urgency_score !== null)) {
-      maxUrgency = Math.max(...reports.filter(r => r.urgency_score !== null).map(r => r.urgency_score));
+      maxUrgency = Math.max(...reports.filter(r => r.urgency_score != null).map(r => (r.urgency_score-1)*50));
     }
 
     // c. Report count (normalized max 10)
@@ -56,7 +59,7 @@ export async function calculateClusterPriorities(clusterIds, weatherCondition = 
     // d. Waiting time (normalized max 7 days = 168 hours)
     let oldestDate = new Date();
     if (reports.length > 0) {
-      oldestDate = new Date(Math.min(...reports.map(r => new Date(r.created_at))));
+      oldestDate = new Date(Math.min(...reports.map(r => new Date(r.sla_started_at ?? r.created_at))));
     }
     const hoursWaiting = (new Date() - oldestDate) / (1000 * 60 * 60);
     const waitingTimeNorm = Math.min(hoursWaiting / 168, 1.0) * 100;
@@ -100,13 +103,14 @@ export async function calculateClusterPriorities(clusterIds, weatherCondition = 
     });
 
     // 5. Update database
-    await supabase
+    const { error: updateError } = await supabase
       .from('clusters')
       .update({
         priority_score: priorityScore,
         priority: priorityBucket
       })
       .eq('id', cluster.id);
+    if (updateError) throw updateError;
   }
 
   // Return sorted highest priority first

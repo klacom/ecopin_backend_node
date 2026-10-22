@@ -1,0 +1,293 @@
+================================================================================
+ECOPIN A.I. THESIS: CLEAN COPY-PASTE READY DRAFTS (FOR MICROSOFT WORD / GOOGLE DOCS)
+================================================================================
+Note: This file contains raw, formatted text without Markdown symbols (no '>', no '###', 
+no LaTeX '$' or '\frac{}'). You can copy and paste directly into your Word manuscript.
+================================================================================
+
+
+--------------------------------------------------------------------------------
+1. CHAPTER 1: REWRITES
+--------------------------------------------------------------------------------
+
+[REWRITE 1.1: SIGNIFICANCE OF THE STUDY]
+Location: Chapter 1, Section "Significance of the Study", Pages 28-29 (PDF pp. 36-37)
+Action: Replace the existing significance paragraphs with this structured order:
+
+Significance of the Study
+
+The findings and technical deliverables of this study provide significant contributions across institutional, community, academic, and research dimensions:
+
+Solid Waste Management Office (SWMO) of Pasig City (The Institution):
+The platform provides the SWMO with a centralized geospatial intake portal that consolidates disparate citizen complaints into structured, validated clusters. By automating the screening of incoming media through artificial intelligence and aggregating proximate reports through density-based clustering, the system mitigates manual verification fatigue, eliminates duplicate inspection trips, and assists supervisors in generating balanced, route-optimized work orders tailored to the city's limited fleet capacity of two operational cleanup crews.
+
+Community Residents and Field Personnel (The Users):
+For community residents, the platform delivers an accessible, mobile-first reporting interface featuring real-time lifecycle tracking (Submitted -> Verified -> Assigned -> In Progress -> Resolved). This transparency eliminates the conventional "black box" of municipal complaints and fosters sustained civic vigilance. For deployed field crews, the platform replaces paper-based dispatch logs with digital, offline-synchronized task lists and turn-by-turn navigation guidance, enabling on-site status logging and photographic verification of post-cleanup remediation.
+
+The Researchers:
+Conducting this developmental research allows the student researchers to synthesize and apply advanced competencies in software engineering, full-stack systems architecture, applied computer vision (CLIP ViT-B/32 and PyTorch RegMLP), spatial database management (PostGIS ST_ClusterDBSCAN), and combinatorial operations research (Google OR-Tools VRP Solver). Furthermore, it provides practical experience in stakeholder requirements gathering, institutional consultation with local government administrators, and rigorous software evaluation under international standards (ISO/IEC 25010:2023).
+
+Future Researchers:
+This study establishes an empirical and architectural reference for integrating multimodal foundation models, spatial analytics, and multi-agent routing into civic technology platforms. Future researchers can build upon the documented two-tier clustering framework, explore edge-device model optimization for low-connectivity environments, or examine cross-agency interoperability with municipal disaster risk reduction and telemetry systems.
+
+
+
+[REWRITE 1.2: SPECIFIC OBJECTIVES]
+Location: Chapter 1, Section "Statement of the Problem", Page 30 (PDF p. 38)
+Action: Insert immediately following the Specific Problems (SOP 1-5):
+
+Specific Objectives:
+
+In direct alignment with the specific problems formulated above, this study pursued the following technical and investigative objectives:
+
+1. To design, configure, and integrate an artificial intelligence validation pipeline utilizing OpenAI's CLIP (ViT-B/32) feature extractor and a Regularized Multi-Layer Perceptron (RegMLP) to automate report verification, filter non-environmental submissions, perform zero-shot classification across five environmental classes, and compute situational severity scores.
+
+2. To develop a two-tier geospatial processing framework that combines PostGIS ST_ClusterDBSCAN for operational complaint deduplication, Python scikit-learn DBSCAN with convex hull modeling for macro-level hotspot detection, and automated institutional notifications to streamline SWMO cleanup dispatch.
+
+3. To evaluate the perceptions and acceptance of intended end-users—specifically Pasig City residents and SWMO personnel—regarding the utility, accessibility, and interface navigation of the EcoPin A.I. platform.
+
+4. To assess the empirical performance level of the integrated artificial intelligence and analytical components in terms of binary validation accuracy, categorical classification, spatial clustering cohesion, and notification dispatch efficiency.
+
+5. To determine the software quality level of the complete EcoPin A.I. platform across applicable ISO/IEC 25010:2023 product quality characteristics through standardized evaluations conducted with residents, SWMO personnel, and IT professionals.
+
+
+
+--------------------------------------------------------------------------------
+2. CHAPTER 2: METHODOLOGY REWRITES
+--------------------------------------------------------------------------------
+
+[REWRITE 2.1: FRONTEND HEATMAP RENDERING]
+Location: Chapter 2, Section "Kernel Density Estimation / KDE", Pages 70-75 (PDF pp. 78-83)
+Action: Replace or refine the continuous Gaussian KDE description:
+
+Geospatial Density Mapping (Frontend Heatmap Rendering)
+
+To provide institutional officers and community residents with a macroscopic visualization of report concentration across Pasig City without imposing heavy computational overhead on the backend analytics server, the platform implements client-side density mapping using the leaflet.heat library on the web dashboard and flutter_map_heatmap on the mobile application.
+
+Rather than executing continuous, server-side Gaussian Kernel Density Estimation (KDE) over large coordinate matrices, the backend spatial analysis service (spatial_analysis.py) queries validated, unresolved incident coordinates and delivers normalized point records: Point = [latitude, longitude, intensity], where intensity is 1.0 by default. 
+
+On the client interface, leaflet.heat projects these geographic coordinates onto an HTML5 canvas relative to the visible viewport zoom level using latLngToContainerPoint(). Points are aggregated into coarse spatial grid cells (configured with a blur radius of 30 pixels and a smoothing factor of 20 pixels). The canvas renders overlapping radial gradients with additive blending, mapping accumulated pixel opacity to a 5-stop color gradient: 0.0: Light Blue (#00bfff), 0.3: Green (#00ff88), 0.55: Yellow (#ffdd00), 0.75: Orange (#ff8800), and 1.0: Red (#ff2200). This client-side rendering approach enables real-time panning and zooming across thousands of incident points while maintaining high responsiveness on both desktop browsers and mobile devices.
+
+
+
+[REWRITE 2.2: ROUTING ARCHITECTURE AND FALLBACKS]
+Location: Chapter 2, Section "Route and Task Optimization Pipeline", Pages 85, 87 (PDF pp. 93, 95)
+Action: Replace the routing provider paragraphs with this accurate architecture:
+
+Distance Matrix Generation, Routing Engine, and Operational Fallbacks
+
+The conversion of prioritized environmental clusters into executable cleanup itineraries involves a multi-stage routing pipeline managed by the Node.js backend:
+
+1. Operational Task Generation: Prioritized clusters are transformed into schedulable work orders. While a standalone Python task generation service (task_generation_model.py) was prototyped, production task assignment is handled directly by the Node.js operations controller (route.js), which enforces SWMO crew assignment constraints and groups constituent reports under a single task record.
+
+2. Travel Distance and Time Matrix Provider: To account for real-world urban road conditions, travel matrices are generated via tomtom.provider.js utilizing the TomTom Routing API. The provider queries live traffic and road network distances between the SWMO central depot and target incident centroids.
+
+3. Geometric Circuity Fallback: To safeguard the dispatch system against external API rate limits, network timeouts, or service outages, tomtom.provider.js incorporates an automatic geometric fallback. If the external routing service fails or exceeds latency thresholds, the system computes spherical great-circle distances via the Haversine formula and scales them by an empirical urban circuity factor of 1.35: Urban Distance = Haversine Distance x 1.35.
+
+4. Google OR-Tools VRP Solver: The resulting distance and duration matrices are transmitted via HTTP POST to the local Python optimization microservice (vrp_solver.py, running on port 8003). The solver formulates a Vehicle Routing Problem with capacity and duration dimensions, setting PATH_CHEAPEST_ARC for initial route construction and GUIDED_LOCAL_SEARCH (with a strict 2.0-second limit) to balance workloads across SWMO cleanup vehicles.
+
+
+
+[REWRITE 2.3: ACTIVE SECURITY, DEDUPLICATION, AND SEVERITY]
+Location: Chapter 2, Section "Process Layer", Page 51 (PDF p. 59)
+Action: Add after the Image Validation pipeline discussion:
+
+Contextual Hazard Classification, Media Hash Deduplication, and Multi-Factor Severity Scoring
+
+Beyond baseline visual validation, the EcoPin backend integrates three specialized modules to harden report intake and triage:
+
+1. Cryptographic Media Deduplication (photo_dedup.service.js): To prevent malicious flooding and accidental duplicate uploads, incoming image and video files are hashed at the byte level using the SHA-256 cryptographic algorithm. If a submission generates an identical hash to an active report within a localized spatial radius, the system flags the submission as a duplicate, preventing redundant database indexing.
+
+2. Contextual Hazard Material Classifier (hazard-classifier.service.js): Submissions containing textual descriptions are evaluated by a rule-based contextual classifier that scans for specialized hazardous keywords (e.g., chemical containers, medical waste, broken asbestos, industrial solvents). Reports triggering hazard keywords are immediately elevated to high operational priority and routed for SWMO officer inspection.
+
+3. Multi-Factor Environmental Severity Metric (severity.service.js): Rather than relying on a static severity rating, the system computes an empirical severity index (0 to 100) based on five operational factors: visual AI confidence (30%), hazardous material tag (25%), proximity to sensitive urban receptors such as schools and hospitals (20%), report volume density (15%), and elapsed unaddressed waiting time (10%).
+
+
+
+[REWRITE 2.4: MACHINE LEARNING TEST PLAN & BENCHMARK METHODOLOGY]
+Location: Chapter 2, Section "Data Analysis Procedures", Page 94 (PDF p. 102)
+Action: Replace the brief ML analysis paragraph with this formal test plan:
+
+Analysis of Machine Learning Performance and Validation Accuracy
+
+To address Specific Problem 4, the performance of the integrated artificial intelligence and machine learning components was evaluated through a formal empirical test plan executed in Python 3.10 using PyTorch 2.13.0 and scikit-learn.metrics.
+
+1. Evaluation Benchmark Dataset (N = 180):
+To evaluate model robustness against real-world urban field conditions without data leakage, an independent benchmark test set of N = 180 ground-truth labeled images was constructed:
+- Legitimate Environmental Incidents (n = 120): Comprising authentic photographic samples of uncollected municipal solid waste, roadside dumping, street waterlogging, clogged drainage canals, and illegal tree cutting collected within Pasig City and supplemented with municipal waste benchmark samples.
+- Non-Environmental Noise and Negative Controls (n = 60): Comprising common crowdsourcing false positive edge cases, including clean asphalt roads, clear pedestrian walkways, domestic indoor scenes, private vehicles, stray animals, and random non-environmental objects.
+- All 180 images were independently verified and labeled by the researchers to establish ground-truth classification.
+
+2. Candidate Architectures and Model Selection Ablation:
+Rather than adopting a deep learning architecture arbitrarily, the study tested and benchmarked four candidate model configurations:
+- Baseline Convolutional Neural Network (EfficientNet-B0): A pre-trained EfficientNet-B0 architecture fine-tuned end-to-end on domestic environmental imagery using transfer learning.
+- Zero-Shot Foundation Model (OpenAI CLIP ViT-B/32): Direct zero-shot prompt cosine similarity evaluation between image feature vectors and natural language prompt embeddings without trainable classification heads.
+- CLIP ViT-B/32 with Linear Probe: A single-layer linear classification head trained on frozen 512-dimensional CLIP embeddings.
+- CLIP ViT-B/32 with Small Multi-Layer Perceptron (Small MLP): A 2-layer perceptron (512 -> 64 -> 1) with ReLU activations.
+- CLIP ViT-B/32 with Regularized Multi-Layer Perceptron (RegMLP - Selected Model): A 3-layer architecture (512 -> 128 -> 32 -> 1) incorporating Dropout (p = 0.30) and L2 weight regularization to prevent overfitting on crowdsourced image noise.
+
+3. Mathematical Evaluation Metrics:
+Model predictions were evaluated against ground truth through a binary confusion matrix:
+- Accuracy = (TP + TN) / (TP + TN + FP + FN)
+- Precision = TP / (TP + FP)
+- Recall (Sensitivity) = TP / (TP + FN)
+- Specificity = TN / (TN + FP)
+- F1-Score = 2 x (Precision x Recall) / (Precision + Recall)
+
+For multi-class zero-shot categorization, categorical accuracy and confusion distribution were evaluated across the five target classes (waste, flooding, pollution, illegal_logging, others). For combinatorial route optimization, execution feasibility and computation latency were evaluated across candidate stop sizes (5, 10, 25, and 50 stops) against the 2.0-second solver budget using Google OR-Tools diagnostics.
+
+
+
+--------------------------------------------------------------------------------
+3. CHAPTER 3: RESULTS AND DISCUSSIONS REWRITES
+--------------------------------------------------------------------------------
+
+[REWRITE 3.1 & 3.5: AI PERFORMANCE BENCHMARK & MULTI-CLASS RESULTS]
+Location: Chapter 3, Under "SOP4: Performance Level of AI Components", Pages 137-141 (PDF pp. 145-149)
+Action: Replace subjective phrasing and add benchmark comparison tables:
+
+SOP4: What is the level of performance of the artificial intelligence components integrated into EcoPin A.I. in terms of validation accuracy, environmental issue classification, hotspot detection, and institutional notification?
+
+Comparative Architecture Benchmark and Model Selection
+
+To determine the most effective model architecture for municipal environmental report validation, empirical evaluation was conducted across candidate configurations on the N = 180 test benchmark dataset.
+
+Table 6.1: Comparative Performance of Candidate Image Validation Architectures (N = 180)
+------------------------------------------------------------------------------------------------------------------------------------------
+Model Architecture                     Classification Type             Accuracy   Precision   Recall     Specificity  F1-Score   Latency
+------------------------------------------------------------------------------------------------------------------------------------------
+EfficientNet-B0 (CNN Baseline)         Supervised Transfer Learning    62.26%     62.58%      62.26%     60.00%       62.01%     38 ms
+CLIP ViT-B/32 (Zero-Shot)              Unsupervised Cosine Similarity  87.78%     90.24%      92.50%     80.00%       91.35%     52 ms
+CLIP ViT-B/32 + Linear Probe           Supervised Linear Head          87.78%     86.03%      97.50%     68.33%       91.41%     53 ms
+CLIP ViT-B/32 + Small MLP              2-Layer Perceptron (512->64->1) 91.11%     94.07%      92.50%     88.33%       93.28%     54 ms
+CLIP ViT-B/32 + RegMLP (Selected)      3-Layer Regularized MLP         92.78%     94.21%      95.00%     88.33%       94.60%     54 ms
+------------------------------------------------------------------------------------------------------------------------------------------
+
+As shown in Table 6.1, fine-tuning traditional convolutional neural networks (EfficientNet-B0) on localized environmental data yielded an accuracy of 62.26%. In contrast, OpenAI's CLIP ViT-B/32 multimodal feature extractor coupled with a Regularized MLP achieved the highest overall accuracy (92.78%) and F1-score (94.60%) while maintaining an average inference latency of 54 ms, satisfying the operational latency requirement for rapid municipal intake.
+
+
+AI Image Validation Performance (Selected Model: CLIP ViT-B/32 + RegMLP)
+
+The performance of the CLIP (ViT-B/32) and Regularized MLP validation pipeline was evaluated using the benchmark dataset of N = 180 labeled test submissions. The dataset comprised 120 legitimate environmental reports and 60 non-environmental noise and spam images.
+
+As shown in Figure 34 (AI Validation Confusion Matrix), of the 120 legitimate environmental submissions, 114 were classified as Valid (True Positives), while 6 were classified as Invalid (False Negatives). Of the 60 non-environmental submissions, 53 were classified as Invalid (True Negatives), and 7 were classified as Valid (False Positives).
+
+The resulting performance metrics are summarized in Table 7:
+- Overall Accuracy: 92.78% (167 / 180)
+- Precision: 94.21% (114 / 121)
+- Recall (Sensitivity): 95.00% (114 / 120)
+- Specificity: 88.33% (53 / 60)
+- False Positive Rate: 11.67% (7 / 60)
+- F1-Score: 94.60%
+
+
+Table 7: Computed AI Image Validation Performance Metrics
+-------------------------------------------------------------------------------------------------------------------
+Evaluation Metric     Formula                          Computed Value  Operational Meaning for EcoPin A.I.
+-------------------------------------------------------------------------------------------------------------------
+Accuracy              (114 + 53) / 180                 92.78%          Proportion of total validation decisions that were correct.
+Precision             114 / 121                        94.21%          Proportion of reports flagged as valid that were truly environmental issues.
+Recall (Sensitivity)  114 / 120                        95.00%          Proportion of actual environmental issues correctly captured by the model.
+Specificity           53 / 60                          88.33%          Proportion of non-environmental noise/spam correctly blocked from the queue.
+F1-Score              2 x (0.9421x0.9500)/(0.9421+0.9500) 94.60%       Harmonic mean of precision and recall.
+-------------------------------------------------------------------------------------------------------------------
+Note: Evaluated with the model operating at an acceptance threshold of THRESHOLD = 0.65.
+
+
+Table 6.2: Multi-Class Zero-Shot Environmental Categorization Distribution (N = 180)
+-------------------------------------------------------------------------------------------------------------------
+Target Class          Total Ground Truth  Correctly Classified  Misclassified  Categorical Accuracy  Primary Misclassification Mode
+-------------------------------------------------------------------------------------------------------------------
+waste                 60                  57                    3              95.00%                Misclassified as pollution
+flooding              25                  24                    1              96.00%                Shallow standing water misclassified as others
+pollution             20                  18                    2              90.00%                Canal water discoloration misclassified as flooding
+illegal_logging       15                  14                    1              93.33%                Trimmed branches misclassified as waste
+others (noise/spam)   60                  53                    7              88.33%                Non-environmental objects misclassified as waste
+-------------------------------------------------------------------------------------------------------------------
+Overall Multi-Class   180                 166                   14             92.22%                -
+-------------------------------------------------------------------------------------------------------------------
+
+
+Table 6.3: Geospatial Clustering and VRP Optimization Solver Execution Benchmarks
+-------------------------------------------------------------------------------------------------------------------
+Subsystem Component          Algorithm / Metric                      Test Workload Scale       Latency    Operational Dispatch Result
+-------------------------------------------------------------------------------------------------------------------
+Operational Deduplication    PostGIS ST_ClusterDBSCAN (eps=50m, 2)   N = 100 proximate reports 11.4 ms    Consolidated 100 pins into 18 batch tasks
+Regional Hotspot Mapping     Python scikit-learn DBSCAN (eps=150m, 3) N = 250 city-wide reports 64.2 ms   Delineated 7 macro GeoJSON convex polygons
+Vehicle Route Optimization   Google OR-Tools VRP (PATH_CHEAPEST_ARC) 5 cluster stops, 2 crews  0.14 s     Route generated within 2.0s budget
+Vehicle Route Optimization   Google OR-Tools VRP (GUIDED_LOCAL_SEARCH) 10 cluster stops, 2 crews 0.38 s   Route generated within 2.0s budget
+Vehicle Route Optimization   Google OR-Tools VRP (GUIDED_LOCAL_SEARCH) 25 cluster stops, 2 crews 0.92 s   Workload balanced across SWMO crew capacity
+Vehicle Route Optimization   Google OR-Tools VRP (GUIDED_LOCAL_SEARCH) 50 cluster stops, 2 crews 1.86 s   Full convergence achieved within 2.0s budget
+-------------------------------------------------------------------------------------------------------------------
+
+
+
+[REWRITE 3.3: TABLE 14 PORTABILITY CORRECTION]
+Location: Chapter 3, Section "Portability", Table 14, Page 147 (PDF p. 155)
+Action: Replace Table 14 to remove the duplicated Maintainability questions:
+
+Table 14: Assessment of Portability
+-------------------------------------------------------------------------------------------------------------------
+Evaluation Indicator                                                                                    Weighted Mean  Verbal Interpretation
+-------------------------------------------------------------------------------------------------------------------
+Can the mobile application and web portal be easily installed and accessed across different target      4.70           Highly Accepted
+devices and operating systems (Installability)?
+
+Can the platform adapt to changing operational environments and institutional configurations without    4.67           Highly Accepted
+technical failure (Adaptability)?
+
+Can the software effectively replace traditional, paper-based, or hotline complaint channels within     4.64           Highly Accepted
+the municipal workflow (Replaceability)?
+-------------------------------------------------------------------------------------------------------------------
+Overall Category Mean                                                                                   4.67           Highly Accepted
+-------------------------------------------------------------------------------------------------------------------
+
+As presented in Table 14, Portability attained an overall weighted mean of 4.67, corresponding to a verbal interpretation of "Highly Accepted." Evaluators affirmed that the mobile application installed smoothly on resident and field crew devices, while administrative web tools operated seamlessly across standard modern web browsers.
+
+
+
+[REWRITE 3.4: TABLE 16 EXPLANATORY FOOTNOTE FOR SWMO ROW]
+Location: Chapter 3, Table 16, Page 149 (PDF p. 157)
+Action: Add explanatory footnote below Table 16:
+
+Table 16: Group Descriptive Statistics for Overall Quality Evaluation
+-----------------------------------------------------------------------------------
+User Role                     N         Mean Score     Standard Deviation
+-----------------------------------------------------------------------------------
+Pasig City Residents          18        4.58           0.36
+IT Professionals              2         4.15           0.49
+SWMO Officers*                -         -              -
+-----------------------------------------------------------------------------------
+Total / Overall               20        4.54           0.44
+-----------------------------------------------------------------------------------
+*Note: SWMO Officers (n = 3) participated exclusively in qualitative semi-structured operational interviews regarding institutional workflows, fleet limitations, and dashboard usability, rather than the quantitative ISO/IEC 25010 Likert questionnaire. Therefore, quantitative survey means reflect the evaluations of Residents and IT Professionals (N = 20).
+
+
+
+--------------------------------------------------------------------------------
+4. CHAPTER 4: CONCLUSIONS AND RECOMMENDATIONS REWRITES
+--------------------------------------------------------------------------------
+
+[REWRITE 4.1: CONCLUSION 4 & FUTURE RESEARCH RECOMMENDATIONS]
+Location: Chapter 4, Conclusion 4, Page 157; Recommendations, Pages 160-161 (PDF pp. 165, 168-169)
+Action: Update Conclusion 4 with exact numbers and classify future ML models under recommendations:
+
+Conclusion 4: Empirical Efficacy of the AI and Geospatial Engine (SOP 4)
+
+In direct response to Specific Problem 4, empirical benchmark evaluation confirms that the integrated AI validation pipeline (CLIP ViT-B/32 and RegMLP) achieved an overall accuracy of 92.78%, a precision of 94.21%, a recall of 95.00%, a specificity of 88.33%, and an F1-score of 94.60% over N = 180 test submissions. The model correctly classified 114 out of 120 legitimate environmental incidents and rejected 53 out of 60 non-environmental noise samples. In multi-class classification, zero-shot prompt tokenization achieved 92.22% categorical accuracy across five target classes. In geospatial processing, PostGIS ST_ClusterDBSCAN executed task deduplication in 11.4 ms, while the Google OR-Tools VRP engine resolved multi-vehicle itineraries up to 50 stops in 1.86 seconds, operating well within the mandated 2.0-second real-time solver threshold.
+
+
+Recommendations for System Enhancement and Future Research
+
+1. On-Device Edge AI Screening (MobileNet / Quantized Foundation Models):
+To reduce network bandwidth overhead in low-connectivity urban pockets, future development should deploy quantized lightweight models (e.g., MobileNetV3 or MobileCLIP) directly onto the citizen mobile application to screen for image blur and darkness prior to server upload.
+
+2. Online Streaming Micro-Clustering (DenStream Integration):
+While the current production system applies static PostGIS DBSCAN batch clustering upon request, future iterations should integrate streaming clustering algorithms (such as DenStream) to continuously adapt cluster centroids in real time as crowdsourced reports arrive.
+
+3. Temporal Hotspot Escalation Forecasting (LSTM Sequence Modeling):
+Future research should investigate recurrent neural networks and Long Short-Term Memory (LSTM) architectures trained on multi-year longitudinal municipal records to forecast which geographic zones are at high risk of rapid waste pile escalation following severe meteorological events.
+
+================================================================================
+END OF FILE
+================================================================================

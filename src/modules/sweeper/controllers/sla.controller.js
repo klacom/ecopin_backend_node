@@ -8,7 +8,7 @@ let nextScheduledRunTimestamp = null; // Will be managed by the cron setup in Ta
 
 export async function triggerSlaDetection(req, res) {
   // Check role-based access control (dispatch officer)
-  if (req.user?.role !== 'dispatch_officer' && req.user?.role !== 'admin' && req.user?.role !== 'system_administrator') {
+  if (!['officer','admin'].includes(req.user?.role)) {
     return res.status(403).json({ error: 'Access denied: Dispatch Officer role required' });
   }
 
@@ -40,25 +40,27 @@ export async function triggerSlaDetection(req, res) {
 
 export async function getSlaStatus(req, res) {
   // Check role-based access control
-  if (req.user?.role !== 'dispatch_officer' && req.user?.role !== 'admin' && req.user?.role !== 'system_administrator') {
+  if (!['officer','admin'].includes(req.user?.role)) {
     return res.status(403).json({ error: 'Access denied: Dispatch Officer role required' });
   }
 
   try {
     // Get current outlier count from reports table
-    const { count, error } = await supabase
+    const query = supabase
       .from('reports')
       .select('*', { count: 'exact', head: true })
-      .eq('is_outlier', true)
-      .eq('status', 'unresolved'); // Assuming we want unresolved outliers
+      .eq('lifecycle_state', 'sla_breached');
+    const { count, error } = await query;
 
     if (error) {
       throw error;
     }
 
+    const {data:lastAudit,error:auditError}=await supabase.from('sweeper_audit_log').select('created_at,event_data').eq('event_type','LIFECYCLE_RUN_COMPLETED').order('created_at',{ascending:false}).limit(1).maybeSingle();
+    if(auditError) throw auditError;
     res.json({
       isRunning: isJobRunning,
-      lastRun: lastRunTimestamp,
+      lastRun: lastAudit?.created_at ?? lastRunTimestamp,
       nextScheduledRun: nextScheduledRunTimestamp, // This would normally be synced with the cron scheduler
       currentOutlierCount: count || 0
     });

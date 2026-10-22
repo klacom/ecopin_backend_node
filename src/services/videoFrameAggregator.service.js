@@ -1,3 +1,4 @@
+import { ALLOWED_CLASSIFIER_CATEGORIES } from './classifierClient.service.js';
 import { VALIDATION_STATUS } from '../config/index.js';
 
 // Aggregation thresholds - configurable for tuning
@@ -16,7 +17,7 @@ const ENVIRONMENTAL_CLASSES = ['VALID', 'waste', 'pollution', 'flooding'];
  * @returns {Object} Aggregated validation result with status and metrics
  */
 export const aggregateVideoValidation = (frameResults) => {
-  console.log('[VIDEO-AGGREGATION] START - processing', frameResults.length, 'frame results');
+  console.log('[VIDEO-AGGREGATION] START - processing', frameResults?.length, 'frame results');
   
   if (!frameResults || !Array.isArray(frameResults) || frameResults.length === 0) {
     console.error('[VIDEO-AGGREGATION] No frame results provided');
@@ -48,7 +49,7 @@ export const aggregateVideoValidation = (frameResults) => {
   console.log(`[VIDEO-AGGREGATION] Frame analysis - total: ${totalFrames}, successful: ${successfulCount}, failed: ${failedCount}`);
 
   // Insufficient successful frames
-  if (successfulCount < MIN_SUCCESSFUL_FRAMES) {
+  if (successfulCount < MIN_SUCCESSFUL_FRAMES || successfulFrames.some(frame => frame.decision && !['APPROVED', 'REJECTED'].includes(frame.decision))) {
     console.log(`[VIDEO-AGGREGATION] MANUAL_REVIEW - insufficient successful frames (${successfulCount}/${MIN_SUCCESSFUL_FRAMES})`);
     return {
       validation_status: VALIDATION_STATUS.MANUAL_REVIEW,
@@ -62,16 +63,16 @@ export const aggregateVideoValidation = (frameResults) => {
       environmental_frames: 0,
       non_environmental_frames: 0,
       frame_results: frameResults,
-      rejection_reason: `Insufficient successful classifications (${successfulCount}/${totalFrames})`
+      rejection_reason: 'Insufficient conclusive frame classifications; manual review required'
     };
   }
 
   // Count environmental vs non-environmental frames
   const environmentalFrames = successfulFrames.filter(f => 
-    ENVIRONMENTAL_CLASSES.includes(f.predicted_class)
+    (f.decision ? f.decision === 'APPROVED' : ENVIRONMENTAL_CLASSES.includes(f.predicted_class))
   );
   const nonEnvironmentalFrames = successfulFrames.filter(f => 
-    !ENVIRONMENTAL_CLASSES.includes(f.predicted_class)
+    !(f.decision ? f.decision === 'APPROVED' : ENVIRONMENTAL_CLASSES.includes(f.predicted_class))
   );
 
   const environmentalCount = environmentalFrames.length;
@@ -102,7 +103,8 @@ export const aggregateVideoValidation = (frameResults) => {
   // Find dominant environmental class
   const classCounts = {};
   environmentalFrames.forEach(frame => {
-    const className = frame.predicted_class;
+    const className = ALLOWED_CLASSIFIER_CATEGORIES.includes(frame.predicted_category)
+      ? frame.predicted_category : frame.predicted_class;
     classCounts[className] = (classCounts[className] || 0) + 1;
   });
 

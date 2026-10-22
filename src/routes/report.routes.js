@@ -1,3 +1,6 @@
+import { getReportVideoPolicyHandler, validateReportVideo } from '../services/report-video-policy.service.js';
+import { fieldReportWrite } from '../middleware/field-report-write.middleware.js';
+import { uploadFieldReportPhoto, deleteFieldReportPhoto } from '../controllers/field-report-photo.controller.js';
 import { Router } from 'express';
 import {
     createReport,
@@ -6,6 +9,7 @@ import {
     getReportById,
     uploadEvidence,
     getReportEvidence,
+    getBatchReportEvidence,
     upload,
     mediaUpload,
     updateReportStatus,
@@ -19,16 +23,22 @@ import {
     updatePropertyOwnerConsent,
     lguResolveReport,
     citizenCloseReport,
+    citizenWithdrawReport,
     getSatisfactionAnalytics,
     createReportFromRejected,
     updateLifecycleStage,
     fetchAgencyResponses,
     logAgencyResponse,
     updateReportDetails,
-    syncReportMedia
+    syncReportMedia,
+    validateReportImage,
+    getStaffReports,
+    getReportQuota,
+    getBatchReportPublishers
 } from '../controllers/report.controller.js';
 import { batchSyncReports } from '../controllers/sync.controller.js';
 import { authenticate, optionalAuthenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
+import { enforceReportSubmissionQuota } from '../middleware/report-quota.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 
 const router = Router();
@@ -36,8 +46,19 @@ const router = Router();
 // Public routes don't require authentication
 router.get('/public', getPublicReports);
 
+// Citizen reports for authenticated user (must be declared before parameterized /:id route)
+router.get('/my', authenticate, checkUserSuspension, getMyReports);
+
+// Citizen daily submission quota status (WT-97)
+router.get('/media-policy', authenticate, checkUserSuspension, getReportVideoPolicyHandler);
+
+router.get('/quota', authenticate, checkUserSuspension, getReportQuota);
+
 // Optionally authenticated routes
 router.get('/:reportId/evidence', optionalAuthenticate, getReportEvidence);
+router.post('/batch-evidence', optionalAuthenticate, getBatchReportEvidence);
+router.post('/batch-publishers', optionalAuthenticate, getBatchReportPublishers);
+router.get('/:id', optionalAuthenticate, getReportById);
 
 // All other report routes require authentication
 router.use(authenticate);
@@ -45,19 +66,24 @@ router.use(authenticate);
 // Add suspension check for protected routes
 router.use(checkUserSuspension);
 
+// Pre-validation endpoint for clean photos
+router.post('/validate-image', mediaUpload.single('image'), validateReportImage);
+
 // Routes that don't need LGU/admin role first
 router.post('/sync/batch', batchSyncReports);
-router.post('/sync/media/:idempotency_key', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), syncReportMedia);
-router.post('/', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), createReport);
-router.get('/my', getMyReports);
-router.get('/:id', getReportById);
-router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), uploadEvidence);
+router.post('/sync/media/:idempotency_key', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), validateReportVideo, syncReportMedia);
+router.post('/', enforceReportSubmissionQuota, mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'clean_image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), validateReportVideo, createReport);
+router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), validateReportVideo, uploadEvidence);
 router.patch('/:id/close', citizenCloseReport); // Citizen can close their own report
-router.post('/:id/create-new', createReportFromRejected); // Create new report from rejected
+router.delete('/:id', citizenWithdrawReport); // Citizen can withdraw/delete their own report before triage/dispatch
+router.patch('/:id/withdraw', citizenWithdrawReport); // Alias for report withdrawal
+router.post('/:id/create-new', enforceReportSubmissionQuota, createReportFromRejected); // Create new report from rejected
 router.get('/cluster/:clusterId', getReportsByClusterId);
 
 // Routes that require officer/admin role
 router.use(authorize(ROLE_GROUPS.REPORT_MGMT));
+router.use(fieldReportWrite);
+router.get('/', getStaffReports);
 router.get('/analytics/satisfaction', getSatisfactionAnalytics);
 router.patch('/:id/status', updateReportStatus);
 router.patch('/:id/validation', updateReportValidation);
@@ -66,9 +92,9 @@ router.patch('/:id/details', updateReportDetails);
 router.get('/:id/agency-responses', fetchAgencyResponses);
 router.post('/:id/agency-responses', logAgencyResponse);
 router.post('/:id/notes', addReportNote);
-router.delete('/:id/photo', deleteReportPhoto);
+router.delete('/:id/photo', (req,res,next) => req.user.role === 'field_crew' ? deleteFieldReportPhoto(req,res,next) : deleteReportPhoto(req,res,next));
 
-router.post('/:id/photo', beforeAfterUpload.single('image'), uploadReportPhoto);
+router.post('/:id/photo', beforeAfterUpload.single('image'), (req,res,next) => req.user.role === 'field_crew' ? uploadFieldReportPhoto(req,res,next) : uploadReportPhoto(req,res,next));
 router.patch('/cluster/:clusterId/complete', batchCompleteReportsByCluster);
 router.patch('/:id/property-owner-consent', updatePropertyOwnerConsent);
 router.patch('/:id/resolve', lguResolveReport); // LGU resolves report

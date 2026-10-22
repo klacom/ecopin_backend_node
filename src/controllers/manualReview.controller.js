@@ -172,7 +172,7 @@ export const completeReviewItem = async (req, res, next) => {
                     reportUpdate.validation_status = 'pending_ai_validation';
                     reportUpdate.flagged_severe = false;
                     reportUpdate.severe_violation_category = null;
-                    reportUpdate.rejection_reason = null;
+                    reportUpdate.notes = null;
                 } else if (action === 'approve') {
                     // Keep the rejection status
                     reportUpdate.validation_status = 'rejected';

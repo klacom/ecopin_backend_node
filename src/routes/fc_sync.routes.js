@@ -28,6 +28,6 @@ router.use(authenticate);
 router.use(checkUserSuspension);
 
 // Accessible to field_crew, officer, and admin (FIELD_OPS group).
-router.post('/batch', authorize(ROLE_GROUPS.FIELD_OPS), batchFcSync);
+router.post(['/sync/batch', '/batch'], authorize(ROLE_GROUPS.FIELD_OPS), batchFcSync);
 
 export default router;

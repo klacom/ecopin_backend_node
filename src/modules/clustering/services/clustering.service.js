@@ -1,99 +1,24 @@
 import { supabaseAdmin } from '../../../config/supabase.config.js';
 import { CLUSTERING_CONFIG } from '../config/clustering.config.js';
 
-import { outlierClusteringService } from './outlier-clustering.service.js';
 
 export const clusterReports = async () => {
   try {
     console.log('Starting report clustering...');
 
-    // 1. First process and isolate any SLA-breached outliers
-    const outlierResult = await outlierClusteringService.clusterOutliers();
-    console.log(`Created ${outlierResult.clusterCount} outlier clusters.`);
-
-    // 2. Run DBSCAN to find clusters among remaining standard reports
-    const { data: clustered, error: clusterError } = await supabaseAdmin.rpc(
-      'dbscan_reports',
-      {
-        p_eps: CLUSTERING_CONFIG.dbscan.eps,
-        p_minpoints: CLUSTERING_CONFIG.dbscan.minpoints
-      }
-    );
-
-    if (clusterError) {
-      console.error('Error running DBSCAN:', clusterError);
-      throw clusterError;
-    }
-
-    if (!clustered || clustered.length === 0) {
-      console.log('No reports to cluster.');
-      return { message: 'No standard reports to cluster.', outlierClusters: outlierResult.clusterCount, clusters: [] };
-    }
-
-    //Group results by DBSCAN cluster_id (null = noise / singleton)
-    const groups = new Map();
-
-    for (const row of clustered) {
-      if (row.cluster_id === null) continue; // skip noise points
-      if (row.is_outlier === true) continue; // explicitly exclude outliers from standard clustering
-
-      if (!groups.has(row.cluster_id)) {
-        groups.set(row.cluster_id, { ids: [], issue_types: [], locations: [] });
-      }
-      const g = groups.get(row.cluster_id);
-      g.ids.push(row.id);
-      g.issue_types.push(row.issue_type);
-      g.locations.push(row.location);
-    }
-
-    if (groups.size === 0) {
-      console.log('No clusters formed (all reports are singletons).');
-      return { message: 'No clusters formed (all reports are singletons).', clusters: [] };
-    }
-
-    //Upsert each cluster into the clusters table
-    const results = [];
-
-    for (const [clusterId, group] of groups) {
-      // Determine the dominant issue type in this cluster
-      const typeCounts = group.issue_types.reduce(
-        (acc, t) => ({ ...acc, [t]: (acc[t] ?? 0) + 1 }),
-        {}
-      );
-      const dominantType = Object.entries(typeCounts).sort((a, b) => b[1] - a[1])[0][0];
-
-      // Determine severity based on report count using config thresholds
-      const count = group.ids.length;
-      const severity = count >= CLUSTERING_CONFIG.severity.high ? 'high'
-        : count >= CLUSTERING_CONFIG.severity.medium ? 'medium'
-          : 'low';
-
-      // Compute centroid & insert cluster row via SQL so PostGIS handles geometry
-      const { data: newCluster, error: insertError } = await supabaseAdmin.rpc(
-        'upsert_cluster_for_reports_v2',
-        {
-          p_report_ids: group.ids,
-          p_issue_type: dominantType,
-          p_severity: severity,
-          p_radius_meters: CLUSTERING_CONFIG.dbscan.eps,
-        }
-      );
-
-      if (insertError) {
-        console.error(`Failed to upsert cluster ${clusterId}:`, insertError);
-        continue;
-      }
-
-      results.push({
-        cluster_id: clusterId,
-        cluster_uuid: newCluster,
-        report_count: count,
-      });
-    }
-
-    console.log(`Created/updated ${results.length} cluster(s).`);
+    // One database transaction owns discovery, membership and cluster identity.
+    const { data: clustered, error } = await supabaseAdmin.rpc('cluster_reports_incremental', {
+      p_eps: CLUSTERING_CONFIG.dbscan.eps,
+      p_minpoints: CLUSTERING_CONFIG.dbscan.minpoints,
+    });
+    if (error) throw error;
+    const results = (clustered ?? []).map((row, index) => ({
+      cluster_id: index,
+      cluster_uuid: row.cluster_uuid,
+      report_count: row.report_count,
+    }));
     return {
-      message: `Created/updated ${results.length} cluster(s).`,
+      message: results.length ? `Created/updated ${results.length} cluster(s).` : 'No approved reports to cluster.',
       clusters: results,
     };
   } catch (error) {
@@ -145,26 +70,7 @@ export const getClusterById = async (clusterId) => {
   }
 };
 
-export const updateClusterStatus = async (clusterId, status) => {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('clusters')
-      .update({ status })
-      .eq('id', clusterId)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    // Also update all member reports to the same status
-    await supabaseAdmin
-      .from('reports')
-      .update({ status })
-      .eq('cluster_id', clusterId);
-
-    return data;
-  } catch (error) {
-    console.error('Error updating cluster status:', error);
-    throw error;
-  }
+export const updateClusterStatus = async (clusterId,status,actor) => {
+  const {data,error}=await supabaseAdmin.rpc('set_cluster_queue_status',{cluster_id:clusterId,actor,next_status:status});
+  if(error) throw error;return data;
 };
