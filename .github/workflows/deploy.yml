@@ -13,18 +13,29 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+      - name: Refresh system package index
+        timeout-minutes: 5
+        run: sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+      - name: Install native dependencies
+        timeout-minutes: 5
+        run: sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ffmpeg libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
       - run: npm ci
       - name: Syntax
         run: find src -name '*.js' -print0 | xargs -0 -n1 node --check
       - run: npm test -- --runInBand
       - run: npm audit --omit=dev --audit-level=high
+      - name: Deployment script checks
+        run: |
+          bash -n scripts/deploy/deploy-backend.sh
+          bash -n scripts/deploy/setup-host.sh
+          pwsh -File scripts/deploy/test-bootstrap.ps1
       - name: Build immutable release
         if: github.event_name != 'pull_request'
         run: |
