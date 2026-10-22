@@ -3,7 +3,8 @@ import {
   getConfig, 
   updateSlaThresholdConfig, 
   updateShiftDurationConfig, 
-  updateWorkTimeConfig 
+  updateWorkTimeConfig,
+  updateMaturationThresholdConfig
 } from '../controllers/configuration.controller.js';
 import { getAuditLogs } from '../controllers/audit.controller.js';
 
@@ -16,6 +17,7 @@ router.use(authenticate, authorize(ROLE_GROUPS.DESK_OPS));
 // Configuration Routes
 router.get('/config', authenticate, getConfig);
 router.put('/config/sla-threshold', authenticate, updateSlaThresholdConfig);
+router.put('/config/maturation-threshold', authenticate, updateMaturationThresholdConfig);
 router.put('/config/shift-duration', authenticate, updateShiftDurationConfig);
 router.put('/config/work-time', authenticate, updateWorkTimeConfig);
 

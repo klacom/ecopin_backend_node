@@ -1,8 +1,10 @@
 import { 
   getSlaThreshold, 
+  getMaturationThreshold,
   getShiftDuration, 
   getAllWorkTimes, 
   updateSlaThreshold, 
+  updateMaturationThreshold,
   updateShiftDuration, 
   updateWorkTime 
 } from '../services/configuration.service.js';
@@ -13,10 +15,11 @@ export async function getConfig(req, res) {
   }
 
   try {
-    const [slaThreshold, shiftDuration, workTimes] = await Promise.all([
+    const [slaThreshold, shiftDuration, workTimes, maturationThreshold] = await Promise.all([
       getSlaThreshold(),
       getShiftDuration(),
-      getAllWorkTimes()
+      getAllWorkTimes(),
+      getMaturationThreshold()
     ]);
 
     const workTimesMap = {};
@@ -30,7 +33,8 @@ export async function getConfig(req, res) {
       slaThreshold,
       shiftDuration,
       defaultShiftDuration: shiftDuration,
-      workTimes: workTimesMap
+      workTimes: workTimesMap,
+      maturationThreshold
     });
   } catch (error) {
     console.error('Error fetching configuration:', error);
@@ -112,5 +116,29 @@ export async function updateWorkTimeConfig(req, res) {
   } catch (error) {
     console.error(`Error updating work time for ${reportType}:`, error);
     res.status(400).json({ error: error.message || 'Failed to update work time' });
+  }
+}
+
+export async function updateMaturationThresholdConfig(req, res) {
+  if (req.user?.role !== 'admin' && req.user?.role !== 'system_administrator') {
+    return res.status(403).json({ error: 'Access denied: Admin role required' });
+  }
+
+  const { hours } = req.body;
+  const adminId = req.user?.id || 'admin';
+
+  if (!hours || typeof hours !== 'number' || hours < 1 || hours > 168) {
+    return res.status(400).json({ error: 'Maturation threshold must be a number between 1 and 168 hours' });
+  }
+
+  try {
+    const updated = await updateMaturationThreshold(hours, adminId);
+    res.json({ 
+      message: 'Maturation threshold updated successfully', 
+      maturationThreshold: typeof updated === 'object' && updated !== null ? (updated.hours ?? hours) : updated 
+    });
+  } catch (error) {
+    console.error('Error updating maturation threshold:', error);
+    res.status(500).json({ error: error.message || 'Failed to update maturation threshold' });
   }
 }

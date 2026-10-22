@@ -51,6 +51,21 @@ export async function updateSlaThreshold(hours, adminId) {
   return updateConfigurationValue('sla_threshold', { hours }, adminId);
 }
 
+export async function getMaturationThreshold() {
+  const config = await getConfigurationValue('maturation_threshold_hours', { hours: 6 });
+  if (config && typeof config === 'object' && config.hours !== undefined) {
+    return Number(config.hours);
+  }
+  return typeof config === 'number' ? config : 6;
+}
+
+export async function updateMaturationThreshold(hours, adminId) {
+  if (!hours || typeof hours !== 'number' || hours < 1 || hours > 168) {
+    throw new Error('Maturation threshold must be between 1 and 168 hours');
+  }
+  return updateConfigurationValue('maturation_threshold_hours', { hours }, adminId);
+}
+
 export async function getShiftDuration(crewId) {
   // Currently supports a global default shift duration, could be extended to be per-crew
   const config = await getConfigurationValue('shift_duration', { hours: 8 });
