@@ -70,7 +70,7 @@ try {
         @{Effect='Allow';Action=@('lambda:GetFunction','lambda:GetFunctionConfiguration','lambda:UpdateFunctionCode','lambda:InvokeFunction');
             Resource=@($functions | ForEach-Object { "arn:aws:lambda:${region}:${account}:function:$_" })},
         @{Effect='Allow';Action='ecr-public:GetAuthorizationToken';Resource='*'},
-        @{Effect='Allow';Action='sts:GetServiceBearerToken';Resource='*';Condition=@{StringEquals=@{'sts:AWSServiceName'='ecr-public.amazonaws.com'}}})}
+        @{Effect='Allow';Action='sts:GetServiceBearerToken';Resource='*'})}
     Ensure-Role 'ecopin-ml-github-deploy' (GitHub-Trust 'ecopin_ml_models' 'main' '1338119715') $mlPolicy
     $ec2Trust = @{Version='2012-10-17';Statement=@(@{Effect='Allow';Action='sts:AssumeRole';Principal=@{Service='ec2.amazonaws.com'}})}
     $ec2Policy = @{Version='2012-10-17';Statement=@(@{Effect='Allow';Action='s3:GetObject';Resource="arn:aws:s3:::$bucket/backend/*"})}
