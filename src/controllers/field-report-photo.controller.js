@@ -7,10 +7,10 @@ import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
 function respondToPhotoError(error, res, next) {
   if ((error.code === '42703' && error.message?.includes('before_photos')) ||
       (error.code === 'PGRST202' && error.message?.includes('set_report_before_photo'))) {
-    error.statusCode = 503;
-    error.publicCode = 'CREW_PHOTO_SCHEMA_NOT_READY';
-    error.publicMessage = 'Photo uploads are temporarily unavailable: the server needs the Before photo database update. Your photo remains on this device. Ask your administrator to update the server before retrying.';
-    error.photoOperation ??= 'read_assigned_report';
+    return res.status(503).json({
+      code: 'CREW_PHOTO_SCHEMA_NOT_READY',
+      message: 'Photo uploads are temporarily unavailable: the server needs the Before photo database update. Your photo remains on this device. Ask your administrator to update the server before retrying.',
+    });
   }
   return next(error);
 }
@@ -47,26 +47,10 @@ async function assignedReport(id, actor, expectedVersion) {
 }
 
 async function writePhoto(id, actor, slot, url, hash, version, photoKey) {
-  const operation = slot === 'before' ? 'set_report_before_photo' : 'set_report_photo';
-  const { data, error } = await db.rpc(operation, {
+  const { data, error } = await db.rpc(slot === 'before' ? 'set_report_before_photo' : 'set_report_photo', {
     report_id: id, actor, ...(slot === 'before' ? {photo_key:photoKey} : {slot}), url, photo_hash: hash, expected_version: version
   });
-  if (error) {
-    error.photoOperation = operation;
-    const rejection = error.code === '42501'
-      ? [403, 'CREW_PHOTO_FORBIDDEN', 'This report is no longer assigned to your crew. Refresh the task before retrying.']
-      : error.code === '22023'
-        ? [400, 'CREW_PHOTO_INVALID', 'The photo request is invalid. Refresh the report before retrying.']
-        : error.code === 'P0001' ? {
-          'Maximum 5 Before photos per report': [400, 'CREW_PHOTO_LIMIT', 'Maximum 5 Before photos per report. Remove a photo before adding another.'],
-          'Photo ID already used': [409, 'CREW_PHOTO_ID_CONFLICT', 'This photo ID already belongs to another photo. Refresh the report.'],
-          'This Before photo has already been uploaded': [409, 'CREW_PHOTO_DUPLICATE', 'This Before photo is already uploaded. Refresh the report.'],
-        }[error.message] : null;
-    [error.statusCode, error.publicCode, error.publicMessage] = rejection ?? [
-      500, 'CREW_PHOTO_SAVE_FAILED', 'The server could not save this photo to the report. Your photo remains on this device. Try again after the server issue is resolved.',
-    ];
-    throw error;
-  }
+  if (error) { error.statusCode = error.code === '42501' ? 403 : 400; throw error; }
   if (data.status === 'conflict') {
     const conflict = new Error(data.error_message || 'Report conflict');
     conflict.statusCode = 409;

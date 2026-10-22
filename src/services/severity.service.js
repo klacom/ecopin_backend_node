@@ -4,7 +4,7 @@ import { SEVERITY_CONFIG } from '../config/severity.config.js';
 /**
  * Maps a calculated score to a severity level string.
  */
-function getSeverityLevel(score) {
+export function getSeverityLevel(score) {
     for (const level of SEVERITY_CONFIG.levels) {
         if (score <= level.max) {
             return level.name;

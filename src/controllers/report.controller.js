@@ -11,7 +11,8 @@ import { aggregateVideoValidation } from '../services/videoFrameAggregator.servi
 import { VALIDATION_STATUS, VALID_IMAGE_MIME_TYPES, VALID_IMAGE_EXTENSIONS, VALID_VIDEO_MIME_TYPES, VALID_VIDEO_EXTENSIONS, EVIDENCE_PHOTO_FILE_SIZE, REPORT_VIDEO_FILE_SIZE, REPORT_PHOTOS_STORAGE_PATH, BEFORE_AFTER_PHOTO_FILE_SIZE, CLASSIFIER_SERVICE_URL } from '../config/index.js';
 import { clusterReports } from '../modules/clustering/index.js';
 import { uploadFromBuffer, deleteFromCloudinary, uploadVideoFromBuffer } from '../services/cloudinary.service.js';
-import { calculateSeverity } from '../services/severity.service.js';
+import { calculateSeverity, getSeverityLevel } from '../services/severity.service.js';
+import { ROLE_GROUPS } from '../constants/roles.js';
 import { classifyReportHazard } from '../services/hazard-classifier.service.js';
 import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
 import { notifyOfficers } from '../services/officer-notification.service.js';
@@ -739,6 +740,9 @@ export const validateReportImage = async (req, res, next) => {
             return res.status(502).json({ error: classifierResult.error || 'Classifier service unavailable' });
         }
         const mapped = mapClassifierToValidation(classifierResult);
+        const checkAvailable = ['VALID', 'INVALID'].includes(classifierResult.predicted_class) &&
+            Number.isFinite(classifierResult.confidence) && classifierResult.confidence >= 0 && classifierResult.confidence <= 1 &&
+            (!classifierResult.decision || ['APPROVED', 'REJECTED', 'MANUAL_REVIEW'].includes(classifierResult.decision));
         return res.json({
             ok: true,
             predicted_class: classifierResult.predicted_class,
@@ -746,7 +750,8 @@ export const validateReportImage = async (req, res, next) => {
             decision: classifierResult.decision,
             validation_status: mapped.status,
             predicted_category: classifierResult.predicted_category,
-            is_valid: classifierResult.decision !== 'REJECTED' && classifierResult.predicted_class === 'VALID'
+            check_available: checkAvailable,
+            is_valid: checkAvailable && mapped.status === VALIDATION_STATUS.APPROVED
         });
     } catch (err) {
         console.error('[validateReportImage] Error:', err);
@@ -776,6 +781,20 @@ export const createReport = async (req, res, next) => {
     const imageFiles = req.files && req.files['image'] ? req.files['image'] : [];
     const cleanImageFiles = req.files && req.files['clean_image'] ? req.files['clean_image'] : [];
     const videoFile = req.files && req.files['video'] ? req.files['video'][0] : null;
+
+    const reviewFlag = req.body.request_manual_review;
+    if (reviewFlag !== undefined && ![true, false, 'true', 'false'].includes(reviewFlag)) {
+        return res.status(400).json({ message: 'request_manual_review must be a boolean.' });
+    }
+    const requestManualReview = reviewFlag === true || reviewFlag === 'true';
+    const reviewReason = req.body.manual_review_reason;
+    if (requestManualReview && (typeof reviewReason !== 'string' || !reviewReason.trim() || reviewReason.length > 3000)) {
+        return res.status(400).json({ message: 'Describe the environmental concern for manual review (up to 3000 characters).' });
+    }
+    if (requestManualReview && imageFiles.length === 0) {
+        return res.status(400).json({ message: 'Attach a photo to request manual review.' });
+    }
+    const manualReviewNotes = requestManualReview ? `Reporter requested manual review: ${reviewReason.trim()}` : null;
 
     // Require at least one media type
     if (imageFiles.length === 0 && cleanImageFiles.length === 0 && !videoFile) {
@@ -918,6 +937,7 @@ export const createReport = async (req, res, next) => {
                 property_owner_consent_status: propertyOwnerConsentStatus,
                 status: onPrivateProperty ? 'pending_owner_consent' : 'unresolved',
                 validation_status: validationStatus,
+                ...(requestManualReview ? { notes: manualReviewNotes } : {}),
                 scale_level: scale_level || 'medium',
                 obstruction_level: obstruction_level || 'none',
                 photo_lat: parsedPhotoLat,
@@ -1250,6 +1270,12 @@ export const createReport = async (req, res, next) => {
                     }
                 }
 
+                // A citizen appeal can request officer review, never automatic approval.
+                if (requestManualReview) {
+                    finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
+                    finalRejectionReason = manualReviewNotes;
+                }
+
                 // Final database update with combined validation status
                 console.log(`[DATABASE-UPDATE] START report=${report.id}, status=${finalValidationStatus}, issue_type=${finalIssueType}`);
 
@@ -1257,6 +1283,7 @@ export const createReport = async (req, res, next) => {
                     validation_status: finalValidationStatus,
                     updated_at: new Date().toISOString(),
                 };
+                if (requestManualReview) updatePayload.notes = finalRejectionReason;
 
                 // Always set issue_type - use AI category if available, otherwise fallback
                 if (finalIssueType && finalIssueType !== 'pending' && ALLOWED_CLASSIFIER_CATEGORIES.includes(finalIssueType)) {
@@ -1572,26 +1599,54 @@ export const updateReportStatus = async (req, res, next) => {
 
 export const updateReportValidation = async (req, res, next) => {
     const { id } = req.params;
-    const { validation_status, rejection_reason } = req.body;
+    const { validation_status, rejection_reason, severity_score } = req.body;
     const user_id = req.user.id;
+    const hasSeverity = severity_score !== undefined;
+
+    if (hasSeverity && !ROLE_GROUPS.DESK_OPS.includes(req.user.role)) {
+        return res.status(403).json({ message: 'Only officers and administrators can assign severity.' });
+    }
+    if (hasSeverity && (!Number.isInteger(severity_score) || severity_score < 0 || severity_score > 100)) {
+        return res.status(400).json({ message: 'Choose a whole-number severity score from 0 to 100.' });
+    }
+    if (hasSeverity && validation_status !== 'approved') {
+        return res.status(400).json({ message: 'Severity can only be assigned when approving an accepted report.' });
+    }
 
     try {
         // Get current validation status for audit log
-        const { data: currentReport } = await supabase
+        const { data: currentReport, error: readError } = await supabase
             .from('reports')
-            .select('validation_status, user_id')
+            .select('validation_status, user_id, severity_score, notes')
             .eq('id', id)
             .single();
+        if (readError) throw readError;
+        if (!currentReport) return res.status(404).json({ message: 'Report not found.' });
+        if (validation_status === 'approved' && !hasSeverity &&
+            (currentReport.validation_status === 'manual_review' || currentReport.severity_score == null)) {
+            return res.status(400).json({ message: 'Assign a severity score from 0 to 100 before approving this report.' });
+        }
 
         const updateData = {
             validation_status,
             updated_at: new Date().toISOString()
         };
+        if (hasSeverity) {
+            updateData.severity_score = severity_score;
+            updateData.severity_level = getSeverityLevel(severity_score);
+            updateData.severity_factors = {
+                source: 'officer_manual', assigned_by: user_id, assigned_at: updateData.updated_at,
+                explanation: 'Severity assigned by an officer during report review.',
+            };
+        }
 
         // Record rejection reason in notes for schema compatibility
         if (validation_status === 'rejected') {
             if (rejection_reason !== undefined) {
-                updateData.notes = rejection_reason;
+                updateData.notes = typeof currentReport.notes === 'string' &&
+                    currentReport.notes.startsWith('Reporter requested manual review:')
+                    ? `${currentReport.notes}\n\nOfficer rejection reason: ${rejection_reason}`
+                    : rejection_reason;
             }
         }
 
@@ -1599,6 +1654,7 @@ export const updateReportValidation = async (req, res, next) => {
             .from('reports')
             .update(updateData)
             .eq('id', id)
+            .eq('validation_status', currentReport.validation_status)
             .select()
             .single();
 
