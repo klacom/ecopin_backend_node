@@ -60,7 +60,8 @@ app.use(rateLimiter);
 // Health check endpoint
 app.get('/health', async (req, res) => {
     const { supabase } = await import('./config/supabase.config.js');
-    const { CLASSIFIER_SERVICE_URL } = await import('./config/index.js');
+    const { CLASSIFIER_SERVICE_URL, USE_AWS_CLASSIFIER, AWS_CLASSIFIER_URL } = await import('./config/index.js');
+    const classifierHealthUrl = USE_AWS_CLASSIFIER ? AWS_CLASSIFIER_URL : `${CLASSIFIER_SERVICE_URL}/health`;
 
     const healthCheck = {
         status: 'OK',
@@ -85,11 +86,11 @@ app.get('/health', async (req, res) => {
 
     // Check classifier service availability
     try {
-        if (CLASSIFIER_SERVICE_URL) {
+        if (classifierHealthUrl) {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 5000);
 
-            const response = await fetch(`${CLASSIFIER_SERVICE_URL}/health`, {
+            const response = await fetch(classifierHealthUrl, {
                 signal: controller.signal
             }).catch(() => null);
 
