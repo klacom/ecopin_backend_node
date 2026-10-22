@@ -6,14 +6,16 @@ function ranked(a, b) {
     Date.parse(a.created_at ?? 0) - Date.parse(b.created_at ?? 0) || a.id.localeCompare(b.id);
 }
 
-export function groupClustersForTask(clusters, { radiusM = 200 } = {}) {
+export function groupClustersForTask(clusters, { radiusM = 200, canGroup = () => true } = {}) {
   const remaining = [...clusters].sort(ranked);
   const groups = [];
   while (remaining.length) {
     const seed = remaining.shift();
     const members = [seed];
     for (let i = remaining.length - 1; i >= 0; i--) {
-      if (metresBetween(seed.centre, remaining[i].centre) <= radiusM) members.push(...remaining.splice(i, 1));
+      if (metresBetween(seed.centre, remaining[i].centre) <= radiusM && canGroup([...members, remaining[i]])) {
+        members.push(...remaining.splice(i, 1));
+      }
     }
     members.sort(ranked);
     groups.push({ group_key: `cluster:${seed.id}`, centre: seed.centre, members,

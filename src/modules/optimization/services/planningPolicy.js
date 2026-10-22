@@ -77,7 +77,7 @@ function shiftMinutes(crew) {
   return minutes;
 }
 
-export function selectPlanItems(candidates, crews, activeTasks, settings) {
+export function selectPlanItems(candidates, crews, activeTasks, settings, { reservePct = 0 } = {}) {
   const travel = { DRIVING: 25, MOTORCYCLE: 20, BICYCLE: 15, WALKING: 10 }[settings.travel_mode] ?? 25;
   const avgDistanceKmPerLeg = { DRIVING: 6, MOTORCYCLE: 5, BICYCLE: 3, WALKING: 1.5 }[settings.travel_mode] ?? 5;
   const capable = crews.filter(crew => crew.availability_status === 'available' && crew.shift_start && crew.shift_end && (settings.mode === 'sweeper' ? crew.supports_sweeper : crew.supports_standard) && ((crew.member_profile_ids?.length ?? 0) > 0 || crew.team_lead_profile_id));
@@ -96,7 +96,7 @@ export function selectPlanItems(candidates, crews, activeTasks, settings) {
     return {
       crew,
       total,
-      remaining: Math.max(0, total - busy.reduce((sum, task) => sum + (task.estimated_duration_min ?? 60), 0)),
+      remaining: Math.max(0, total - busy.reduce((sum, task) => sum + Number(task.estimated_duration_min ?? 60), 0)) * (1 - reservePct / 100),
       accumulated_travel_min: 0,
       accumulated_distance_km: 0,
       count: busy.length,

@@ -167,20 +167,31 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
   if (![depot.lat, depot.lng].every(Number.isFinite)) throw new Error('Configure swmo_depot before Mixed planning');
   settings.depot = depot;
   const vehicles = buildVehicles(crews, depot, settings, activeTasks);
-  if (!vehicles.length) throw new Error('No capable crews are available');
+  if (!vehicles.length) {
+    const configuredCrews = crews.some(crew => crew.shift_start && crew.shift_end && (crew.supports_standard || crew.supports_sweeper));
+    throw new Error(configuredCrews
+      ? 'No remaining crew capacity: all eligible crews have exhausted their task slots or shift time.'
+      : 'No capable crews are available');
+  }
+  const generalists = crews.filter(crew => crew.supports_standard);
+  const generalistVehicles = vehicles.filter(v => v.supports_standard);
   const anchors = groupClustersForTask(snapshot.anchors.map(row => ({ id: row.id, centre: point(row),
     created_at: row.created_at, priority_score: Number(row.priority_score ?? 0),
     reportIds: row.report_ids, effortMinutes: Math.max(1, Math.ceil(Number(row.estimated_effort_minutes ?? 60) * weatherMultiplier)),
     estimated_volume_m3: amount(row.estimated_volume_m3) ?? defaultReportVolume(row),
-    estimated_weight_kg: amount(row.estimated_weight_kg) ?? defaultReportWeight(row) })));
+    estimated_weight_kg: amount(row.estimated_weight_kg) ?? defaultReportWeight(row) })), {
+    // A nearby cluster must not turn otherwise feasible work into one oversized task.
+    canGroup: members => generalistVehicles.some(vehicle =>
+      Math.ceil(members.reduce((sum, member) => sum + member.effortMinutes, 0) * vehicle.service_time_factor) <= vehicle.effective_budget_min &&
+      members.reduce((sum, member) => sum + member.estimated_volume_m3, 0) <= vehicle.max_volume_m3 - vehicle.starting_volume_m3 + 1e-4 &&
+      members.reduce((sum, member) => sum + member.estimated_weight_kg, 0) <= vehicle.max_weight_kg - vehicle.starting_weight_kg + 1e-4)
+  });
   const candidates = anchors.map(group => ({ item_type: 'cluster', cluster_id: group.members[0].id,
     cluster_ids: group.clusterIds, report_id: null, group_key: group.group_key,
     report_ids: group.reportIds, centre: group.centre,
     service_minutes: Math.max(1, group.effortMinutes), priority_score: group.priority,
     estimated_volume_m3: group.members.reduce((sum, member) => sum + (amount(member.estimated_volume_m3) ?? defaultReportVolume(member)), 0),
     estimated_weight_kg: group.members.reduce((sum, member) => sum + (amount(member.estimated_weight_kg) ?? defaultReportWeight(member)), 0) }));
-  const generalists = crews.filter(crew => crew.supports_standard);
-  const generalistVehicles = vehicles.filter(v => v.supports_standard && v.max_tasks > 0 && v.effective_budget_min > 0);
   const hasActiveTasks = activeTasks.some(task => !['completed', 'cancelled'].includes(task.status));
   const isCandidateViable = candidate => {
     if (!generalistVehicles.length) return false;
@@ -194,8 +205,8 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
   };
   const viableCandidates = hasActiveTasks ? candidates.filter(isCandidateViable) : candidates;
   const oversizedCandidates = hasActiveTasks ? candidates.filter(c => !isCandidateViable(c)) : [];
-  const anchorSelection = selectPlanItems(viableCandidates, generalists, activeTasks, {
-    ...settings, capacity_utilization: settings.capacity_utilization * (1 - settings.mixed_bundle_reserve_pct / 100) });
+  const anchorSelection = selectPlanItems(viableCandidates, generalists, activeTasks, settings,
+    { reservePct: settings.mixed_bundle_reserve_pct });
   const crewById = new Map(crews.map(crew => [crew.id, crew]));
   const selectedGroups = anchorSelection.items.filter(item => item.is_selected).map(item => {
     const plannedVehicle = vehicles.find(v => v.id === item.planned_crew_id);
