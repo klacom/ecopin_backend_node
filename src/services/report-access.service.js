@@ -33,6 +33,42 @@ export async function readReportForViewer(db, id, viewer) {
         detail: true
       };
     }
+
+    if (viewer.role === 'field_crew') {
+      try {
+        const { data: rep } = await db.from('reports')
+          .select('*, profiles(id, full_name, data_consent)')
+          .eq('id', id)
+          .maybeSingle();
+        if (rep?.cleanup_task_id) {
+          const { data: task } = await db.from('cleanup_tasks')
+            .select('status, route_status, assigned_crew_ids, assigned_field_crew_id')
+            .eq('id', rep.cleanup_task_id)
+            .maybeSingle();
+          if (task && ['created','pending','assigned','en_route','in_progress','partially_completed'].includes(task.status) && task.route_status === 'ready') {
+            let isAssigned = task.assigned_crew_ids?.includes(viewer.id);
+            if (!isAssigned && task.assigned_field_crew_id) {
+              const { data: crew } = await db.from('field_crews').select('team_lead_profile_id, member_profile_ids').eq('id', task.assigned_field_crew_id).maybeSingle();
+              if (crew && (crew.team_lead_profile_id === viewer.id || crew.member_profile_ids?.includes(viewer.id))) {
+                isAssigned = true;
+              }
+            }
+            if (isAssigned) {
+              const consent = rep.profiles?.data_consent === true;
+              const pubName = consent && rep.profiles?.full_name ? rep.profiles.full_name : 'Anonymous';
+              return {
+                report: {
+                  ...rep,
+                  publisher_name: pubName,
+                  publisher_disclosed: consent
+                },
+                detail: true
+              };
+            }
+          }
+        }
+      } catch (_) {}
+    }
   }
   const {data:report,error:readError} = await db.from('public_reports')
     .select(PUBLIC_REPORT_FIELDS)

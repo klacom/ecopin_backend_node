@@ -61,15 +61,17 @@ export function generateMixedRoutesFromProposal(proposal, commitResults, crews, 
   const crewById = new Map(crews.map(crew => [crew.id, crew]));
   const routes = [];
   for (const proposed of proposal.routes) {
-    const crew = crewById.get(proposed.vehicle_id);
-    if (!crew) throw new Error('Saved route names an unavailable crew');
+    // Commit loads only crews receiving tasks; solver routes can be empty or
+    // lose all optional stops at commit. Validate the crew only for kept work.
     const kept = proposed.stops.filter(stop => {
       const key = stop.task_id.startsWith('satellite:') ?
         [...committed.keys()].find(group => committed.get(group).satellite_report_ids?.includes(stop.task_id.slice(10))) :
         stop.task_id;
-      return key && committed.has(key) && committed.get(key).crew_id === crew.id;
+      return key && committed.has(key) && committed.get(key).crew_id === proposed.vehicle_id;
     });
     if (!kept.length) continue;
+    const crew = crewById.get(proposed.vehicle_id);
+    if (!crew) throw new Error('Saved route names an unavailable crew');
     const taskIds = [];
     const waypoints = [{ sequence_order: 0, latitude: depot.lat, longitude: depot.lng,
       cleanup_task_id: null, report_id: null, waypoint_type: 'depot_start',

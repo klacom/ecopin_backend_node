@@ -7,10 +7,10 @@ import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
 function respondToPhotoError(error, res, next) {
   if ((error.code === '42703' && error.message?.includes('before_photos')) ||
       (error.code === 'PGRST202' && error.message?.includes('set_report_before_photo'))) {
-    return res.status(503).json({
-      code: 'CREW_PHOTO_SCHEMA_NOT_READY',
-      message: 'Photo uploads are temporarily unavailable: the server needs the Before photo database update. Your photo remains on this device. Ask your administrator to update the server before retrying.',
-    });
+    error.statusCode = 503;
+    error.publicCode = 'CREW_PHOTO_SCHEMA_NOT_READY';
+    error.publicMessage = 'Photo uploads are temporarily unavailable: the server needs the Before photo database update. Your photo remains on this device. Ask your administrator to update the server before retrying.';
+    error.photoOperation ??= 'read_assigned_report';
   }
   return next(error);
 }
@@ -22,21 +22,57 @@ async function assignedReport(id, actor, expectedVersion) {
   const { data: report, error } = await db.from('reports').select('id,cleanup_task_id,fc_version,before_photo_url,after_photo_url,before_photo_hash,after_photo_hash,before_photos,status').eq('id', id).maybeSingle();
   if (error) throw error;
   if (!report?.cleanup_task_id) { const denied = new Error('Report is not assigned'); denied.statusCode = 403; throw denied; }
-  const { data: task, error: taskError } = await db.from('cleanup_tasks').select('status,route_status,assigned_crew_ids').eq('id', report.cleanup_task_id).maybeSingle();
+  const { data: task, error: taskError } = await db.from('cleanup_tasks').select('status,route_status,assigned_crew_ids,assigned_field_crew_id').eq('id', report.cleanup_task_id).maybeSingle();
   if (taskError) throw taskError;
-  if (!task || !['created','pending','assigned','en_route','in_progress','partially_completed'].includes(task.status) || task.route_status !== 'ready' || !task.assigned_crew_ids?.includes(actor)) {
+  if (!task || !['created','pending','assigned','en_route','in_progress','partially_completed'].includes(task.status) || task.route_status !== 'ready') {
     const denied = new Error('Report is not assigned to this crew'); denied.statusCode = 403; throw denied;
   }
-  if (report.fc_version !== expectedVersion) { const stale = new Error('Report changed; refresh before uploading'); stale.statusCode = 409; throw stale; }
+  let isAssigned = task.assigned_crew_ids?.includes(actor);
+  if (!isAssigned && task.assigned_field_crew_id) {
+    const { data: crew } = await db.from('field_crews').select('team_lead_profile_id,member_profile_ids').eq('id', task.assigned_field_crew_id).maybeSingle();
+    if (crew && (crew.team_lead_profile_id === actor || crew.member_profile_ids?.includes(actor))) {
+      isAssigned = true;
+    }
+  }
+  if (!isAssigned) {
+    const denied = new Error('Report is not assigned to this crew'); denied.statusCode = 403; throw denied;
+  }
+  if (report.fc_version !== expectedVersion) {
+    const stale = new Error('Report changed; refresh before uploading');
+    stale.statusCode = 409;
+    stale.serverRecord = report;
+    throw stale;
+  }
   return report;
 }
 
 async function writePhoto(id, actor, slot, url, hash, version, photoKey) {
-  const { data, error } = await db.rpc(slot === 'before' ? 'set_report_before_photo' : 'set_report_photo', {
+  const operation = slot === 'before' ? 'set_report_before_photo' : 'set_report_photo';
+  const { data, error } = await db.rpc(operation, {
     report_id: id, actor, ...(slot === 'before' ? {photo_key:photoKey} : {slot}), url, photo_hash: hash, expected_version: version
   });
-  if (error) { error.statusCode = error.code === '42501' ? 403 : 400; throw error; }
-  if (data.status === 'conflict') { const conflict = new Error(data.error_message); conflict.statusCode = 409; throw conflict; }
+  if (error) {
+    error.photoOperation = operation;
+    const rejection = error.code === '42501'
+      ? [403, 'CREW_PHOTO_FORBIDDEN', 'This report is no longer assigned to your crew. Refresh the task before retrying.']
+      : error.code === '22023'
+        ? [400, 'CREW_PHOTO_INVALID', 'The photo request is invalid. Refresh the report before retrying.']
+        : error.code === 'P0001' ? {
+          'Maximum 5 Before photos per report': [400, 'CREW_PHOTO_LIMIT', 'Maximum 5 Before photos per report. Remove a photo before adding another.'],
+          'Photo ID already used': [409, 'CREW_PHOTO_ID_CONFLICT', 'This photo ID already belongs to another photo. Refresh the report.'],
+          'This Before photo has already been uploaded': [409, 'CREW_PHOTO_DUPLICATE', 'This Before photo is already uploaded. Refresh the report.'],
+        }[error.message] : null;
+    [error.statusCode, error.publicCode, error.publicMessage] = rejection ?? [
+      500, 'CREW_PHOTO_SAVE_FAILED', 'The server could not save this photo to the report. Your photo remains on this device. Try again after the server issue is resolved.',
+    ];
+    throw error;
+  }
+  if (data.status === 'conflict') {
+    const conflict = new Error(data.error_message || 'Report conflict');
+    conflict.statusCode = 409;
+    conflict.serverRecord = data.server_record;
+    throw conflict;
+  }
   return data;
 }
 

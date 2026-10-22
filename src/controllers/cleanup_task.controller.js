@@ -169,7 +169,7 @@ async function photoTask(taskId,user) {
   const {data:task,error}=await supabase.from('cleanup_tasks').select('*').eq('id',taskId).single();
   if(error||!task) { const e=new Error('Task not found');e.statusCode=404;throw e; }
   if(!['created','pending','assigned','en_route','in_progress','partially_completed'].includes(task.status)) {
-    const e=new Error('Task is no longer accepting photos');e.statusCode=409;throw e;
+    const e=new Error('Task is no longer accepting photos');e.statusCode=409;e.serverRecord=task;throw e;
   }
   if(!['admin','officer'].includes(user.role)&&(!task.assigned_crew_ids?.includes(user.id)||task.route_status!=='ready')) {
     const e=new Error('Task access denied');e.statusCode=403;throw e;
@@ -202,7 +202,8 @@ export const uploadCleanupPhoto = async (req,res,next) => {
     const {data,error}=attachment;
     if(error||!data||data.status==='conflict') {
       await removeOrQueue(CLEANUP_TASK_PHOTOS_STORAGE_PATH, filePath);
-      return res.status(error?.code==='42501'?403:409).json({message:error?.message??'Task changed; retry photo upload'});
+      const conflictMsg = error?.message ?? (data?.error_message || 'Task changed; retry photo upload');
+      return res.status(error?.code==='42501'?403:409).json({message:conflictMsg,task:data?.server_record??null});
     }
     if (previousPhotoUrl) {
       const previousPath = extractValidatedStoragePath(previousPhotoUrl, CLEANUP_TASK_PHOTOS_STORAGE_PATH, taskId, photo_type);
