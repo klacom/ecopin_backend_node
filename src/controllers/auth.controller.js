@@ -4,6 +4,7 @@
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
 import { MOBILE_REDIRECT_URL } from "../config/index.js";
 import { generateVerificationToken, sendVerificationEmail } from "../services/email.service.js";
+import { renderVerificationHtml } from '../services/verification-template.service.js';
 import { createHash } from 'node:crypto';
 import { invalidateToken } from "../services/auth-cache.service.js";
 import { verifyJwtToken } from "../services/jwt-verifier.service.js";
@@ -71,21 +72,11 @@ export const register = async (req, res, next) => {
 
         // Generate and send verification email
         try {
-            console.log(`[Email Flow] Starting verification email process for ${email}...`);
-            
-            console.log(`[Email Flow] Generating token for user ID: ${data.user.id}`);
             const token = await generateVerificationToken(data.user.id, email);
-            console.log('[Email Flow] Verification token generated');
-            
-            console.log(`[Email Flow] Invoking sendVerificationEmail to SMTP transporter...`);
             if (token) await sendVerificationEmail(email, token);
-            console.log(`[Email Flow] sendVerificationEmail completed successfully!`);
-            
-        } catch (emailError) {
-            console.error('[Email Flow] FAILED to send verification email. Error details:', emailError);
-            if (emailError.stack) console.error('[Email Flow] Stack trace:', emailError.stack);
-            // We don't fail the registration, but they won't be able to log in. 
-            // They can use resend later.
+        } catch {
+            console.error('Registration verification email failed');
+            // Registration remains recoverable through resend; never log SMTP credentials.
         }
 
         // Log user creation
@@ -548,72 +539,9 @@ export const resendVerification = async (req, res, next) => {
 
         return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
     } catch (error) {
-        console.error('Verification resend failed');
+        console.error('Verification resend failed', { code: /^[A-Z0-9_]{1,24}$/.test(error?.code ?? '') ? error.code : 'UNKNOWN' });
         return res.status(200).json({ message: 'If an account exists, a verification email has been sent.' });
     }
-};
-
-// Helper function to render simple HTML page for deep link redirect
-const renderVerificationHtml = (message, isSuccess) => {
-    const color = isSuccess ? '#85D22D' : '#D32F2F';
-    const redirectUrl = `ecopin://auth/verified`;
-    
-    return `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <style>
-                body {
-                    background-color: #000000;
-                    color: #FFFFFF;
-                    font-family: -apple-system, system-ui, sans-serif;
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    justify-content: center;
-                    height: 100vh;
-                    margin: 0;
-                    text-align: center;
-                    padding: 20px;
-                }
-                .card {
-                    background: #121212;
-                    padding: 30px;
-                    border-radius: 16px;
-                    border: 1px solid #2C2C2C;
-                    max-width: 400px;
-                    width: 100%;
-                }
-                h2 { color: ${color}; }
-                .btn {
-                    display: inline-block;
-                    margin-top: 20px;
-                    padding: 12px 24px;
-                    background-color: #85D22D;
-                    color: #000000;
-                    text-decoration: none;
-                    border-radius: 8px;
-                    font-weight: bold;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="card">
-                <h2>${isSuccess ? 'Success' : 'Oops'}</h2>
-                <p>${message}</p>
-                ${isSuccess ? `<a href="${redirectUrl}" class="btn">Open App</a>` : ''}
-            </div>
-            ${isSuccess ? `
-            <script>
-                setTimeout(() => {
-                    window.location.href = '${redirectUrl}';
-                }, 1500);
-            </script>
-            ` : ''}
-        </body>
-        </html>
-    `;
 };
 
 export const getPasswordRequirements = async (req, res, next) => {

@@ -1,3 +1,4 @@
+import { verificationEmailHtml } from './verification-template.service.js';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '../config/supabase.config.js';
@@ -9,30 +10,21 @@ import { SMTP_FROM_NAME, SMTP_USER, APP_BASE_URL, EMAIL_VERIFICATION_EXPIRY_HOUR
  * @param {string} userId - The Supabase user ID
  * @returns {Promise<string|null>} - Token, or null when issuance is deferred.
  */
-export const generateVerificationToken = async (userId, email = null) => {
+export const generateVerificationToken = async (userId, email) => {
+    if (typeof email !== 'string' || !email.trim()) throw new Error('Verification email binding is required');
     const token = uuidv4();
     const tokenDigest = createHash('sha256').update(token).digest('hex');
     const rpcParams = {
         p_user_id: userId,
         p_token_digest: tokenDigest,
-        p_ttl_hours: EMAIL_VERIFICATION_EXPIRY_HOURS
+        p_ttl_hours: EMAIL_VERIFICATION_EXPIRY_HOURS,
+        p_email: email.trim().toLowerCase()
     };
-    if (email) {
-        rpcParams.p_email = email.trim().toLowerCase();
-    }
-    let { data, error } = await supabaseAdmin.rpc('issue_email_verification', rpcParams);
-
-    if (error && rpcParams.p_email && (error.code === 'PGRST202' || error.message?.includes('p_email'))) {
-        // Backward-compatible fallback for unmigrated live database
-        delete rpcParams.p_email;
-        const retryResult = await supabaseAdmin.rpc('issue_email_verification', rpcParams);
-        data = retryResult.data;
-        error = retryResult.error;
-    }
+    const { data, error } = await supabaseAdmin.rpc('issue_email_verification', rpcParams);
 
     if (error) {
         console.error('Error storing verification token', {
-            code: /^[0-9A-Z]{5}$/.test(error?.code ?? '') ? error.code : 'UNKNOWN'
+            code: /^[0-9A-Z]{5,12}$/.test(error?.code ?? '') ? error.code : 'UNKNOWN'
         });
         throw new Error('Failed to generate verification token');
     }
@@ -46,125 +38,16 @@ export const generateVerificationToken = async (userId, email = null) => {
  * @param {string} token - The verification token
  */
 export const sendVerificationEmail = async (toEmail, token) => {
-    console.log(`[Email Service] Preparing to send email to ${toEmail}`);
-    const verificationUrl = `${APP_BASE_URL}/api/auth/verify-email?token=${token}`;
-    console.log('[Email Service] Verification link prepared');
-    
-    // EcoPin Branded HTML Email Template
-    const htmlContent = `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <link rel="preconnect" href="https://fonts.googleapis.com">
-            <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-            <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-            <style>
-                body {
-                    margin: 0;
-                    padding: 0;
-                    background-color: #F5F7FA;
-                    font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                    color: #1A1A1A;
-                    -webkit-font-smoothing: antialiased;
-                }
-                .container {
-                    max-width: 600px;
-                    margin: 0 auto;
-                    padding: 40px 20px;
-                }
-                .card {
-                    background-color: #FFFFFF;
-                    border-radius: 16px;
-                    padding: 40px;
-                    text-align: center;
-                    border: 1px solid #E5E7EB;
-                    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-                }
-                .logo {
-                    font-size: 32px;
-                    font-weight: 700;
-                    color: #457113;
-                    margin-bottom: 24px;
-                    letter-spacing: -0.5px;
-                }
-                h1 {
-                    font-size: 28px;
-                    font-weight: 600;
-                    margin: 0 0 16px 0;
-                    color: #111827;
-                }
-                p {
-                    font-size: 16px;
-                    line-height: 1.6;
-                    color: #4B5563;
-                    margin: 0 0 32px 0;
-                }
-                .btn {
-                    display: inline-block;
-                    background-color: #457113;
-                    color: #FFFFFF;
-                    text-decoration: none;
-                    font-weight: 600;
-                    font-size: 16px;
-                    padding: 16px 32px;
-                    border-radius: 12px;
-                    transition: background-color 0.2s ease;
-                }
-                .btn:hover {
-                    background-color: #365A0F;
-                }
-                .footer {
-                    margin-top: 32px;
-                    font-size: 14px;
-                    color: #9CA3AF;
-                    text-align: center;
-                }
-                .link {
-                    color: #457113;
-                    word-break: break-all;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="card">
-                    <div class="logo">EcoPin</div>
-                    <h1>Verify your email</h1>
-                    <p>Welcome to EcoPin! To finish setting up your account, please confirm your email address by clicking the button below.</p>
-                    <a href="${verificationUrl}" class="btn">Verify Email Address</a>
-                    <p style="margin-top: 32px; font-size: 14px; color: #888888;">
-                        Or copy and paste this link into your browser:<br>
-                        <a href="${verificationUrl}" class="link">${verificationUrl}</a>
-                    </p>
-                </div>
-                <div class="footer">
-                    <p>If you didn't request this email, you can safely ignore it.</p>
-                    <p>&copy; ${new Date().getFullYear()} EcoPin. All rights reserved.</p>
-                </div>
-            </div>
-        </body>
-        </html>
-    `;
-
-    console.log(`[Email Service] Configuring mailOptions with SMTP_USER: ${SMTP_USER} and SMTP_FROM_NAME: ${SMTP_FROM_NAME}`);
-    const mailOptions = {
+    const verificationUrl = new URL('/api/auth/verify-email', APP_BASE_URL);
+    if (process.env.NODE_ENV === 'production' && verificationUrl.protocol !== 'https:') {
+        throw new Error('Verification emails require an HTTPS APP_BASE_URL');
+    }
+    verificationUrl.searchParams.set('token', token);
+    await transporter.sendMail({
         from: `"${SMTP_FROM_NAME}" <${SMTP_USER}>`,
         to: toEmail,
         subject: 'Verify your EcoPin account',
-        text: `Welcome to EcoPin! Verify your email address by clicking this link: ${verificationUrl}`,
-        html: htmlContent,
-    };
-
-    try {
-        console.log(`[Email Service] Calling transporter.sendMail() via SMTP...`);
-        const info = await transporter.sendMail(mailOptions);
-        console.log(`[Email Service] ✅ Verification email sent successfully! MessageId: ${info.messageId}`);
-    } catch (error) {
-        console.error('[Email Service] Verification email delivery failed', {
-            code: /^[A-Z0-9_]{1,24}$/.test(error?.code ?? '') ? error.code : 'UNKNOWN'
-        });
-        throw new Error('Failed to send verification email via SMTP');
-    }
+        text: `Verify your email: ${verificationUrl.href}\nThis link expires in ${EMAIL_VERIFICATION_EXPIRY_HOURS} hours. Return to Ecopin and sign in after verifying.`,
+        html: verificationEmailHtml(verificationUrl.href, EMAIL_VERIFICATION_EXPIRY_HOURS)
+    });
 };
