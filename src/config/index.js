@@ -20,11 +20,11 @@ export const JWT_SECRET = process.env.JWT_SECRET;
 export const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 export const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || (15 * 60 * 1000), 10);
 export const RATE_LIMIT_MAX_REQUESTS = parseInt(
-    process.env.RATE_LIMIT_MAX_REQUESTS || (NODE_ENV === 'production' ? '150' : '2500'),
+    process.env.RATE_LIMIT_MAX_REQUESTS || (NODE_ENV === 'production' ? '1500' : '2500'),
     10
 );
 export const OPS_RATE_LIMIT_MAX_REQUESTS = parseInt(
-    process.env.OPS_RATE_LIMIT_MAX_REQUESTS || (NODE_ENV === 'production' ? '600' : '5000'),
+    process.env.OPS_RATE_LIMIT_MAX_REQUESTS || (NODE_ENV === 'production' ? '3000' : '5000'),
     10
 );
 export const MIN_PASSWORD_LENGTH = 8;
@@ -104,4 +104,3 @@ export const VALID_VIDEO_EXTENSIONS = ['mp4', 'mov', 'webm'];
 export const REPORT_MIN_PHOTOS = 1;
 export const REPORT_MAX_PHOTOS = 5;
 export const REPORT_TOTAL_PHOTOS_SIZE = 10 * 1024 * 1024; // 10MB total
-
