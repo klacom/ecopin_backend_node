@@ -134,8 +134,8 @@ begin
   select fc_version into version from reports where id=r;
   result:=public.set_report_photo(r,'00000000-0000-0000-0000-000000000002','before','https://example.test/evidence','sha',version);
   perform pg_temp.assert_true(result->>'status'='success','assigned report photo accepted');
-  perform pg_temp.assert_true(result->'server_record'->>'stage'='responded','before photo automatically records response stage');
-  perform pg_temp.assert_true(result->'server_record'->>'status'='in_progress','before photo starts response only with evidence');
+  perform pg_temp.assert_true(result->'server_record'->>'stage'='acknowledged','before photo preserves stage until manual transition');
+  perform pg_temp.assert_true(result->'server_record'->>'status'='pending','before photo preserves status until manual transition');
   select fc_version into version from reports where id=r;
   for i in 1..4 loop
     result:=public.set_report_before_photo(r,'00000000-0000-0000-0000-000000000002','photo-'||i,'https://example.test/photo-'||i,'hash-'||i,version);
@@ -149,6 +149,17 @@ begin
   result:=public.set_report_before_photo(r,'00000000-0000-0000-0000-000000000002','photo-2',null,null,version);
   perform pg_temp.assert_true(jsonb_array_length(result->'server_record'->'before_photos')=4,'only selected Before photo deleted');
   perform pg_temp.assert_true(result->'server_record'->>'before_photo_url'='https://example.test/evidence','deletion preserves original first photo');
+  version:=(result->'server_record'->>'fc_version')::bigint;
+  for i in 1..5 loop
+    result:=public.set_report_after_photo(r,'00000000-0000-0000-0000-000000000002','after-'||i,'https://example.test/after-'||i,'after-hash-'||i,version);
+    perform pg_temp.assert_true(result->>'status'='success','After photo accepted');
+    version:=(result->'server_record'->>'fc_version')::bigint;
+  end loop;
+  perform pg_temp.assert_true(jsonb_array_length(result->'server_record'->'after_photos')=5,'five After photos retained');
+  perform pg_temp.expect_error(format('select public.set_report_after_photo(%L,%L,''sixth'',''https://example.test/after-6'',''after-6'',%s)',r,'00000000-0000-0000-0000-000000000002',version),'Maximum 5');
+  result:=public.set_report_after_photo(r,'00000000-0000-0000-0000-000000000002','after-2',null,null,version);
+  perform pg_temp.assert_true(jsonb_array_length(result->'server_record'->'after_photos')=4,'only selected After photo deleted');
+  perform pg_temp.assert_true(result->'server_record'->>'after_photo_url'='https://example.test/after-1','after deletion preserves first after photo');
   version:=(result->'server_record'->>'fc_version')::bigint-1;
 
   result:=public.set_report_photo(r,'00000000-0000-0000-0000-000000000002','after','https://example.test/late','sha',version);

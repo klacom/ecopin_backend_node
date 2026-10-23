@@ -1536,7 +1536,7 @@ export const updateReportStatus = async (req, res, next) => {
             'pending': ['acknowledged'],
             'new': ['acknowledged'],
             'open': ['acknowledged'],
-            'acknowledged': ['responded', 'in_progress'],
+            'acknowledged': ['responded', 'in_progress', 'resolved', 'waiting_for_feedback'],
             'responded': ['resolved', 'waiting_for_feedback'],
             'in_progress': ['resolved', 'waiting_for_feedback'],
             'waiting_for_feedback': ['closed', 'resolved'],
