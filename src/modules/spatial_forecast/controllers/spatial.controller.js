@@ -63,8 +63,11 @@ export const fetchPredictions = async (req, res, next) => {
 export const fetchCurrentPredictions = async (req, res, next) => {
   try {
     const horizon = req.query.horizon ?? req.params.horizon ?? '30d';
+    const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
     
-    const predictions = await getCurrentPredictions(horizon);
+    const predictions = refresh
+      ? await getCurrentPredictions(horizon, { refresh: true })
+      : await getCurrentPredictions(horizon);
     
     res.status(200).json({
       message: 'Current predictions fetched successfully',
