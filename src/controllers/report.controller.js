@@ -18,6 +18,7 @@ import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/pho
 import { notifyOfficers } from '../services/officer-notification.service.js';
 import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
 import { checkUserReportQuota, recordReportSubmission } from '../services/reportQuota.service.js';
+import { resolveAddressDetails } from '../services/geocoding.service.js';
 
 // Helper function to determine issue type from text
 const determineIssueTypeFromText = (title, description) => {
@@ -923,6 +924,40 @@ export const createReport = async (req, res, next) => {
             sanitizedPhotoCapturedAt = new Date().toISOString();
         }
 
+        let resolvedStreetAddress = null;
+        let resolvedBarangay = null;
+        let resolvedCity = 'Pasig City';
+
+        const reportLat = parseFloat(latitude);
+        const reportLng = parseFloat(longitude);
+
+        if (!isNaN(reportLat) && !isNaN(reportLng)) {
+            try {
+                const addrDetails = await resolveAddressDetails(reportLat, reportLng);
+                if (addrDetails) {
+                    resolvedStreetAddress = addrDetails.street_address || null;
+                    resolvedBarangay = addrDetails.barangay || null;
+                    resolvedCity = addrDetails.city || 'Pasig City';
+                }
+            } catch (geoErr) {
+                console.warn('[createReport] Geocoding lookup error:', geoErr.message);
+            }
+
+            if (!resolvedBarangay) {
+                try {
+                    const { data: bgyData, error: bgyErr } = await supabase.rpc('get_report_barangay', {
+                        lat: reportLat,
+                        lng: reportLng
+                    });
+                    if (!bgyErr && bgyData && bgyData !== 'Pasig City') {
+                        resolvedBarangay = bgyData;
+                    }
+                } catch (bgyErr) {
+                    console.warn('[createReport] get_report_barangay RPC error:', bgyErr.message);
+                }
+            }
+        }
+
         const { data: report, error } = await supabase
             .from('reports')
             .insert({
@@ -948,6 +983,9 @@ export const createReport = async (req, res, next) => {
                 is_mocked: mockDetected,
                 location_verification_status: locationVerificationStatus,
                 photo_distance_meters: photoDistanceMeters,
+                street_address: resolvedStreetAddress,
+                barangay: resolvedBarangay,
+                city: resolvedCity,
             })
             .select()
             .single();
@@ -2437,7 +2475,10 @@ export const createReportFromRejected = async (req, res, next) => {
                 on_private_property: originalReport.on_private_property,
                 property_owner_consent_status: originalReport.on_private_property ? 'pending' : 'not_required',
                 status: originalReport.on_private_property ? 'pending_owner_consent' : 'unresolved',
-                validation_status: VALIDATION_STATUS.PENDING_AI_VALIDATION
+                validation_status: VALIDATION_STATUS.PENDING_AI_VALIDATION,
+                street_address: originalReport.street_address || null,
+                barangay: originalReport.barangay || null,
+                city: originalReport.city || 'Pasig City',
             })
             .select()
             .single();
