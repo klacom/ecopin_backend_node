@@ -11,7 +11,7 @@ async function enrichReportsWithTasks(reports) {
     for (let i = 0; i < ids.length; i += chunkSize) {
       const chunk = ids.slice(i, i + chunkSize);
       const { data: directRows, error } = await db.from('reports')
-        .select('id, cleanup_task_id, before_photos')
+        .select('id, cleanup_task_id, before_photos, after_photos')
         .in('id', chunk);
       if (error) {
         console.warn('[enrichReportsWithTasks] Warning fetching task mapping chunk:', error.message);
@@ -25,6 +25,7 @@ async function enrichReportsWithTasks(reports) {
       const direct = directMap.get(r.id);
       r.cleanup_task_id = direct?.cleanup_task_id || r.cleanup_task_id || null;
       if (direct?.before_photos) r.before_photos = direct.before_photos;
+      if (direct?.after_photos) r.after_photos = direct.after_photos;
     });
   } catch (err) {
     console.warn('[enrichReportsWithTasks] Unexpected error:', err.message);

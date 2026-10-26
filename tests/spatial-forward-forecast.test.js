@@ -161,3 +161,12 @@ test('precise forecast timestamps survive storage and exclude an expired window 
   global.fetch.mockRejectedValue(new Error('offline'));
   expect(await service.getCurrentPredictions('7d')).toMatchObject({ status: 'unavailable' });
 });
+
+
+test('refresh option bypasses memory and today stored cache to regenerate forecast', async () => {
+  await service.generateForecast('30d');
+  global.fetch.mockResolvedValue({ ok: true, json: async () => forecast('30d', '2026-10-18', 18) });
+  const refreshed = await service.getCurrentPredictions('30d', { refresh: true });
+  expect(refreshed.region_analyses['h3-test'].predicted_count).toBe(18);
+  expect(global.fetch).toHaveBeenCalledTimes(2);
+});

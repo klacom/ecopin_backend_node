@@ -33,6 +33,7 @@ import { errorHandler } from './middleware/errorHandler.middleware.js';
 import { rateLimiter } from './middleware/rateLimit.middleware.js';
 
 const app = express();
+app.set('trust proxy', 2);
 
 // Global middleware
 app.use(helmet()); // Security headers
@@ -54,8 +55,8 @@ app.use(json({ limit: '10mb' }));
 app.use(urlencoded({ extended: true }));
 app.use(requestLogger());
 
-// Apply rate limiting to all routes
-app.use(rateLimiter);
+// Apply rate limiting to API routes only (ignores non-API scanner probes)
+app.use('/api', rateLimiter);
 
 // Health check endpoint
 app.get('/health', async (req, res) => {

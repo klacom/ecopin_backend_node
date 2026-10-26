@@ -5,11 +5,11 @@ import { hashBuffer } from '../services/photo_dedup.service.js';
 import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
 
 function respondToPhotoError(error, res, next) {
-  if ((error.code === '42703' && error.message?.includes('before_photos')) ||
-      (error.code === 'PGRST202' && error.message?.includes('set_report_before_photo'))) {
+  if ((error.code === '42703' && (error.message?.includes('before_photos') || error.message?.includes('after_photos'))) ||
+      (error.code === 'PGRST202' && (error.message?.includes('set_report_before_photo') || error.message?.includes('set_report_after_photo')))) {
     return res.status(503).json({
       code: 'CREW_PHOTO_SCHEMA_NOT_READY',
-      message: 'Photo uploads are temporarily unavailable: the server needs the Before photo database update. Your photo remains on this device. Ask your administrator to update the server before retrying.',
+      message: 'Photo uploads are temporarily unavailable: the server needs the report photo database update. Your photo remains on this device. Ask your administrator to update the server before retrying.',
     });
   }
   return next(error);
@@ -19,7 +19,7 @@ async function assignedReport(id, actor, expectedVersion) {
   if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
     const error = new Error('base_version is required'); error.statusCode = 409; throw error;
   }
-  const { data: report, error } = await db.from('reports').select('id,cleanup_task_id,fc_version,before_photo_url,after_photo_url,before_photo_hash,after_photo_hash,before_photos,status').eq('id', id).maybeSingle();
+  const { data: report, error } = await db.from('reports').select('id,cleanup_task_id,fc_version,before_photo_url,after_photo_url,before_photo_hash,after_photo_hash,before_photos,after_photos,status').eq('id', id).maybeSingle();
   if (error) throw error;
   if (!report?.cleanup_task_id) { const denied = new Error('Report is not assigned'); denied.statusCode = 403; throw denied; }
   const { data: task, error: taskError } = await db.from('cleanup_tasks').select('status,route_status,assigned_crew_ids,assigned_field_crew_id').eq('id', report.cleanup_task_id).maybeSingle();
@@ -47,8 +47,9 @@ async function assignedReport(id, actor, expectedVersion) {
 }
 
 async function writePhoto(id, actor, slot, url, hash, version, photoKey) {
-  const { data, error } = await db.rpc(slot === 'before' ? 'set_report_before_photo' : 'set_report_photo', {
-    report_id: id, actor, ...(slot === 'before' ? {photo_key:photoKey} : {slot}), url, photo_hash: hash, expected_version: version
+  const rpcName = slot === 'before' ? 'set_report_before_photo' : 'set_report_after_photo';
+  const { data, error } = await db.rpc(rpcName, {
+    report_id: id, actor, photo_key: photoKey, url, photo_hash: hash, expected_version: version
   });
   if (error) { error.statusCode = error.code === '42501' ? 403 : 400; throw error; }
   if (data.status === 'conflict') {
@@ -71,12 +72,15 @@ export async function uploadFieldReportPhoto(req, res, next) {
     const photoKey = req.body.photo_id || randomUUID();
     if (!/^[a-zA-Z0-9-]{1,80}$/.test(photoKey)) return res.status(400).json({message:'Invalid photo ID'});
     const hash = hashBuffer(req.file.buffer);
-    if (slot === 'before') {
-      const duplicate = (report.before_photos || []).find(p => p.hash === hash);
-      if (duplicate) return res.json({duplicate:true, report, photo_id:duplicate.id, url:duplicate.url});
-      if ((report.before_photos || []).length >= 5) return res.status(400).json({message:'Maximum 5 Before photos per report'});
+    const collectionField = slot === 'before' ? 'before_photos' : 'after_photos';
+    const label = slot === 'before' ? 'Before' : 'After';
+    const existingPhotos = report[collectionField] || [];
+    const duplicate = existingPhotos.find(p => p.hash === hash);
+    if (duplicate) return res.json({duplicate:true, report, photo_id:duplicate.id, url:duplicate.url});
+    if (existingPhotos.length >= 5) return res.status(400).json({message:`Maximum 5 ${label} photos per report`});
+    if (existingPhotos.length === 0 && report[`${slot}_photo_hash`] === hash && report[`${slot}_photo_url`]) {
+      return res.json({ duplicate: true, report, photo_id: 'legacy', url: report[`${slot}_photo_url`] });
     }
-    if (slot !== 'before' && report[`${slot}_photo_hash`] === hash && report[`${slot}_photo_url`]) return res.json({ duplicate: true, report });
     const uploaded = await uploadFromBuffer(req.file.buffer, `report_photos/${id}/${slot}`, randomUUID());
     try {
       const updated = await writePhoto(id, req.user.id, slot, uploaded.secure_url, hash, version, photoKey);

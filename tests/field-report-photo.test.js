@@ -19,12 +19,12 @@ const { uploadFieldReportPhoto } = await import('../src/controllers/field-report
 function response() {
   return { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
 }
-async function run(user = 'assigned') {
+async function run(user = 'assigned', photoType = 'before') {
   const res = response();
   let failure;
   await uploadFieldReportPhoto({
     params: { id: 'report' }, user: { id: user },
-    body: { photo_type: 'before', base_version: '4' },
+    body: { photo_type: photoType, base_version: '4' },
     file: { buffer: Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'), mimetype: 'image/png' }
   }, res, error => { failure = error; });
   return { res, failure };
@@ -62,10 +62,27 @@ test('assigned crew photo returns the authoritative new version', async () => {
   expect(rpc).toHaveBeenCalledWith('set_report_before_photo', expect.objectContaining({ actor: 'assigned', expected_version: 4, photo_key: expect.any(String) }));
 });
 
+test('assigned crew After photo uses set_report_after_photo collection RPC', async () => {
+  uploadFromBuffer.mockResolvedValue({ secure_url: 'https://cdn.example/after' });
+  rpc.mockResolvedValue({ data: { status: 'success', server_record: { id: 'report', fc_version: 5 } }, error: null });
+  const { res, failure } = await run('assigned', 'after');
+  expect(failure).toBeUndefined();
+  expect(res.body.report.fc_version).toBe(5);
+  expect(rpc).toHaveBeenCalledWith('set_report_after_photo', expect.objectContaining({ actor: 'assigned', expected_version: 4, photo_key: expect.any(String) }));
+});
 
 test('sixth Before photo is rejected before cloud storage allocation', async () => {
  report.before_photos=Array.from({length:5},(_,i)=>({id:`p${i}`,hash:`h${i}`,url:`https://cdn.example/${i}`}));
  const {res,failure}=await run();
+ expect(failure).toBeUndefined();
+ expect(res.code).toBe(400);
+ expect(uploadFromBuffer).not.toHaveBeenCalled();
+ expect(rpc).not.toHaveBeenCalled();
+});
+
+test('sixth After photo is rejected before cloud storage allocation', async () => {
+ report.after_photos=Array.from({length:5},(_,i)=>({id:`p${i}`,hash:`h${i}`,url:`https://cdn.example/${i}`}));
+ const {res,failure}=await run('assigned', 'after');
  expect(failure).toBeUndefined();
  expect(res.code).toBe(400);
  expect(uploadFromBuffer).not.toHaveBeenCalled();

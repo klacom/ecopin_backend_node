@@ -8,7 +8,7 @@ import { SPATIAL_FORECAST_CONFIG } from '../config/spatial.config.js';
 const scheduledTasks = new Map();
 
 /**
- * Refresh +7-day forecasts daily
+ * Refresh +7d, +30d, and +90d forecasts daily so all horizons stay current
  */
 export const scheduleDailyForecast = () => {
   if (!SPATIAL_FORECAST_CONFIG.scheduling.daily.enabled) {
@@ -19,12 +19,14 @@ export const scheduleDailyForecast = () => {
   const task = cron.schedule(
     SPATIAL_FORECAST_CONFIG.scheduling.daily.cron,
     async () => {
-      console.log('[ForecastScheduler] Running daily forecast generation');
-      try {
-        await generateForecast('7d');
-        console.log('[ForecastScheduler] Daily forecast completed successfully');
-      } catch (error) {
-        console.error('[ForecastScheduler] Daily forecast failed:', error);
+      console.log('[ForecastScheduler] Running daily forecast generation across all horizons');
+      for (const horizon of ['7d', '30d', '90d']) {
+        try {
+          await generateForecast(horizon);
+          console.log(`[ForecastScheduler] Daily ${horizon} forecast completed successfully`);
+        } catch (error) {
+          console.error(`[ForecastScheduler] Daily ${horizon} forecast failed:`, error);
+        }
       }
     },
     { timezone: 'Asia/Manila' }

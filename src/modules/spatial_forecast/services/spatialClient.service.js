@@ -148,12 +148,13 @@ function restoreForecast(records, horizon, stale) {
   catch { return null; }
 }
 
-export const getCurrentPredictions = async (timeHorizon = '30d') => {
+export const getCurrentPredictions = async (timeHorizon = '30d', options = {}) => {
   const horizon = normalizeHorizon(timeHorizon);
+  const refresh = Boolean(options?.refresh);
   const date = today();
   const now = new Date().toISOString();
   const cached = currentPredictionsCache.get(horizon);
-  if (SPATIAL_FORECAST_CONFIG.cache.enabled && cached && Date.now() - cached.timestamp < SPATIAL_FORECAST_CONFIG.cache.ttl
+  if (!refresh && SPATIAL_FORECAST_CONFIG.cache.enabled && cached && Date.now() - cached.timestamp < SPATIAL_FORECAST_CONFIG.cache.ttl
     && day(cached.data.prediction_date) === date && Date.parse(cached.data.forecast_date_end) > Date.now()) return cached.data;
 
   const { data, error } = await supabaseAdmin.from('hotspot_predictions').select('*')
@@ -165,7 +166,7 @@ export const getCurrentPredictions = async (timeHorizon = '30d') => {
   if (error) throw error;
   const latestDate = data?.[0]?.prediction_date;
   const latest = (data ?? []).filter(row => row.prediction_date === latestDate);
-  if (latest.length && day(latestDate) === date) {
+  if (!refresh && latest.length && day(latestDate) === date) {
     const result = restoreForecast(latest, horizon, false);
     if (result) return remember(horizon, result);
   }
