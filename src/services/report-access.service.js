@@ -1,4 +1,4 @@
-export const PUBLIC_REPORT_FIELDS = 'id,title,description,issue_type,status,cluster_id,created_at,updated_at,stage,is_overdue,severity_score,severity_level,lifecycle_state,breached_at,validation_status,location,latitude,longitude,location_precision,street_address,barangay,city';
+export const PUBLIC_REPORT_FIELDS = 'id,title,description,issue_type,status,cluster_id,created_at,updated_at,stage,is_overdue,severity_score,severity_level,lifecycle_state,breached_at,validation_status,location,latitude,longitude,location_precision,street_address,barangay,city,sla_started_at,deadline_at';
 
 export function reportPage(query = {}) {
   const limit = Number(query.limit ?? 200);
