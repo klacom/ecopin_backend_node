@@ -1,3 +1,18 @@
+function extractRejectionReason(row) {
+  if (!row) return null;
+  if (typeof row.rejection_reason === 'string' && row.rejection_reason.trim()) {
+    return row.rejection_reason.trim();
+  }
+  if (typeof row.notes === 'string') {
+    if (row.notes.includes('Officer rejection reason:')) {
+      return row.notes.split('Officer rejection reason:')[1]?.trim() || null;
+    }
+    if (row.validation_status === 'rejected' && !row.notes.startsWith('Reporter requested manual review:')) {
+      return row.notes.trim() || null;
+    }
+  }
+  return null;
+}
 export const PUBLIC_REPORT_FIELDS = 'id,title,description,issue_type,status,cluster_id,created_at,updated_at,stage,is_overdue,severity_score,severity_level,lifecycle_state,breached_at,validation_status,location,latitude,longitude,location_precision,street_address,barangay,city,sla_started_at,deadline_at';
 
 export function reportPage(query = {}) {
@@ -27,6 +42,7 @@ export async function readReportForViewer(db, id, viewer) {
       return {
         report: {
           ...data,
+          rejection_reason: extractRejectionReason(data) || data.rejection_reason || null,
           publisher_name: pubName,
           publisher_disclosed: consent
         },
@@ -59,6 +75,7 @@ export async function readReportForViewer(db, id, viewer) {
               return {
                 report: {
                   ...rep,
+                  rejection_reason: extractRejectionReason(rep) || rep.rejection_reason || null,
                   publisher_name: pubName,
                   publisher_disclosed: consent
                 },
@@ -95,6 +112,7 @@ export async function readReportForViewer(db, id, viewer) {
   return {
     report: {
       ...report,
+      rejection_reason: extractRejectionReason(report) || report.rejection_reason || null,
       publisher_name,
       publisher_disclosed
     },

@@ -483,6 +483,17 @@ export const uploadEvidence = async (req, res, next) => {
 const evidenceServerCache = new Map(); // reportId -> { data, expiresAt }
 const EVIDENCE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+let seededReportEvidence = {};
+try {
+    const seededEvidenceUrl = new URL('../data/seeded-report-evidence.json', import.meta.url);
+    const fs = await import('node:fs');
+    if (fs.existsSync(seededEvidenceUrl)) {
+        seededReportEvidence = JSON.parse(fs.readFileSync(seededEvidenceUrl, 'utf8'));
+    }
+} catch (_) {
+    seededReportEvidence = {};
+}
+
 export const invalidateEvidenceCache = (reportId) => {
     if (reportId) {
         evidenceServerCache.delete(String(reportId));
@@ -510,6 +521,15 @@ export const getReportEvidence = async (req, res, next) => {
         const cached = evidenceServerCache.get(String(reportId));
         if (cached && cached.expiresAt > Date.now()) {
             return res.status(200).json(cached.data);
+        }
+
+        const seededList = seededReportEvidence[String(reportId)];
+        if (Array.isArray(seededList) && seededList.length > 0) {
+            evidenceServerCache.set(String(reportId), {
+                data: seededList,
+                expiresAt: Date.now() + EVIDENCE_CACHE_TTL
+            });
+            return res.status(200).json(seededList);
         }
 
         const prefix = `report_evidence/${reportId}`;
@@ -618,12 +638,19 @@ export const getBatchReportEvidence = async (req, res, next) => {
             }
         }
 
-        // 2. For authorized IDs: check in-memory cache first
+        // 2. For authorized IDs: check in-memory cache or seeded evidence first
         const missingAuthorizedIds = [];
         for (const id of authorizedIds) {
             const cached = evidenceServerCache.get(String(id));
             if (cached && cached.expiresAt > Date.now()) {
                 results[id] = cached.data;
+            } else if (Array.isArray(seededReportEvidence[String(id)]) && seededReportEvidence[String(id)].length > 0) {
+                const seededList = seededReportEvidence[String(id)];
+                evidenceServerCache.set(String(id), {
+                    data: seededList,
+                    expiresAt: Date.now() + EVIDENCE_CACHE_TTL
+                });
+                results[id] = seededList;
             } else {
                 missingAuthorizedIds.push(id);
             }
@@ -1679,13 +1706,15 @@ export const updateReportValidation = async (req, res, next) => {
         }
 
         // Record rejection reason in notes for schema compatibility
+        let finalReason = typeof rejection_reason === 'string' && rejection_reason.trim()
+            ? rejection_reason.trim()
+            : 'Photo rejected during manual review.';
+
         if (validation_status === 'rejected') {
-            if (rejection_reason !== undefined) {
-                updateData.notes = typeof currentReport.notes === 'string' &&
-                    currentReport.notes.startsWith('Reporter requested manual review:')
-                    ? `${currentReport.notes}\n\nOfficer rejection reason: ${rejection_reason}`
-                    : rejection_reason;
-            }
+            updateData.notes = typeof currentReport.notes === 'string' &&
+                currentReport.notes.startsWith('Reporter requested manual review:')
+                ? `${currentReport.notes}\n\nOfficer rejection reason: ${finalReason}`
+                : finalReason;
         }
 
         const { data, error } = await supabase
@@ -1705,9 +1734,7 @@ export const updateReportValidation = async (req, res, next) => {
 
         // Create notification for the report owner if rejected
         if (validation_status === 'rejected' && currentReport?.user_id) {
-            const message = rejection_reason
-                ? `Your report has been rejected: ${rejection_reason}`
-                : 'Your report has been rejected.';
+            const message = `Your report has been rejected: ${finalReason}`;
             await createNotification(
                 currentReport.user_id,
                 id,
@@ -1719,7 +1746,10 @@ export const updateReportValidation = async (req, res, next) => {
 
         res.status(200).json({
             message: 'Report validation status updated successfully',
-            report: data
+            report: {
+                ...data,
+                rejection_reason: validation_status === 'rejected' ? finalReason : null
+            }
         });
     } catch (error) {
         next(error);
@@ -1938,6 +1968,10 @@ export const logAgencyResponse = async (req, res, next) => {
     const { action } = req.body;
     const user_id = req.user.id;
 
+    if (typeof action !== 'string' || !action.trim() || action.trim().length > 5000) {
+        return res.status(400).json({ message: 'Enter an activity note between 1 and 5000 characters.' });
+    }
+
     try {
         const { data: currentReport, error: reportFetchError } = await supabase
             .from('reports')
@@ -1969,7 +2003,7 @@ export const logAgencyResponse = async (req, res, next) => {
                 report_id: id,
                 user_id,
                 action_type: 'manual_note',
-                action_details: action
+                action_details: action.trim()
             })
             .select()
             .single();

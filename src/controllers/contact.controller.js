@@ -29,8 +29,7 @@ export const sendContactEmail = async (req, res) => {
         try {
             const { getCmsSettingsService } = await import('../services/cms.service.js');
             const cms = await getCmsSettingsService();
-            if (cms.contact_support_email) validRecipients.push(cms.contact_support_email.toLowerCase());
-            if (cms.contact_office_email) validRecipients.push(cms.contact_office_email.toLowerCase());
+            validRecipients = [cms.contact_support_email, cms.contact_office_email].filter(value => typeof value === 'string' && value.trim());
             validRecipients = [...new Set(validRecipients.map(e => e.trim().toLowerCase()))];
         } catch (cmsErr) {
             console.warn('[Contact Controller] Could not fetch CMS recipients, using fallback:', cmsErr.message);

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { prepareCmsMedia, completeCmsMedia } from '../controllers/cms-upload.controller.js';
 import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 import {
@@ -77,6 +78,8 @@ router.patch('/settings', authorize(['admin']), updateSystemSettings);
 router.get('/settings/cms', authorize(['admin']), getCmsSettings);
 router.patch('/settings/cms', authorize(['admin']), updateCmsSettings);
 router.post('/settings/cms/upload', authorize(['admin']), cmsUpload.single('file'), uploadCmsMedia);
+router.post('/settings/cms/upload/prepare', authorize(['admin']), prepareCmsMedia);
+router.post('/settings/cms/upload/complete', authorize(['admin']), completeCmsMedia);
 
 // System logs (authentication, session activity, admin only)
 router.get('/system-logs', authorize(['admin']), getSystemLogs);

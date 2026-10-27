@@ -1,11 +1,12 @@
 export const SEVERITY_CONFIG = {
     // Weights for each factor (must sum to 1.0 or 100%)
     weights: {
-        scale: 0.25,
-        hazard: 0.25,
-        obstruction: 0.20,
-        persistence: 0.15,
-        locationSensitivity: 0.15
+        // Visible scale and blocked access can make a first report high severity.
+        scale: 0.35,
+        hazard: 0.20,
+        obstruction: 0.30,
+        persistence: 0.05,
+        locationSensitivity: 0.10
     },
 
     // 0-100 values for structured scale inputs

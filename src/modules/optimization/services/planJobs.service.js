@@ -36,6 +36,34 @@ export async function readPlanJob(id, actor) {
     planId: data.plan_id, errorCode: data.error_code, diagnostics: data.solver_diagnostics };
 }
 
+export async function cancelPlanJob(id, actor) {
+  const { data, error } = await db.from('plan_generation_jobs')
+    .select('id,status,requested_by,error_code')
+    .eq('id', id).maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  if (data.requested_by !== actor) {
+    const { data: profile, error: profileError } = await db.from('profiles').select('role').eq('id', actor).single();
+    if (profileError) throw profileError;
+    if (profile?.role !== 'admin') return null;
+  }
+  if (data.status === 'queued' || data.status === 'running') {
+    const { data: updated, error: updateError } = await db.from('plan_generation_jobs')
+      .update({
+        status: 'failed',
+        error_code: 'cancelled_by_user',
+        finished_at: new Date().toISOString(),
+        lease_until: null
+      })
+      .eq('id', id)
+      .select('id,status,error_code')
+      .single();
+    if (updateError) throw updateError;
+    return { jobId: updated.id, status: updated.status, errorCode: updated.error_code };
+  }
+  return { jobId: data.id, status: data.status, errorCode: data.error_code };
+}
+
 export async function processNextPlanningJob({ generate = generateDispatchPlan,
   generateMixed = generateMixedDispatchPlan, client = db } = {}) {
   const workerToken = randomUUID();

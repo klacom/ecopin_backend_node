@@ -1,3 +1,4 @@
+import { assertPasswordPolicy, validatePasswordSettings } from '../services/password-policy.service.js';
 import { getCurrentSystemSettings } from '../services/system-settings.service.js';
 import { validateVideoMaximum } from '../services/report-video-policy.service.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
@@ -56,6 +57,7 @@ export const createUser = async (req, res, next) => {
     const finalPassword = password || defaultPassword;
 
     try {
+        await assertPasswordPolicy(finalPassword, supabase);
         // Create user in Supabase Auth
         const { data: authData, error: authError } = await supabase.auth.admin.createUser({
             email,
@@ -264,14 +266,15 @@ export const changeUserPassword = async (req, res, next) => {
     const { id } = req.params;
     const { password } = req.body;
 
-    if (!password || password.length < 6) {
+    if (typeof password !== 'string' || !password) {
         return res.status(400).json({
             message: 'Invalid password',
-            error: 'Password must be at least 6 characters long'
+            error: 'Password is required'
         });
     }
 
     try {
+        await assertPasswordPolicy(password, supabase);
         // Update password in Supabase Auth
         const { data: authData, error: authError } = await supabase.auth.admin.updateUserById(id, {
             password: password
@@ -361,7 +364,7 @@ export const getSystemSettings = async (req, res, next) => {
     try {
         const { data, error } = await getCurrentSystemSettings(supabase);
 
-        const cmsSettings = await getCmsSettingsService();
+        const cmsSettings = await getCmsSettingsService({ strict: true });
 
         if (error || !data) {
             // Only a genuinely empty settings table may use initial defaults.
@@ -402,6 +405,8 @@ export const updateSystemSettings = async (req, res, next) => {
         return res.status(400).json({ message: 'report_video_max_seconds must be a whole number from 5 to 10' });
     }
     try {
+        validatePasswordSettings(settings);
+        if (settings.daily_report_quota !== undefined && (!Number.isInteger(settings.daily_report_quota) || settings.daily_report_quota < 1 || settings.daily_report_quota > 100)) return res.status(400).json({ message: 'daily_report_quota must be an integer between 1 and 100' });
         const { data: currentSettings, error: settingsError } = await getCurrentSystemSettings(supabase);
         if (settingsError) {
             return res.status(503).json({ message: 'Current settings could not load. Please try again.' });
@@ -467,7 +472,7 @@ export const updateSystemSettings = async (req, res, next) => {
 // Direct CMS settings handlers
 export const getCmsSettings = async (req, res, next) => {
     try {
-        const cmsSettings = await getCmsSettingsService();
+        const cmsSettings = await getCmsSettingsService({ strict: true });
         res.status(200).json(cmsSettings);
     } catch (error) {
         next(error);

@@ -1,3 +1,4 @@
+import { assertPasswordPolicy, getPasswordPolicy } from '../services/password-policy.service.js';
 // Authentication controller for the EcoPin backend API server. 
 // Handles user registration, login, logout, token refresh, and password reset.
 
@@ -32,6 +33,7 @@ export const register = async (req, res, next) => {
     const { email, password } = req.body;
 
     try {
+        await assertPasswordPolicy(password, supabaseAdmin);
         console.log(`Attempting to register user: ${email}`);
         const { data, error } = await supabaseAdmin.auth.admin.createUser({
             email,
@@ -283,6 +285,7 @@ export const resetPassword = async (req, res, next) => {
     const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
 
     try {
+        await assertPasswordPolicy(password, supabaseAdmin);
         const { data, error } = await supabaseAdmin.auth.updateUser(token, {
             password
         });
@@ -309,6 +312,7 @@ export const changePassword = async (req, res, next) => {
     const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
 
     try {
+        await assertPasswordPolicy(new_password, supabaseAdmin);
         // First verify current password by attempting to sign in
         const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
             email: req.user.email,
@@ -353,6 +357,7 @@ export const forceChangePassword = async (req, res, next) => {
     }
 
     try {
+        await assertPasswordPolicy(new_password, supabaseAdmin);
         // Update password using the admin client
         const { data, error } = await supabaseAdmin.auth.admin.updateUserById(req.user.id, {
             password: new_password
@@ -545,27 +550,8 @@ export const resendVerification = async (req, res, next) => {
 };
 
 export const getPasswordRequirements = async (req, res, next) => {
-    try {
-        const { data, error } = await supabaseAdmin
-            .from('system_settings')
-            .select('password_min_length, password_require_uppercase, password_require_lowercase, password_require_numbers, password_require_special_chars')
-            .single();
-
-        if (error) {
-            // Return defaults if not found
-            return res.status(200).json({
-                password_min_length: 8,
-                password_require_uppercase: true,
-                password_require_lowercase: true,
-                password_require_numbers: true,
-                password_require_special_chars: true
-            });
-        }
-
-        res.status(200).json(data);
-    } catch (error) {
-        next(error);
-    }
+    try { res.status(200).json(await getPasswordPolicy(supabaseAdmin)); }
+    catch (error) { next(error); }
 };
 
 export const deleteAccount = async (req, res, next) => {

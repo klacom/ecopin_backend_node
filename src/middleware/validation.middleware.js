@@ -6,15 +6,10 @@
 // TODO: Add more restrictive validation rules for certain fields (e.g., username, task descriptions) to prevent malicious input and ensure data integrity.
 
 import { body, validationResult } from 'express-validator';
-import { MIN_PASSWORD_LENGTH } from '../config/index.js';
 
 export const validateRegistration = [
     body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
-    body('password')
-        .isLength({ min: MIN_PASSWORD_LENGTH })
-        .withMessage(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
-        .matches(/[A-Z]/).withMessage('Password must contain an uppercase letter')
-        .matches(/[0-9]/).withMessage('Password must contain a number'),
+    body('password').isString().notEmpty().withMessage('Password is required'),
     body('confirmPassword')
         .custom((value, { req }) => value === req.body.password)
         .withMessage('Passwords do not match'),

@@ -13,6 +13,7 @@ export const DEFAULT_CMS_SETTINGS = {
     contact_operating_hours: 'Monday – Friday: 8:00 AM – 5:00 PM',
     contact_facebook_url: 'https://www.facebook.com/PasigPIO',
     contact_facebook_label: 'Pasig City Public Information Office',
+    contact_swmo_facebook_url: 'https://www.facebook.com/profile.php?id=61583154152189',
 
     // Media & Community Showcase
     lead_story_title: 'From reports to response.',
@@ -55,7 +56,7 @@ const CACHE_TTL_MS = 60 * 1000; // 1 minute in-memory cache
 /**
  * Get CMS settings (with fallback to default if not yet created in storage)
  */
-export async function getCmsSettingsService() {
+export async function getCmsSettingsService({ strict = false } = {}) {
     const now = Date.now();
     if (cachedCmsSettings && (now - cacheTimestamp < CACHE_TTL_MS)) {
         return cachedCmsSettings;
@@ -67,21 +68,21 @@ export async function getCmsSettingsService() {
             .download(CMS_FILE);
 
         if (error || !data) {
-            // If file doesn't exist, return defaults and initialize asynchronously
+            const missing = error && (String(error.statusCode ?? error.status) === '404' || error.message === 'Object not found');
+            if (error && !missing) throw error;
             cachedCmsSettings = { ...DEFAULT_CMS_SETTINGS };
             cacheTimestamp = now;
-            await saveCmsSettingsService(DEFAULT_CMS_SETTINGS).catch(err => {
-                console.warn('[CMS Service] Initial settings seeding notice:', err.message);
-            });
             return cachedCmsSettings;
         }
 
         const text = await data.text();
         const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid CMS settings document');
         cachedCmsSettings = { ...DEFAULT_CMS_SETTINGS, ...parsed };
         cacheTimestamp = now;
         return cachedCmsSettings;
     } catch (err) {
+        if (strict) throw Object.assign(new Error('CMS settings could not load. No changes were saved.'), { statusCode: 503 });
         console.error('[CMS Service] Failed to read cms settings:', err);
         return { ...DEFAULT_CMS_SETTINGS };
     }
@@ -91,9 +92,35 @@ export async function getCmsSettingsService() {
  * Save / Update CMS settings
  */
 export async function saveCmsSettingsService(updatedSettings) {
+    if (!updatedSettings || typeof updatedSettings !== 'object' || Array.isArray(updatedSettings)) throw Object.assign(new Error('CMS settings must be an object.'), { statusCode: 400 });
+    for (const [key, value] of Object.entries(updatedSettings)) {
+        if (typeof DEFAULT_CMS_SETTINGS[key] === 'boolean' && typeof value !== 'boolean') throw Object.assign(new Error(`${key} must be true or false.`), { statusCode: 400 });
+        if (typeof DEFAULT_CMS_SETTINGS[key] === 'string' && typeof value !== 'string') throw Object.assign(new Error(`${key} must be text.`), { statusCode: 400 });
+        if (value && (key.endsWith('_url') || key === 'app_download_url')) {
+            let valid = typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') && !value.includes('\\');
+            try { const url = new URL(value); valid ||= url.protocol === 'https:' && !url.username && !url.password; } catch { /* Relative site URLs are validated above. */ }
+            if (!valid) throw Object.assign(new Error(`${key} must be an HTTPS URL or a path on this website.`), { statusCode: 400 });
+        }
+    }
+    if (Object.hasOwn(updatedSettings, 'contact_swmo_facebook_url')) {
+        const value = updatedSettings.contact_swmo_facebook_url;
+        let valid = value === '';
+        if (typeof value === 'string' && value) {
+            try {
+                const url = new URL(value);
+                valid = url.protocol === 'https:' && (url.hostname === 'facebook.com' || url.hostname.endsWith('.facebook.com')) && !url.username && !url.password;
+            } catch { /* Invalid URLs are rejected below. */ }
+        }
+        if (!valid) {
+            const error = new Error('SWMO Facebook URL must be an HTTPS Facebook URL, or blank to hide the link.');
+            error.statusCode = 400;
+            throw error;
+        }
+    }
+    const existing = cachedCmsSettings || await getCmsSettingsService({ strict: true });
     const merged = {
         ...DEFAULT_CMS_SETTINGS,
-        ...(cachedCmsSettings || {}),
+        ...existing,
         ...updatedSettings,
         updated_at: new Date().toISOString()
     };

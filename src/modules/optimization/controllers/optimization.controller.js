@@ -6,7 +6,7 @@ import { prioritizeBacklog, getWorkQueue } from '../services/workQueue.service.j
 import { dispatchClusters } from '../services/dispatch.service.js';
 import { commitAndRoutePlan } from '../services/dispatchCommit.service.js';
 import { generateDispatchPlan } from '../services/dispatchPlanner.service.js';
-import { enqueuePlan, readPlanJob, processNextPlanningJob } from '../services/planJobs.service.js';
+import { enqueuePlan, readPlanJob, cancelPlanJob as svcCancelPlanJob, processNextPlanningJob } from '../services/planJobs.service.js';
 import { processTaskFeedback } from '../services/taskFeedback.service.js';
 import { metresBetween } from '../services/geoTime.js';
 import { previewPlanDisassembly as svcPreviewDisassembly, disassemblePlan as svcDisassemblePlan } from '../services/planDisassembly.service.js';
@@ -59,6 +59,14 @@ export const generatePlan = async (req, res, next) => {
     const job = await enqueuePlan(req.user.id, settings, req.get('Idempotency-Key'));
     void processNextPlanningJob().catch(err => console.error('Immediate job processing error:', err));
     res.status(202).json(job);
+  } catch (error) { next(error); }
+};
+
+export const cancelPlanJob = async (req, res, next) => {
+  try {
+    const job = await svcCancelPlanJob(req.params.jobId, req.user.id);
+    if (!job) return res.status(404).json({ message: 'Planning job not found or access denied' });
+    res.json(job);
   } catch (error) { next(error); }
 };
 

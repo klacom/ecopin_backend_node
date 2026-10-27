@@ -40,6 +40,7 @@ router.get('/options', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getOptimizationOpti
 // Phase 3: Capacity-Aware Planning Endpoints
 router.post('/plan/generate', authorize(ROLE_GROUPS.DESK_OPS), ctrl.generatePlan);
 router.get('/plan/jobs/:jobId', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getPlanJob);
+router.post('/plan/jobs/:jobId/cancel', authorize(ROLE_GROUPS.DESK_OPS), ctrl.cancelPlanJob);
 router.get('/plan/:id', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getPlan);
 router.get('/plan/:id/items', authorize(ROLE_GROUPS.DESK_OPS), ctrl.getPlanItems);
 router.post('/plan/:id/commit', authorize(ROLE_GROUPS.DESK_OPS), ctrl.commitPlan);
