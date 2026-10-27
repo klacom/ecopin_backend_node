@@ -166,6 +166,7 @@ function sanitizePredictedClass(predictedClass) {
  *
  * Model outputs are treated as untrusted data:
  * - decision is strictly allowlisted to APPROVED, REJECTED, or MANUAL_REVIEW
+ * - image-derived scale/obstruction are ignored; citizen inputs supply these factors
  * - predicted_category is validated against ALLOWED_CLASSIFIER_CATEGORIES
  * - auto_classification is validated against ALLOWED_PREDICTED_CLASSES
  * - arbitrary strings or anomalous structures safely default to MANUAL_REVIEW
@@ -200,12 +201,12 @@ export const mapClassifierToValidation = (classifierResult) => {
                 rejection_reason: null,
                 auto_classification: safeAutoClass,
                 predicted_category: safeCategory,
-                predicted_scale: classifierResult.predicted_scale ?? null,
-                scale_confidence: classifierResult.scale_confidence ?? null,
-                scale_probabilities: classifierResult.scale_probabilities ?? null,
-                predicted_obstruction: classifierResult.predicted_obstruction ?? null,
-                obstruction_confidence: classifierResult.obstruction_confidence ?? null,
-                obstruction_probabilities: classifierResult.obstruction_probabilities ?? null,
+                predicted_scale: null,
+                scale_confidence: null,
+                scale_probabilities: null,
+                predicted_obstruction: null,
+                obstruction_confidence: null,
+                obstruction_probabilities: null,
             };
             _log('  → mapped status :', mapped.status, '| category:', mapped.predicted_category, '| scale:', mapped.predicted_scale, '| obstruction:', mapped.predicted_obstruction);
             return mapped;
@@ -232,12 +233,12 @@ export const mapClassifierToValidation = (classifierResult) => {
             rejection_reason: null,
             auto_classification: safeAutoClass,
             predicted_category: safeCategory,
-            predicted_scale: classifierResult.predicted_scale ?? null,
-            scale_confidence: classifierResult.scale_confidence ?? null,
-            scale_probabilities: classifierResult.scale_probabilities ?? null,
-            predicted_obstruction: classifierResult.predicted_obstruction ?? null,
-            obstruction_confidence: classifierResult.obstruction_confidence ?? null,
-            obstruction_probabilities: classifierResult.obstruction_probabilities ?? null,
+            predicted_scale: null,
+            scale_confidence: null,
+            scale_probabilities: null,
+            predicted_obstruction: null,
+            obstruction_confidence: null,
+            obstruction_probabilities: null,
         };
         _log('  → mapped status :', mapped.status, '| category:', mapped.predicted_category, '| scale:', mapped.predicted_scale, '| obstruction:', mapped.predicted_obstruction);
         return mapped;

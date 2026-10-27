@@ -1362,16 +1362,16 @@ export const createReport = async (req, res, next) => {
                     console.log(`[DATABASE-UPDATE] Fallback issue_type: ${updatePayload.issue_type}`);
                 }
 
-                // Automated scale assignment from ML model
+                // Preserve citizen-reported scale (image severity is disabled).
                 if (finalScaleLevel) {
                     updatePayload.scale_level = finalScaleLevel;
-                    console.log(`[DATABASE-UPDATE] Using AI-determined scale_level: ${finalScaleLevel}`);
+                    console.log(`[DATABASE-UPDATE] Using citizen-reported scale_level: ${finalScaleLevel}`);
                 }
 
-                // Automated obstruction assignment from ML model
+                // Preserve citizen-reported obstruction (image severity is disabled).
                 if (finalObstructionLevel) {
                     updatePayload.obstruction_level = finalObstructionLevel;
-                    console.log(`[DATABASE-UPDATE] Using AI-determined obstruction_level: ${finalObstructionLevel}`);
+                    console.log(`[DATABASE-UPDATE] Using citizen-reported obstruction_level: ${finalObstructionLevel}`);
                 }
 
                 // Severity calculation for approved reports
