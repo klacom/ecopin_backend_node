@@ -147,6 +147,7 @@ export async function generateMixedDispatchPlan(actor, input, { jobId, workerTok
   }
   const configured = Object.fromEntries(settingRows.map(row => [row.key, row.value]));
   const settings = { ...configured, ...resolvePlanSettings(input), mode: 'mixed', weather_condition: weatherCondition, weather_multiplier: weatherMultiplier };
+  settings.urgency_decisions=snapshot.urgency_decisions ?? {};
   for (const key of ['mixed_spatial_buffer_meters','mixed_max_reports_per_anchor','mixed_max_detour_minutes',
     'solver_time_limit_seconds','solver_max_candidate_nodes','mixed_bundle_reserve_pct']) settings[key] = Number(settings[key]);
   if (!Number.isInteger(settings.solver_max_candidate_nodes) || settings.solver_max_candidate_nodes < 1 ||

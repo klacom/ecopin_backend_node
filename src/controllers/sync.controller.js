@@ -1,4 +1,5 @@
 import { supabaseAdmin as supabase } from '../config/supabase.config.js';
+import { citizenPriorityFields } from '../services/citizen-priority.service.js';
 
 // batchSyncReports handles Tier 1 deduplication
 export const batchSyncReports = async (req, res, next) => {
@@ -47,6 +48,13 @@ export const batchSyncReports = async (req, res, next) => {
                 continue;
             }
 
+            let priorityFields;
+            try {
+                priorityFields = citizenPriorityFields(reportData);
+            } catch (error) {
+                results.push({ idempotency_key, result: 'error', error_message: error.message });
+                continue;
+            }
             // PostGIS point format
             const point = `POINT(${longitude} ${latitude})`;
             const onPrivateProperty = on_private_property === true || on_private_property === 'true';
@@ -67,6 +75,7 @@ export const batchSyncReports = async (req, res, next) => {
                     title,
                     description,
                     location: point,
+                    ...priorityFields,
                     on_private_property: onPrivateProperty,
                     property_owner_consent_status: onPrivateProperty ? 'pending' : 'not_required',
                     status: onPrivateProperty ? 'pending_owner_consent' : 'unresolved',
@@ -83,7 +92,8 @@ export const batchSyncReports = async (req, res, next) => {
                 results.push({
                     idempotency_key,
                     result: 'error',
-                    error_message: insertError.message
+                    error_message: insertError.message,
+                    ...(insertError.hint === 'URGENT_TRUST_LOCKED' ? { error_code: 'URGENT_TRUST_LOCKED' } : {})
                 });
             } else {
                 results.push({

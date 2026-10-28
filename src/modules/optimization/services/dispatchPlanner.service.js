@@ -27,10 +27,14 @@ export async function generateDispatchPlan(userId, input = {}) {
   const blockedClusters = new Set(blocks.map(block => block.cluster_id).filter(Boolean));
   const blockedReports = new Set(blocks.map(block => block.report_id).filter(Boolean));
   let candidates;
+  let urgencyReports=[];
   if (settings.mode === 'standard') {
-    const clusters = await rows(supabase.from('clusters')
-      .select('id, estimated_effort_minutes, priority_score, recommended_task_type, reports(id, status, cleanup_task_id)')
-      .in('status', ['new', 'unresolved', 'prioritized', 'queued', 'monitoring']).order('priority_score', { ascending: false }).limit(200));
+    let query=supabase.from('clusters')
+      .select('id, estimated_effort_minutes, priority_score, recommended_task_type, reports(id, status, cleanup_task_id, urgency_status, urgency_decision_id)')
+      .in('status', ['new', 'unresolved', 'prioritized', 'queued', 'monitoring']);
+    if (settings.cluster_ids?.length) query=query.in('id',settings.cluster_ids);
+    const clusters = await rows(query.order('priority_score', { ascending: false }).limit(200));
+    urgencyReports=clusters.flatMap(cluster=>cluster.reports ?? []);
     candidates = clusters.filter(cluster => !blockedClusters.has(cluster.id) && !(cluster.reports ?? []).some(report => report.cleanup_task_id && !['resolved','completed','closed','rejected'].includes(report.status)))
       .filter(cluster => !settings.cluster_ids || settings.cluster_ids.includes(cluster.id))
       .filter(cluster => !settings.included_task_types?.length || settings.included_task_types.includes(cluster.recommended_task_type))
@@ -40,10 +44,13 @@ export async function generateDispatchPlan(userId, input = {}) {
         service_minutes: Math.max(1, Math.ceil((cluster.estimated_effort_minutes ?? 60) * weatherMultiplier)), priority_score: cluster.priority_score ?? 0
       })).filter(candidate => candidate.report_ids.length && !candidate.report_ids.some(id => blockedReports.has(id)));
   } else {
-    const reports = await rows(supabase.from('reports')
-      .select('id, issue_type, severity_score, urgency_score, sla_started_at, created_at, lifecycle_state')
+    let query=supabase.from('reports')
+      .select('id, issue_type, severity_score, urgency_score, sla_started_at, created_at, lifecycle_state, urgency_status, urgency_decision_id')
       .in('lifecycle_state', ['maturing', 'sla_breached']).is('cluster_id', null).is('cleanup_task_id', null)
-      .eq('status', 'unresolved').order('deadline_at', { ascending: true }).limit(200));
+      .eq('status', 'unresolved');
+    if (settings.report_ids?.length) query=query.in('id',settings.report_ids);
+    const reports = await rows(query.order('deadline_at', { ascending: true }).limit(200));
+    urgencyReports=reports;
     const serviceTimes = new Map(workTimes.map(row => [row.report_type, row.work_time_minutes]));
     candidates = reports.filter(report => !blockedReports.has(report.id) && (!settings.report_ids || settings.report_ids.includes(report.id))).map(report => ({
       lifecycle_state: report.lifecycle_state, item_type: 'report', cluster_id: null, report_id: report.id, group_key: 'report:' + report.id,
@@ -51,6 +58,7 @@ export async function generateDispatchPlan(userId, input = {}) {
       priority_score: reportPriority(report, weightsRows[0]?.value)
     }));
   }
+  settings.urgency_decisions=Object.fromEntries(urgencyReports.filter(r=>r.urgency_status==='approved' && r.urgency_decision_id).map(r=>[r.id,r.urgency_decision_id]));
   const selected = selectPlanItems(candidates, crews, activeTasks, settings);
   const capableCrewCount = crews.filter(crew => crew.availability_status === 'available' &&
     crew.shift_start && crew.shift_end &&
