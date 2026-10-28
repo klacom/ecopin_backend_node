@@ -139,7 +139,20 @@ export const resolveAddressDetails = async (lat, lon) => {
                 const data = await res.json();
                 if (data?.address) {
                     const addr = data.address;
-                    result.street_address = addr.ShortLabel || addr.Address || addr.Match_addr?.split(',')[0] || null;
+                    const street = addr.Address?.trim() || null;
+                    const place = addr.PlaceName?.trim() || addr.ShortLabel?.trim() || null;
+
+                    if (street && place && street !== place && !place.includes(street)) {
+                        result.street_address = `${street} (${place})`;
+                    } else {
+                        const baseStreet = addr.ShortLabel || addr.Address || addr.Match_addr?.split(',')[0] || null;
+                        if (baseStreet && tier0Landmark && !baseStreet.includes(tier0Landmark)) {
+                            result.street_address = `${baseStreet} (${tier0Landmark})`;
+                        } else {
+                            result.street_address = baseStreet;
+                        }
+                    }
+
                     result.barangay = addr.Neighborhood || addr.District || null;
                     result.city = addr.City || 'Pasig City';
                     result.display_name = addr.Match_addr || null;
@@ -270,18 +283,17 @@ export const resolveAddressDetails = async (lat, lon) => {
     }
 
     // 4. Authoritative LGU Barangay Verification:
-    // If coordinates are in Pasig City (or city is not explicitly a non-Pasig city)
-    // and barangay is not yet verified as an official Pasig barangay, resolve via get_report_barangay.
+    // External geocoders (ArcGIS / OSM / Photon) frequently mislabel Philippine barangays
+    // (e.g. labeling Sandoval Ave in Pinagbuhatan as Ugong). For any coordinate inside Pasig,
+    // our local PostGIS polygon boundary RPC is the authoritative ground truth.
     const isPasig = !result.city || result.city.toLowerCase().includes('pasig');
     if (isPasig) {
-        if (!result.barangay || !OFFICIAL_PASIG_BARANGAYS.has(result.barangay)) {
-            try {
-                const { data: officialBgy } = await supabaseAdmin.rpc('get_report_barangay', { lat, lng: lon });
-                if (officialBgy && officialBgy !== 'Pasig City') {
-                    result.barangay = officialBgy;
-                }
-            } catch (_) {}
-        }
+        try {
+            const { data: officialBgy } = await supabaseAdmin.rpc('get_report_barangay', { lat, lng: lon });
+            if (officialBgy && officialBgy !== 'Pasig City' && OFFICIAL_PASIG_BARANGAYS.has(officialBgy)) {
+                result.barangay = officialBgy;
+            }
+        } catch (_) {}
         result.city = 'Pasig City';
     }
 
