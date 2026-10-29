@@ -1,3 +1,4 @@
+import {parseHideIdentity,publisherDisclosure} from '../services/report-identity.service.js';
 export {getPublicReports,getReportById,getReportsByClusterId,getStaffReports} from './report-read.controller.js';
 import {readReportForViewer,canReadReportEvidence} from '../services/report-access.service.js';
 import { citizenPriorityFields } from '../services/citizen-priority.service.js';
@@ -725,19 +726,19 @@ export const getBatchReportPublishers = async (req, res, next) => {
     const results = {};
 
     try {
+        const {data: visible,error: visibilityError}=await supabase.from('public_reports').select('id').in('id',reportIds);
+        if(visibilityError)throw visibilityError;
+        const visibleIds=(visible??[]).map(r=>r.id);
         const { data, error } = await supabase
             .from('reports')
-            .select('id, user_id, profiles(id, full_name, data_consent)')
-            .in('id', reportIds);
+            .select('id, hide_identity, profiles(full_name, data_consent)')
+            .in('id', visibleIds.length ? visibleIds : ['00000000-0000-0000-0000-000000000000']);
 
         if (error) throw error;
 
         for (const row of (data || [])) {
-            const consent = row.profiles?.data_consent === true;
-            results[row.id] = {
-                publisher_name: consent && row.profiles?.full_name ? row.profiles.full_name : 'Anonymous',
-                has_consent: consent
-            };
+            const disclosure = publisherDisclosure(row);
+            results[row.id] = {publisher_name:disclosure.publisher_name,has_consent:disclosure.publisher_disclosed};
         }
 
         // Fill remaining with Anonymous
@@ -789,9 +790,10 @@ export const validateReportImage = async (req, res, next) => {
 };
 
 export const createReport = async (req, res, next) => {
-    let priorityFields;
+    let priorityFields, hideIdentity;
     try {
         priorityFields = citizenPriorityFields(req.body);
+        hideIdentity = parseHideIdentity(req.body.hide_identity);
     } catch (error) {
         return res.status(400).json({ message: error.message });
     }
@@ -961,6 +963,9 @@ export const createReport = async (req, res, next) => {
         let resolvedStreetAddress = null;
         let resolvedBarangay = null;
         let resolvedCity = 'Pasig City';
+        let resolvedBarangayStatus = 'unavailable';
+        let resolvedBarangayCandidates = [];
+        let resolvedDistrict = null;
 
         const reportLat = parseFloat(latitude);
         const reportLng = parseFloat(longitude);
@@ -972,30 +977,21 @@ export const createReport = async (req, res, next) => {
                     resolvedStreetAddress = addrDetails.street_address || null;
                     resolvedBarangay = addrDetails.barangay || null;
                     resolvedCity = addrDetails.city || 'Pasig City';
+                    resolvedBarangayStatus = addrDetails.barangay_resolution_status || 'unavailable';
+                    resolvedBarangayCandidates = addrDetails.barangay_candidates || [];
+                    resolvedDistrict = addrDetails.location_district || null;
                 }
             } catch (geoErr) {
                 console.warn('[createReport] Geocoding lookup error:', geoErr.message);
             }
 
-            if (!resolvedBarangay) {
-                try {
-                    const { data: bgyData, error: bgyErr } = await supabase.rpc('get_report_barangay', {
-                        lat: reportLat,
-                        lng: reportLng
-                    });
-                    if (!bgyErr && bgyData && bgyData !== 'Pasig City') {
-                        resolvedBarangay = bgyData;
-                    }
-                } catch (bgyErr) {
-                    console.warn('[createReport] get_report_barangay RPC error:', bgyErr.message);
-                }
-            }
         }
 
         const { data: report, error } = await supabase
             .from('reports')
             .insert({
                 user_id,
+                hide_identity: hideIdentity,
                 title,
                 description,
                 ...priorityFields,
@@ -1020,6 +1016,9 @@ export const createReport = async (req, res, next) => {
                 photo_distance_meters: photoDistanceMeters,
                 street_address: resolvedStreetAddress,
                 barangay: resolvedBarangay,
+                barangay_resolution_status: resolvedBarangayStatus,
+                barangay_candidates: resolvedBarangayCandidates,
+                location_district: resolvedDistrict,
                 city: resolvedCity,
             })
             .select()
@@ -1553,7 +1552,6 @@ export const getMyReports = async (req, res, next) => {
 };
 
 
-
 export const updateReportStatus = async (req, res, next) => {
     const { id } = req.params;
     const { status } = req.body;
@@ -1766,7 +1764,6 @@ export const updateReportValidation = async (req, res, next) => {
         next(error);
     }
 };
-
 
 export const batchCompleteReportsByCluster = async (req, res, next) => {
     const { clusterId } = req.params;
@@ -2507,6 +2504,7 @@ export const createReportFromRejected = async (req, res, next) => {
             .from('reports')
             .insert({
                 user_id,
+                hide_identity: originalReport.hide_identity === true,
                 title: originalReport.title,
                 description: originalReport.description,
                 issue_type: originalReport.issue_type,
@@ -2558,7 +2556,6 @@ export const createReportFromRejected = async (req, res, next) => {
         next(error);
     }
 };
-
 
 export const syncReportMedia = async (req, res, next) => {
     const { idempotency_key } = req.params;

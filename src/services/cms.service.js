@@ -7,7 +7,7 @@ export const DEFAULT_CMS_SETTINGS = {
     // Contact & Office Information
     contact_support_email: 'ecopinmail@gmail.com',
     contact_office_email: 'swmo@pasigcity.gov.ph',
-    contact_phone: '09173726888',
+    contact_phone: '+63286431111',
     contact_office_name: 'Pasig Solid Waste Management Office (SWMO)',
     contact_office_address: 'Pasig City Hall Complex, Caruncho Ave, Pasig, Metro Manila',
     contact_operating_hours: 'Monday – Friday: 8:00 AM – 5:00 PM',

@@ -1,3 +1,4 @@
+import {maskReportIdentity,publisherDisclosure} from './report-identity.service.js';
 function extractRejectionReason(row) {
   if (!row) return null;
   if (typeof row.rejection_reason === 'string' && row.rejection_reason.trim()) {
@@ -37,15 +38,15 @@ export async function readReportForViewer(db, id, viewer) {
     });
     if (error) throw error;
     if (data) {
-      const consent = data.profiles?.data_consent === true;
+      const consent = publisherDisclosure(data).publisher_disclosed;
       const pubName = consent && data.profiles?.full_name ? data.profiles.full_name : 'Anonymous';
       return {
-        report: {
+        report: maskReportIdentity({
           ...data,
           rejection_reason: extractRejectionReason(data) || data.rejection_reason || null,
           publisher_name: pubName,
           publisher_disclosed: consent
-        },
+        },viewer),
         detail: true
       };
     }
@@ -70,15 +71,15 @@ export async function readReportForViewer(db, id, viewer) {
               }
             }
             if (isAssigned) {
-              const consent = rep.profiles?.data_consent === true;
+              const consent = publisherDisclosure(rep).publisher_disclosed;
               const pubName = consent && rep.profiles?.full_name ? rep.profiles.full_name : 'Anonymous';
               return {
-                report: {
+                report: maskReportIdentity({
                   ...rep,
                   rejection_reason: extractRejectionReason(rep) || rep.rejection_reason || null,
                   publisher_name: pubName,
                   publisher_disclosed: consent
-                },
+                },viewer),
                 detail: true
               };
             }
@@ -98,10 +99,10 @@ export async function readReportForViewer(db, id, viewer) {
   let publisher_disclosed = false;
   try {
     const { data: repOwner } = await db.from('reports')
-      .select('user_id, profiles(id, full_name, data_consent)')
+      .select('hide_identity, profiles(full_name, data_consent)')
       .eq('id', id)
       .maybeSingle();
-    if (repOwner?.profiles && repOwner.profiles.data_consent === true && repOwner.profiles.full_name) {
+    if (publisherDisclosure(repOwner).publisher_disclosed) {
       publisher_name = repOwner.profiles.full_name;
       publisher_disclosed = true;
     }

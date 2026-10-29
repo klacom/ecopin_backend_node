@@ -1,72 +1,20 @@
-import fetch from 'node-fetch';
-import { supabaseAdmin as supabase } from '../src/config/supabase.config.js';
-
-const PASIG_BARANGAY_GEOJSON_URL = 'https://raw.githubusercontent.com/faeldon/philippines-json-maps/master/latest/geojson/municities/medres/bgysubmuns-municity-1381200000.0.01.json';
-
-async function run() {
-  console.log('[Polygon Importer] Fetching official Pasig City 30 barangay boundaries...');
-  const res = await fetch(PASIG_BARANGAY_GEOJSON_URL);
-  if (!res.ok) {
-    throw new Error(`Failed to download GeoJSON: ${res.statusText}`);
-  }
-
-  const geojson = await res.json();
-  const features = geojson.features || [];
-  console.log(`[Polygon Importer] Downloaded ${features.length} barangay boundaries.`);
-
-  // Clear existing barangay spatial zones if any
-  const { error: delErr } = await supabase
-    .from('spatial_zones')
-    .delete()
-    .eq('zone_type', 'barangay');
-
-  if (delErr) {
-    console.warn('[Polygon Importer] Delete warning:', delErr.message);
-  }
-
-  const rows = [];
-  for (const feat of features) {
-    const name = feat.properties.adm4_en || feat.properties.NAME_4;
-    if (!name || !feat.geometry) continue;
-
-    // Compute basic centroid from bbox or coordinates
-    let sumLat = 0, sumLng = 0, count = 0;
-    const geom = feat.geometry;
-    const rings = geom.type === 'Polygon' ? geom.coordinates : (geom.type === 'MultiPolygon' ? geom.coordinates.flat() : []);
-    for (const ring of rings) {
-      for (const pt of ring) {
-        sumLng += pt[0];
-        sumLat += pt[1];
-        count++;
-      }
-    }
-    const cLat = count > 0 ? (sumLat / count) : 14.5761;
-    const cLng = count > 0 ? (sumLng / count) : 121.0851;
-
-    rows.push({
-      id: `barangay_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
-      zone_name: name,
-      zone_type: 'barangay',
-      boundary_geojson: feat.geometry,
-      centroid_lat: cLat,
-      centroid_lng: cLng
-    });
-  }
-
-  console.log(`[Polygon Importer] Inserting ${rows.length} official barangay polygons into public.spatial_zones...`);
-  const { error: insErr } = await supabase
-    .from('spatial_zones')
-    .upsert(rows, { onConflict: 'id' });
-
-  if (insErr) {
-    console.error('[Polygon Importer] Error inserting polygons:', insErr.message);
-    process.exit(1);
-  }
-
-  console.log('[Polygon Importer] Successfully loaded 30 official Pasig City barangay polygons into PostGIS!');
+import {parseArgs} from 'node:util';
+import {readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {preparePasigBoundaryRows} from '../src/services/pasig-barangay-catalog.js';
+const {values:args}=parseArgs({options:{input:{type:'string'},'source-url':{type:'string'},sha256:{type:'string'},confirm:{type:'boolean',default:false},'dry-run':{type:'boolean',default:false},help:{type:'boolean',default:false}}});
+if(args.help||!args.input){
+ console.log('Usage: node scripts/import-pasig-barangay-polygons.mjs --input <GeoJSON> [--dry-run]\nApply only after review: add --confirm --source-url <HTTPS source> --sha256 <reviewed file SHA-256>');
+}else{
+ if(args.confirm&&args['dry-run'])throw new Error('Choose dry-run or confirm, not both.');
+ const bytes=await readFile(args.input);const sha256=createHash('sha256').update(bytes).digest('hex');
+ const rows=preparePasigBoundaryRows(JSON.parse(bytes.toString('utf8')));
+ if(args.sha256&&args.sha256!==sha256)throw new Error('Source checksum does not match the reviewed file.');
+ console.log(JSON.stringify({mode:args.confirm?'apply':'dry-run',count:rows.length,sha256,names:rows.map(r=>r.name),geometry_validation:'PostGIS validation/overlap checks run inside the atomic import; use the geometry audit before applying.'},null,2));
+ if(args.confirm){
+  if(!args.sha256||!args['source-url']?.startsWith('https://'))throw new Error('Applying requires reviewed SHA-256 and an HTTPS provenance URL.');
+  const {supabaseAdmin}=await import('../src/config/supabase.config.js');
+  const {data,error}=await supabaseAdmin.rpc('import_pasig_barangay_boundaries',{rows,source_url:args['source-url'],source_sha256:sha256});
+  if(error)throw new Error(error.message);console.log(JSON.stringify(data));
+ }
 }
-
-run().catch(err => {
-  console.error('[Polygon Importer] Fatal error:', err);
-  process.exit(1);
-});

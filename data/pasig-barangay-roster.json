@@ -1,0 +1,127 @@
+{
+  "source": "https://psa.gov.ph/classification/psgc/barangays/1381200000",
+  "published_as_of": "2025-07-31",
+  "checked_on": "2026-10-29",
+  "barangays": [
+    {
+      "name": "Bagong Ilog",
+      "psgc_code": "1381200001"
+    },
+    {
+      "name": "Bagong Katipunan",
+      "psgc_code": "1381200002"
+    },
+    {
+      "name": "Bambang",
+      "psgc_code": "1381200003"
+    },
+    {
+      "name": "Buting",
+      "psgc_code": "1381200004"
+    },
+    {
+      "name": "Caniogan",
+      "psgc_code": "1381200005"
+    },
+    {
+      "name": "Dela Paz",
+      "psgc_code": "1381200006"
+    },
+    {
+      "name": "Kalawaan",
+      "psgc_code": "1381200007"
+    },
+    {
+      "name": "Kapasigan",
+      "psgc_code": "1381200008"
+    },
+    {
+      "name": "Kapitolyo",
+      "psgc_code": "1381200009"
+    },
+    {
+      "name": "Malinao",
+      "psgc_code": "1381200010"
+    },
+    {
+      "name": "Manggahan",
+      "psgc_code": "1381200011"
+    },
+    {
+      "name": "Maybunga",
+      "psgc_code": "1381200012"
+    },
+    {
+      "name": "Oranbo",
+      "psgc_code": "1381200013"
+    },
+    {
+      "name": "Palatiw",
+      "psgc_code": "1381200014"
+    },
+    {
+      "name": "Pinagbuhatan",
+      "psgc_code": "1381200015"
+    },
+    {
+      "name": "Pineda",
+      "psgc_code": "1381200016"
+    },
+    {
+      "name": "Rosario",
+      "psgc_code": "1381200017"
+    },
+    {
+      "name": "Sagad",
+      "psgc_code": "1381200018"
+    },
+    {
+      "name": "San Antonio",
+      "psgc_code": "1381200019"
+    },
+    {
+      "name": "San Joaquin",
+      "psgc_code": "1381200020"
+    },
+    {
+      "name": "San Jose",
+      "psgc_code": "1381200021"
+    },
+    {
+      "name": "San Miguel",
+      "psgc_code": "1381200022"
+    },
+    {
+      "name": "San Nicolas",
+      "psgc_code": "1381200023"
+    },
+    {
+      "name": "Santa Cruz",
+      "psgc_code": "1381200024"
+    },
+    {
+      "name": "Santa Rosa",
+      "psgc_code": "1381200025"
+    },
+    {
+      "name": "Santo Tomas",
+      "psgc_code": "1381200026"
+    },
+    {
+      "name": "Santolan",
+      "psgc_code": "1381200027"
+    },
+    {
+      "name": "Sumilang",
+      "psgc_code": "1381200028"
+    },
+    {
+      "name": "Ugong",
+      "psgc_code": "1381200029"
+    },
+    {
+      "name": "Santa Lucia",
+      "psgc_code": "1381200030"
+    }
+  ]
+}

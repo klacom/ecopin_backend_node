@@ -1,3 +1,4 @@
+import {reportIdentityBoundary} from './middleware/report-identity.middleware.js';
 import mediaRoutes from './routes/media.routes.js';
 // Main application file for the EcoPin backend API server. Sets up Express, middleware, and routes.
 
@@ -27,6 +28,7 @@ import conflictRoutes from './routes/conflict.routes.js';
 import fcSyncRoutes from './routes/fc_sync.routes.js';
 import sweeperRoutes from './modules/sweeper/routes/sweeper.routes.js';
 import contactRoutes from './routes/contact.routes.js';
+import analyticsRoutes from './routes/analytics.routes.js';
 
 // Import middleware
 import { errorHandler } from './middleware/errorHandler.middleware.js';
@@ -129,6 +131,9 @@ app.get('/health', async (req, res) => {
     res.status(statusCode).json(healthCheck);
 });
 
+// Protect every API JSON response, including errors and immutable stored replays.
+app.use('/api', reportIdentityBoundary());
+
 // Routes
 app.use('/api/media', mediaRoutes);
 app.use('/api/auth', authRoutes);
@@ -146,6 +151,7 @@ app.use('/api/optimization', optimizationRoutes);
 app.use('/api/fc', fcSyncRoutes);
 app.use('/api/sweeper', sweeperRoutes);
 app.use('/api/contact', contactRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 // 404 handler
 app.use((req, res) => {

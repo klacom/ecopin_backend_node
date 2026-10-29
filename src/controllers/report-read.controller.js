@@ -1,3 +1,4 @@
+import {maskReportIdentity} from '../services/report-identity.service.js';
 import {supabaseAdmin as db} from '../config/supabase.config.js';
 import {PUBLIC_REPORT_FIELDS,reportPage,readReportForViewer} from '../services/report-access.service.js';
 
@@ -11,7 +12,7 @@ async function enrichReportsWithTasks(reports) {
     for (let i = 0; i < ids.length; i += chunkSize) {
       const chunk = ids.slice(i, i + chunkSize);
       const { data: directRows, error } = await db.from('reports')
-        .select('id, cleanup_task_id, before_photos, after_photos')
+        .select('id, cleanup_task_id, before_photos, after_photos, citizen_priority, report_claim_generation, barangay_resolution_status, barangay_candidates, location_district')
         .in('id', chunk);
       if (error) {
         console.warn('[enrichReportsWithTasks] Warning fetching task mapping chunk:', error.message);
@@ -26,6 +27,14 @@ async function enrichReportsWithTasks(reports) {
       r.cleanup_task_id = direct?.cleanup_task_id || r.cleanup_task_id || null;
       if (direct?.before_photos) r.before_photos = direct.before_photos;
       if (direct?.after_photos) r.after_photos = direct.after_photos;
+      if (direct?.barangay_resolution_status != null) {
+        r.barangay_resolution_status = direct.barangay_resolution_status;
+        r.barangay_candidates = direct.barangay_candidates ?? [];
+        r.location_district = direct.location_district ?? null;
+        if (direct.barangay_resolution_status !== 'resolved') r.barangay = null;
+      }
+      if (direct?.citizen_priority != null) r.citizen_priority = direct.citizen_priority;
+      if (direct?.report_claim_generation != null) r.report_claim_generation = direct.report_claim_generation;
     });
   } catch (err) {
     console.warn('[enrichReportsWithTasks] Unexpected error:', err.message);
@@ -46,7 +55,7 @@ async function reportList(req,res,next,clusterId) {
     const sliced = (data || []).slice(0,limit);
     if (staffCluster) await enrichReportsWithTasks(sliced);
     res.set('X-Has-More',String((data || []).length > limit));
-    res.status(200).json(sliced);
+    res.status(200).json(staffCluster ? sliced.map(r=>maskReportIdentity(r,req.user)) : sliced);
   } catch(error) {
     if (error.statusCode === 400) return res.status(400).json({message:error.message});
     next(error);
@@ -81,7 +90,7 @@ export async function getStaffReports(req, res, next) {
     const sliced = (data || []).slice(0, limit);
     await enrichReportsWithTasks(sliced);
     res.set('X-Has-More', String((data || []).length > limit));
-    res.status(200).json(sliced);
+    res.status(200).json(sliced.map(r=>maskReportIdentity(r,req.user)));
   } catch (error) {
     if (error.statusCode === 400) return res.status(400).json({message: error.message});
     next(error);

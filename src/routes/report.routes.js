@@ -1,6 +1,7 @@
 import { getReportVideoPolicyHandler, validateReportVideo } from '../services/report-video-policy.service.js';
 import { getMyCitizenTrust, getCitizenTrustReview, recordCitizenTrustReview } from '../controllers/citizen-trust.controller.js';
 import { getUrgencyQueue, decideReportUrgency } from '../controllers/report-urgency.controller.js';
+import {getCrewUrgencyObservations,reviewCrewUrgencyObservation} from '../controllers/crew-urgency.controller.js';
 import { fieldReportWrite } from '../middleware/field-report-write.middleware.js';
 import { uploadFieldReportPhoto, deleteFieldReportPhoto } from '../controllers/field-report-photo.controller.js';
 import { Router } from 'express';
@@ -72,16 +73,21 @@ router.use(checkUserSuspension);
 
 // Trust reviews are distinct online transactions, never legacy field-report writes.
 // The database independently verifies role, ownership, assignment and retry identity.
-router.get('/:id/trust-review', authorize(ROLE_GROUPS.REPORT_MGMT), getCitizenTrustReview);
-router.post('/:id/trust-review', authorize(ROLE_GROUPS.REPORT_MGMT), recordCitizenTrustReview);
+router.get('/:id/trust-review', authorize(ROLE_GROUPS.DESK_OPS), getCitizenTrustReview);
+router.post('/:id/trust-review', authorize(ROLE_GROUPS.DESK_OPS), recordCitizenTrustReview);
+router.get('/:id/urgency-observations', authorize(ROLE_GROUPS.REPORT_MGMT), getCrewUrgencyObservations);
+router.post('/:id/urgency-observations/:observationId/review', authorize(ROLE_GROUPS.DESK_OPS), reviewCrewUrgencyObservation);
 router.post('/:id/urgency', authorize(ROLE_GROUPS.DESK_OPS), decideReportUrgency);
 
 // Pre-validation endpoint for clean photos
 router.post('/validate-image', mediaUpload.single('image'), validateReportImage);
 
 // Routes that don't need LGU/admin role first
+// New clients use this path when a batch includes hidden reports; old servers return 404 rather than ignoring privacy.
+router.post('/sync/batch-protected', batchSyncReports);
 router.post('/sync/batch', batchSyncReports);
 router.post('/sync/media/:idempotency_key', mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), validateReportVideo, syncReportMedia);
+router.post('/identity-protected', enforceReportSubmissionQuota, mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'clean_image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), validateReportVideo, (req,res,next)=>{req.body.hide_identity=true;return createReport(req,res,next);});
 router.post('/', enforceReportSubmissionQuota, mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'clean_image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), validateReportVideo, createReport);
 router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), validateReportVideo, uploadEvidence);
 router.patch('/:id/close', citizenCloseReport); // Citizen can close their own report
