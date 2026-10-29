@@ -25,6 +25,7 @@ import {
     updatePropertyOwnerConsent,
     lguResolveReport,
     citizenCloseReport,
+    citizenFlagIncomplete,
     citizenWithdrawReport,
     getSatisfactionAnalytics,
     createReportFromRejected,
@@ -85,6 +86,7 @@ router.post('/sync/media/:idempotency_key', mediaUpload.fields([{ name: 'image',
 router.post('/', enforceReportSubmissionQuota, mediaUpload.fields([{ name: 'image', maxCount: 5 }, { name: 'clean_image', maxCount: 5 }, { name: 'video', maxCount: 1 }]), validateReportVideo, createReport);
 router.post('/:reportId/evidence', mediaUpload.fields([{ name: 'image', maxCount: 1 }, { name: 'video', maxCount: 1 }]), validateReportVideo, uploadEvidence);
 router.patch('/:id/close', citizenCloseReport); // Citizen can close their own report
+router.patch('/:id/flag-incomplete', citizenFlagIncomplete); // Citizen can flag incomplete cleanup for reinspection
 router.delete('/:id', citizenWithdrawReport); // Citizen can withdraw/delete their own report before triage/dispatch
 router.patch('/:id/withdraw', citizenWithdrawReport); // Alias for report withdrawal
 router.post('/:id/create-new', enforceReportSubmissionQuota, createReportFromRejected); // Create new report from rejected

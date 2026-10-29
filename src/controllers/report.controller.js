@@ -2279,6 +2279,68 @@ export const citizenCloseReport = async (req, res, next) => {
     }
 };
 
+// Citizen flags an incomplete cleanup requesting reinspection
+export const citizenFlagIncomplete = async (req, res, next) => {
+    const { id } = req.params;
+    const { reason, notes } = req.body;
+    const user_id = req.user.id;
+
+    try {
+        const { data: currentReport, error: fetchErr } = await supabase
+            .from('reports')
+            .select('user_id, status, cleanup_task_id')
+            .eq('id', id)
+            .single();
+
+        if (fetchErr || !currentReport) {
+            return res.status(404).json({ message: 'Report not found' });
+        }
+
+        if (currentReport.user_id !== user_id && req.user.role !== 'admin') {
+            return res.status(403).json({
+                message: 'You are not authorized to flag this report'
+            });
+        }
+
+        const detailsText = notes || reason || 'Citizen requested reinspection - cleanup incomplete';
+
+        const { data, error } = await supabase
+            .from('reports')
+            .update({
+                status: 'reinspection_needed',
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            // If enum doesn't support 'reinspection_needed', fall back to 'in_progress' or 'acknowledged' with note
+            const fallback = await supabase
+                .from('reports')
+                .update({
+                    status: 'acknowledged',
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', id)
+                .select()
+                .single();
+            if (fallback.error) {
+                return res.status(400).json({ message: 'Failed to flag report', error: fallback.error.message });
+            }
+        }
+
+        await logAuditAction(id, user_id, 'citizen_flag_incomplete', detailsText);
+
+        res.status(200).json({
+            message: 'Cleanup flagged as incomplete. An officer will reinspect it.',
+            report: data || currentReport
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // Citizen withdraws/deletes their own report before triage/dispatch
 export const citizenWithdrawReport = async (req, res, next) => {
     const { id } = req.params;
