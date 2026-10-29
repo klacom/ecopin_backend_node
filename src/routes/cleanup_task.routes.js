@@ -13,7 +13,9 @@ import {
     getAvailableCrew,
     upload,
     updateCleanupTaskTitle,
-    updateCleanupTaskStatus
+    updateCleanupTaskStatus,
+    getCrewPerformance,
+    getMyPerformance
 } from '../controllers/cleanup_task.controller.js';
 import { batchSyncTaskUpdates } from '../controllers/sync.controller.js';
 import { authenticate, checkUserSuspension, authorize } from '../middleware/auth.middleware.js';
@@ -26,6 +28,11 @@ router.use(authenticate);
 
 // Add suspension check for protected routes
 router.use(checkUserSuspension);
+
+// Performance analytics routes
+router.get('/performance/me', getMyPerformance);
+router.get('/performance', authorize(ROLE_GROUPS.DESK_OPS), getCrewPerformance);
+
 
 // Cluster tasks endpoint (accessible to any authenticated user, placed before role gate)
 router.get('/cluster/:clusterId', getTasksByClusterId);

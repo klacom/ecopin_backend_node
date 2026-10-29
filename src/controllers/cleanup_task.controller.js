@@ -610,3 +610,251 @@ export const updateCleanupTaskTitle = async (req, res, next) => {
         next(error);
     }
 };
+
+/**
+ * Get crew performance statistics (Desk Ops & Field Ops)
+ * If officer/admin, returns all crew stats (or filter by crew_id / member_id).
+ * If field_crew, returns performance for their assigned tasks / crew membership.
+ */
+export const getCrewPerformance = async (req, res, next) => {
+    try {
+        const actor = req.user;
+        const { crew_id, member_id, timeframe = 'all' } = req.query;
+
+        // Fetch completed tasks with completion metadata
+        let query = supabase
+            .from('cleanup_tasks')
+            .select(`
+                id,
+                title,
+                status,
+                completed_by,
+                assigned_field_crew_id,
+                assigned_crew_ids,
+                created_at,
+                completed_at,
+                completion_result,
+                reports (
+                    id,
+                    satisfaction_rating,
+                    citizen_closed_at
+                )
+            `)
+            .eq('status', 'completed');
+
+        // Apply timeframe filter
+        if (timeframe === 'today') {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            query = query.gte('completed_at', today.toISOString());
+        } else if (timeframe === 'week') {
+            const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+            query = query.gte('completed_at', weekAgo.toISOString());
+        } else if (timeframe === 'month') {
+            const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+            query = query.gte('completed_at', monthAgo.toISOString());
+        }
+
+        const { data: tasks, error: tasksError } = await query;
+        if (tasksError) throw tasksError;
+
+        // Fetch field crews, profiles & auth users for mapping emails
+        const [{ data: crews }, { data: profiles }, { data: authData }] = await Promise.all([
+            supabase.from('field_crews').select('id, name, member_profile_ids, team_lead_profile_id'),
+            supabase.from('profiles').select('id, full_name, avatar_url, role').eq('role', 'field_crew'),
+            supabase.auth.admin.listUsers()
+        ]);
+
+        const emailMap = new Map((authData?.users || []).map(u => [u.id, u.email]));
+
+        const crewMap = new Map((crews || []).map(c => [c.id, c]));
+        const profileMap = new Map((profiles || []).map(p => [p.id, {
+            ...p,
+            email: emailMap.get(p.id) || null
+        }]));
+
+        // Calculate performance for a given set of tasks
+        const computeMetrics = (taskList) => {
+            const totalCompleted = taskList.length;
+            let totalTurnaroundMs = 0;
+            let turnaroundCount = 0;
+            let ratingSum = 0;
+            let ratingCount = 0;
+            const ratingDistribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+
+            for (const t of taskList) {
+                if (t.created_at && t.completed_at) {
+                    const diff = new Date(t.completed_at) - new Date(t.created_at);
+                    if (diff > 0) {
+                        totalTurnaroundMs += diff;
+                        turnaroundCount++;
+                    }
+                }
+
+                if (Array.isArray(t.reports)) {
+                    for (const r of t.reports) {
+                        if (r.satisfaction_rating >= 1 && r.satisfaction_rating <= 5) {
+                            ratingSum += r.satisfaction_rating;
+                            ratingCount++;
+                            ratingDistribution[r.satisfaction_rating] = (ratingDistribution[r.satisfaction_rating] || 0) + 1;
+                        }
+                    }
+                }
+            }
+
+            const avgTurnaroundHours = turnaroundCount > 0
+                ? Number((totalTurnaroundMs / (turnaroundCount * 3600000)).toFixed(1))
+                : 0;
+
+            const avgSatisfactionRating = ratingCount > 0
+                ? Number((ratingSum / ratingCount).toFixed(2))
+                : null;
+
+            return {
+                total_completed: totalCompleted,
+                avg_turnaround_hours: avgTurnaroundHours,
+                avg_satisfaction_rating: avgSatisfactionRating,
+                total_ratings_received: ratingCount,
+                rating_distribution: ratingDistribution
+            };
+        };
+
+        // If field crew caller requests self-stats, or query targets single member
+        const targetMemberId = member_id || (actor.role === 'field_crew' && !['admin', 'officer'].includes(actor.role) ? actor.id : null);
+
+        if (targetMemberId) {
+            const memberTasks = (tasks || []).filter(t =>
+                t.completed_by === targetMemberId ||
+                (Array.isArray(t.assigned_crew_ids) && t.assigned_crew_ids.includes(targetMemberId))
+            );
+            const metrics = computeMetrics(memberTasks);
+            const profile = profileMap.get(targetMemberId) || { id: targetMemberId, full_name: 'Field Crew Member' };
+
+            // Find crew team where user is a member or team lead
+            const userCrew = (crews || []).find(c =>
+                c.team_lead_profile_id === targetMemberId ||
+                (Array.isArray(c.member_profile_ids) && c.member_profile_ids.includes(targetMemberId))
+            );
+
+            let crewTeamMetrics = null;
+            if (userCrew) {
+                const teamMemberIds = new Set([
+                    ...(userCrew.member_profile_ids || []),
+                    ...(userCrew.team_lead_profile_id ? [userCrew.team_lead_profile_id] : [])
+                ]);
+                const teamTasks = (tasks || []).filter(t =>
+                    t.assigned_field_crew_id === userCrew.id ||
+                    (Array.isArray(t.assigned_crew_ids) && t.assigned_crew_ids.some(id => teamMemberIds.has(id)))
+                );
+                crewTeamMetrics = {
+                    id: userCrew.id,
+                    name: userCrew.name,
+                    performance: computeMetrics(teamTasks)
+                };
+            }
+
+            return res.status(200).json({
+                member: profile,
+                performance: metrics,
+                crew_team: crewTeamMetrics,
+                recent_tasks: memberTasks.slice(0, 10).map(t => ({
+                    id: t.id,
+                    title: t.title,
+                    completed_at: t.completed_at,
+                    ratings: (t.reports || []).map(r => r.satisfaction_rating).filter(Boolean)
+                }))
+            });
+        }
+
+
+        // Desk ops view: aggregate by crew team & individual crew members
+        const crewPerformance = (crews || []).map(crew => {
+            const memberIds = new Set([
+                ...(crew.member_profile_ids || []),
+                ...(crew.team_lead_profile_id ? [crew.team_lead_profile_id] : [])
+            ]);
+
+            const crewTasks = (tasks || []).filter(t =>
+                t.assigned_field_crew_id === crew.id ||
+                (Array.isArray(t.assigned_crew_ids) && t.assigned_crew_ids.some(id => memberIds.has(id)))
+            );
+
+            return {
+                id: crew.id,
+                name: crew.name,
+                team_lead: profileMap.get(crew.team_lead_profile_id) || null,
+                member_count: memberIds.size,
+                performance: computeMetrics(crewTasks),
+                tasks: crewTasks.map(t => {
+                    const diffMs = (t.created_at && t.completed_at) ? new Date(t.completed_at) - new Date(t.created_at) : null;
+                    const turnaroundHours = diffMs ? Number((diffMs / 3600000).toFixed(1)) : null;
+                    const ratings = (t.reports || []).map(r => r.satisfaction_rating).filter(Boolean);
+                    const avgRating = ratings.length ? Number((ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(1)) : null;
+
+                    return {
+                        id: t.id,
+                        title: t.title || `Task #${t.id.slice(0, 8)}`,
+                        status: t.status,
+                        created_at: t.created_at,
+                        completed_at: t.completed_at,
+                        turnaround_hours: turnaroundHours,
+                        avg_rating: avgRating,
+                        ratings_count: ratings.length,
+                        reports_count: (t.reports || []).length
+                    };
+                })
+            };
+        });
+
+        // Individual member breakdown
+        const memberPerformance = (profiles || []).map(profile => {
+            const memberTasks = (tasks || []).filter(t =>
+                t.completed_by === profile.id ||
+                (Array.isArray(t.assigned_crew_ids) && t.assigned_crew_ids.includes(profile.id))
+            );
+            return {
+                id: profile.id,
+                full_name: profile.full_name,
+                email: emailMap.get(profile.id) || null,
+                role: profile.role || 'field_crew',
+                avatar_url: profile.avatar_url,
+                performance: computeMetrics(memberTasks),
+                tasks: memberTasks.map(t => {
+                    const diffMs = (t.created_at && t.completed_at) ? new Date(t.completed_at) - new Date(t.created_at) : null;
+                    const turnaroundHours = diffMs ? Number((diffMs / 3600000).toFixed(1)) : null;
+                    const ratings = (t.reports || []).map(r => r.satisfaction_rating).filter(Boolean);
+                    const avgRating = ratings.length ? Number((ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(1)) : null;
+
+                    return {
+                        id: t.id,
+                        title: t.title || `Task #${t.id.slice(0, 8)}`,
+                        status: t.status,
+                        created_at: t.created_at,
+                        completed_at: t.completed_at,
+                        turnaround_hours: turnaroundHours,
+                        avg_rating: avgRating,
+                        ratings_count: ratings.length,
+                        reports_count: (t.reports || []).length
+                    };
+                })
+            };
+        });
+
+        const overall = computeMetrics(tasks || []);
+
+        return res.status(200).json({
+            overall,
+            crews: crewPerformance,
+            members: memberPerformance
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getMyPerformance = async (req, res, next) => {
+    req.query = req.query || {};
+    req.query.member_id = req.user.id;
+    return getCrewPerformance(req, res, next);
+};
+
