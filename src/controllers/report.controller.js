@@ -1,5 +1,6 @@
 export {getPublicReports,getReportById,getReportsByClusterId,getStaffReports} from './report-read.controller.js';
 import {readReportForViewer,canReadReportEvidence} from '../services/report-access.service.js';
+import { citizenPriorityFields } from '../services/citizen-priority.service.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
@@ -788,6 +789,12 @@ export const validateReportImage = async (req, res, next) => {
 };
 
 export const createReport = async (req, res, next) => {
+    let priorityFields;
+    try {
+        priorityFields = citizenPriorityFields(req.body);
+    } catch (error) {
+        return res.status(400).json({ message: error.message });
+    }
     const {
         title,
         description,
@@ -991,6 +998,7 @@ export const createReport = async (req, res, next) => {
                 user_id,
                 title,
                 description,
+                ...priorityFields,
                 // Set initial issue type based on text analysis, will be updated by AI validation
                 issue_type: initialIssueType,
                 ...classifyReportHazard({ issue_type: initialIssueType, title, description }),
@@ -1018,6 +1026,9 @@ export const createReport = async (req, res, next) => {
             .single();
 
         if (error) {
+            if (error.hint === 'URGENT_TRUST_LOCKED') {
+                return res.status(403).json({ message: error.message, code: 'URGENT_TRUST_LOCKED' });
+            }
             return res.status(400).json({
                 message: 'Failed to create report',
                 error: error.message

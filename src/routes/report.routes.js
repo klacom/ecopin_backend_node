@@ -1,4 +1,6 @@
 import { getReportVideoPolicyHandler, validateReportVideo } from '../services/report-video-policy.service.js';
+import { getMyCitizenTrust, getCitizenTrustReview, recordCitizenTrustReview } from '../controllers/citizen-trust.controller.js';
+import { getUrgencyQueue, decideReportUrgency } from '../controllers/report-urgency.controller.js';
 import { fieldReportWrite } from '../middleware/field-report-write.middleware.js';
 import { uploadFieldReportPhoto, deleteFieldReportPhoto } from '../controllers/field-report-photo.controller.js';
 import { Router } from 'express';
@@ -48,11 +50,13 @@ router.get('/public', getPublicReports);
 
 // Citizen reports for authenticated user (must be declared before parameterized /:id route)
 router.get('/my', authenticate, checkUserSuspension, getMyReports);
+router.get('/trust/me', authenticate, checkUserSuspension, getMyCitizenTrust);
 
 // Citizen daily submission quota status (WT-97)
 router.get('/media-policy', authenticate, checkUserSuspension, getReportVideoPolicyHandler);
 
 router.get('/quota', authenticate, checkUserSuspension, getReportQuota);
+router.get('/urgent-queue', authenticate, checkUserSuspension, authorize(ROLE_GROUPS.DESK_OPS), getUrgencyQueue);
 
 // Optionally authenticated routes
 router.get('/:reportId/evidence', optionalAuthenticate, getReportEvidence);
@@ -65,6 +69,12 @@ router.use(authenticate);
 
 // Add suspension check for protected routes
 router.use(checkUserSuspension);
+
+// Trust reviews are distinct online transactions, never legacy field-report writes.
+// The database independently verifies role, ownership, assignment and retry identity.
+router.get('/:id/trust-review', authorize(ROLE_GROUPS.REPORT_MGMT), getCitizenTrustReview);
+router.post('/:id/trust-review', authorize(ROLE_GROUPS.REPORT_MGMT), recordCitizenTrustReview);
+router.post('/:id/urgency', authorize(ROLE_GROUPS.DESK_OPS), decideReportUrgency);
 
 // Pre-validation endpoint for clean photos
 router.post('/validate-image', mediaUpload.single('image'), validateReportImage);
