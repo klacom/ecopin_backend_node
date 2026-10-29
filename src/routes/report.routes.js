@@ -1,8 +1,10 @@
+import {getIncidentCaseRecord} from '../controllers/incident-case-record.controller.js';
 import { getReportVideoPolicyHandler, validateReportVideo } from '../services/report-video-policy.service.js';
 import { getMyCitizenTrust, getCitizenTrustReview, recordCitizenTrustReview } from '../controllers/citizen-trust.controller.js';
 import { getUrgencyQueue, decideReportUrgency } from '../controllers/report-urgency.controller.js';
 import {getCrewUrgencyObservations,reviewCrewUrgencyObservation} from '../controllers/crew-urgency.controller.js';
 import { fieldReportWrite } from '../middleware/field-report-write.middleware.js';
+import {getCleanupProofSource,getCleanupProofOriginal,publishCleanupProof,getPublicCleanupProof,getPublicCleanupProofImage} from '../controllers/cleanup-proof.controller.js';
 import { uploadFieldReportPhoto, deleteFieldReportPhoto } from '../controllers/field-report-photo.controller.js';
 import { Router } from 'express';
 import {
@@ -49,6 +51,8 @@ const router = Router();
 
 // Public routes don't require authentication
 router.get('/public', getPublicReports);
+router.get('/:id/cleanup-proof/public',getPublicCleanupProof);
+router.get('/:id/cleanup-proof/public/:proofId/:slot',getPublicCleanupProofImage);
 
 // Citizen reports for authenticated user (must be declared before parameterized /:id route)
 router.get('/my', authenticate, checkUserSuspension, getMyReports);
@@ -71,6 +75,10 @@ router.use(authenticate);
 
 // Add suspension check for protected routes
 router.use(checkUserSuspension);
+router.get('/:id/case-record',authorize(ROLE_GROUPS.DESK_OPS),getIncidentCaseRecord);
+router.get('/:id/cleanup-proof',authorize(ROLE_GROUPS.DESK_OPS),getCleanupProofSource);
+router.get('/:id/cleanup-proof/original/:slot',authorize(ROLE_GROUPS.DESK_OPS),getCleanupProofOriginal);
+router.post('/:id/cleanup-proof',authorize(ROLE_GROUPS.DESK_OPS),publishCleanupProof);
 
 // Trust reviews are distinct online transactions, never legacy field-report writes.
 // The database independently verifies role, ownership, assignment and retry identity.

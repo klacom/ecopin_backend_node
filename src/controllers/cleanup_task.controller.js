@@ -88,7 +88,7 @@ export const createCustomCleanupTask = async (req,res,next) => {
     if (fieldCrewId && data.task?.id) {
       await supabase
         .from('cleanup_tasks')
-        .update({ assigned_field_crew_id: fieldCrewId })
+        .update({ assigned_field_crew_id: fieldCrewId, operational_actor_id:req.user.id })
         .eq('id', data.task.id);
       data.task.assigned_field_crew_id = fieldCrewId;
     }
@@ -291,6 +291,7 @@ export const updateCleanupTaskStatus = async (req, res, next) => {
         .from('cleanup_tasks')
         .update({
           status: 'en_route',
+          operational_actor_id:user.id,
           fc_version: (currentTask.fc_version || 0) + 1,
           updated_at: new Date().toISOString()
         })
@@ -406,6 +407,7 @@ export const assignCleanupTask = async (req, res, next) => {
         }
 
         let updateData = {
+            operational_actor_id:userId,
             last_assigned_at: new Date().toISOString()
         };
 

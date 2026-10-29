@@ -1,0 +1,41 @@
+# PDT-32: printable field crew operations summary
+
+Status: locally complete, 30 October 2026. No hosted migration, deployment, commit or push performed.
+
+## Workflow
+
+Officer Operations and Sweeper Analytics offer **Print operations summary**. Admin Operational Events offers the same entry. Both roles use `/dashboard/operations-summary`, defaulting to today in Manila. Select the same From/Through date for a daily handover, or apply an inclusive date range of up to 366 days ending no later than today. Sweeper Analytics carries its applied date strings into the preview and pauses that link while drafts are unapplied; its pre-existing metrics/CSV restrictions do not gate this separate export.
+
+The preview supports Print / Save PDF through the shared A4 print boundary. It includes the period and snapshot on every page, page counts and repeated table headings. Browser-added headers/footers should be disabled. Text remains selectable and Unicode is preserved. Unapplied dates, invalid periods, failed/incomplete storage responses and expired or future-dated snapshots pause printing. Retry/reload clears previous print content. Print-time freshness is rechecked after fonts load.
+
+## Included records and exact meanings
+
+- **Task inventory:** tasks created in the period; tasks referenced by recorded period events, completions or obstacles; and current unfinished/unknown-state tasks created by period-end. Current statuses, team names and account assignments are explicitly snapshot data, not a reconstruction of past end-of-day rosters. Dated completion and undated current failure notes remain distinguishable.
+- **Assignment history:** PDT-14 assignment changes by actual occurrence time, including removals and responsible accounts. Incident receipt recipients match the recorded assignment generation. Receipt data is not asserted to be an exact-time team membership list; standalone and older tasks can lack recipient/history records.
+- **Completion-linked waypoints:** currently stored waypoint mappings on currently approved routes, with exact task/report completion evidence within the period. Report stops use canonical report_resolution_events; task-level stops use server journal completion events or a legacy explicit completed_at/status fallback. Latest period completion is shown per waypoint. No updated_at fallback, presumed depot visits, GPS arrivals, travel paths, or full-route traversal is invented. Deleted/disassembled route mappings cannot be reconstructed by this export.
+- **Verified cleanup proof by task:** actual officer verification events, with incident/task links and whether their publication still matches the current completed-report source fingerprint. Historical/superseded reviews remain listed but are not marked current. Incident proof review does not certify every incident in a grouped task, and a current source match is not public-release authorization. Ordinary completion and already-clear observations are not officer verification.
+- **Obstacles:** access blocks with period activity or still open at the snapshot and recorded by period-end, dated task failure notes, and server-submitted unable/skipped/contested/review-required outcomes. Device observation time and server receipt time are separate. Contested claims do not become verified obstructions. Block clearance includes its recorded time, responsible account and notes. Current failure notes lacking a completion timestamp appear in inventory without an invented period event date. Generic activity notes are not automatically classified as obstacles.
+
+These sections overlap and their counts should not be summed as lifecycle totals. The handover overview names each count's unit. Empty data is a valid no-records summary, distinct from an unavailable source.
+
+## Backend and privacy
+
+`GET /api/sweeper/operations-summary?from=YYYY-MM-DD&through=YYYY-MM-DD` requires authentication, nonsuspended status and desk role; the controller and service-only SQL independently require Officer/Admin. `get_field_crew_operations_summary(actor,start_day,end_day)` is STABLE and reads one statement snapshot. Dates are independently checked in SQL and converted to a half-open Manila timestamp interval. No stored case/task data is changed.
+
+The response explicitly selects fields; raw profiles, reporter account fields, photos, evidence URLs and replay snapshots are not returned. Account attribution and recipient arrays mask any task/incident report owner, regardless of disclosure setting or staff role. Historical receipt/resolution links and PDT-20 ownership tombstones protect owners after current task claims or owner links are cleared. Other staff attribution is retained. The existing service JSON privacy boundary remains active for referenced reports. Team labels are current operational team labels; missing or privacy-filtered individual accounts do not establish that a task is unassigned. Narrative condition/failure/clearance notes are internal operational content and can themselves contain identifying information; this is not a public publication route.
+
+A maximum of 1,000 rows across all five sections is supported, with one extra row checked in each bounded stream. Oversized requests fail explicitly with 422 and no partial export. Narrower dates may help; if the current carryover inventory alone exceeds the cap, a separately scoped export workflow is needed. Reporter reference counts remain within the existing privacy-boundary budget. There is no silent paging or truncation at PostgREST's ordinary row limit because the function returns a bounded JSON snapshot.
+
+## Verification
+
+- Backend Jest: 46 suites / 405 tests passed; four new controller/date cases cover strict dates, Manila UTC rollover, forbidden roles, authenticated actor binding, explicit oversized/unavailable handling.
+- PostgreSQL/PGlite: six real migration tests passed. They cover Manila midnight boundaries, assignment occurrence, exact stop completion evidence, ordinary completion versus proof review, current fingerprint invalidation, absent depot inference, contested observations, unknown legacy task status, clearance attribution, field-crew/direct authenticated denial, service-role success, disclosed staff owners and retained tombstones, and explicit row-limit rejection. The unknown-status/clearance regression failed before repair and passed afterward.
+- Web: 161 unit + six deadline tests passed; period validation, snapshot/freshness and private read-only proxy behavior are covered. Production build and scoped ESLint pass.
+- Production Chromium: Officer 1440/light, Admin 768/dark, Officer 320/dark. Entry links, empty daily source, daily/period Apply behavior, invalid/unapplied dates, actual-SQL fixture rendering, owner exclusion, current versus superseded proof, full stress rows, native print action, stale/error clearing and retry passed without document overflow or page runtime errors.
+- Native synthetic PDFs: two-page daily handover and seven-page period stress summary. All 45 obstacle markers and the final marker survive export. Pypdf/pdfplumber verify A4 media boxes, repeated document/table headings and page numbers, Unicode Niño, every word within page bounds, and absence of dashboard controls/reporter UUID. Poppler pages were rendered and inspected. Samples at ecopin-web/output/pdf/pdt32-*.pdf are synthetic acceptance evidence, not municipal records.
+
+## Release acceptance
+
+Apply canonical route/receipt/failure schema, PDT-13 proof, PDT-14 journal and PDT-20 ownership/privacy prerequisites, then `20261030010000_field_crew_operations_summary.sql`; deploy compatible backend and web. The migration adds one service-only read function. Required missing schema fails with an unavailable state, not invented empty history.
+
+Hosted Supabase/PostgREST grants/RLS and suspension/role checks, actual schema and fingerprints, legacy history/route retention, production volume/carryover limits and real A4 printer/browser acceptance remain pending. PGlite models the necessary schema and permissions but is not hosted acceptance. Current Chromium is the verified browser; native margin headers/page counters depend on browser support. Printed/PDF snapshots cannot be refreshed or revoked after distribution.

@@ -75,7 +75,17 @@ export function sanitizeReportPayload(payload,contexts,viewer,routeId) {
   return walk(payload,typeof routeId==='string'?map.get(routeId.toLowerCase()):undefined);
 }
 
+function stripPrivateCleanupNotes(value) {
+  if(Array.isArray(value))return value.map(stripPrivateCleanupNotes);
+  if(value&&Object.getPrototypeOf(value)===Object.prototype){
+    return Object.fromEntries(Object.entries(value).filter(([key])=>key!=='cleanup_action_notes').map(([key,child])=>[key,stripPrivateCleanupNotes(child)]));
+  }
+  return value;
+}
+
 export async function protectReportPayload(db,payload,viewer,routeId) {
+  // Service-role reads and nested replay snapshots must not bypass the column restriction.
+  if(!['officer','admin'].includes(viewer?.role))payload=stripPrivateCleanupNotes(payload);
   const ids=collectReportReferences(payload,routeId);
   if(!ids.length)return payload;
   const contexts=[];

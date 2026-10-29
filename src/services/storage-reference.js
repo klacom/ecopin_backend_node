@@ -1,4 +1,4 @@
-export const PRIVATE_MEDIA_BUCKETS=['Report Evidence','Cleanup Task Photos','Report Cleanup'];
+export const PRIVATE_MEDIA_BUCKETS=['Report Evidence','Cleanup Task Photos','Report Cleanup','Cleanup Originals'];
 export function validStoragePath(bucket,path){
   if(!PRIVATE_MEDIA_BUCKETS.includes(bucket)||typeof path!=='string'||path.length>1024) return false;
   const parts=path.split('/');

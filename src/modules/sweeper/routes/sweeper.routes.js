@@ -1,3 +1,4 @@
+import {getFieldCrewOperationsSummary} from '../../../controllers/field-crew-operations.controller.js';
 import express from 'express';
 import { 
   getConfig, 
@@ -10,9 +11,11 @@ import { getAuditLogs } from '../controllers/audit.controller.js';
 
 const router = express.Router();
 
-import { authenticate, authorize } from '../../../middleware/auth.middleware.js';
+import { authenticate, authorize, checkUserSuspension } from '../../../middleware/auth.middleware.js';
 import { ROLE_GROUPS } from '../../../constants/roles.js';
 router.use(authenticate, authorize(ROLE_GROUPS.DESK_OPS));
+
+router.get('/operations-summary',checkUserSuspension,getFieldCrewOperationsSummary);
 
 // Configuration Routes
 router.get('/config', authenticate, getConfig);

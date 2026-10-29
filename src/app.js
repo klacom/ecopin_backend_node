@@ -29,6 +29,7 @@ import fcSyncRoutes from './routes/fc_sync.routes.js';
 import sweeperRoutes from './modules/sweeper/routes/sweeper.routes.js';
 import contactRoutes from './routes/contact.routes.js';
 import analyticsRoutes from './routes/analytics.routes.js';
+import operationalEventsRoutes from './routes/operational-events.routes.js';
 
 // Import middleware
 import { errorHandler } from './middleware/errorHandler.middleware.js';
@@ -152,6 +153,7 @@ app.use('/api/fc', fcSyncRoutes);
 app.use('/api/sweeper', sweeperRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/operational-events', operationalEventsRoutes);
 
 // 404 handler
 app.use((req, res) => {

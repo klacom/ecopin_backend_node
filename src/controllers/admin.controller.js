@@ -35,6 +35,7 @@ import {
 } from "../services/git-history-audit.service.js";
 import { invalidateQuotaSettingsCache } from "../services/reportQuota.service.js";
 import { getCmsSettingsService, saveCmsSettingsService } from "../services/cms.service.js";
+import { readReportLifecycleSummary } from '../services/report-lifecycle-summary.service.js';
 
 
 
@@ -711,32 +712,8 @@ export const getSystemStats = async (req, res, next) => {
             return acc;
         }, {}) || {};
 
-        // Get report counts
-        const { count: totalReports, error: reportsError } = await supabase
-            .from('reports')
-            .select('*', { count: 'exact', head: true });
-
-        // Get report counts by status (bypass 1000 row limit)
-        let reportsByStatus = [];
-        let fetchHasMore = true;
-        let fetchOffset = 0;
-        while (fetchHasMore) {
-            const { data } = await supabase
-                .from('reports')
-                .select('status')
-                .range(fetchOffset, fetchOffset + 999);
-            if (data && data.length > 0) {
-                reportsByStatus = reportsByStatus.concat(data);
-                fetchOffset += 1000;
-            } else {
-                fetchHasMore = false;
-            }
-        }
-
-        const statusCounts = reportsByStatus?.reduce((acc, report) => {
-            acc[report.status] = (acc[report.status] || 0) + 1;
-            return acc;
-        }, {}) || {};
+        // One database snapshot supplies the total and every mutually exclusive bucket.
+        const reportSummary = await readReportLifecycleSummary(supabase);
 
         // Get total system logs count
         const { count: totalSystemLogs } = await supabase
@@ -753,10 +730,7 @@ export const getSystemStats = async (req, res, next) => {
                 total: usersByRole?.length || 0,
                 byRole: roleCounts
             },
-            reports: {
-                total: totalReports || 0,
-                byStatus: statusCounts
-            },
+            reports: reportSummary,
             auditLogs: {
                 total: totalSystemLogs ?? totalAuditLogs ?? 0
             },

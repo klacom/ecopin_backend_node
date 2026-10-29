@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { supabaseAdmin as db } from '../config/supabase.config.js';
-import { uploadFromBuffer, deleteFromCloudinary } from '../services/cloudinary.service.js';
+import { deleteFromCloudinary } from '../services/cloudinary.service.js';
 import { hashBuffer } from '../services/photo_dedup.service.js';
 import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
+import {storageReference,parseStorageReference} from '../services/storage-reference.js';
 
 function respondToPhotoError(error, res, next) {
   if ((error.code === '42703' && (error.message?.includes('before_photos') || error.message?.includes('after_photos'))) ||
@@ -81,12 +82,16 @@ export async function uploadFieldReportPhoto(req, res, next) {
     if (existingPhotos.length === 0 && report[`${slot}_photo_hash`] === hash && report[`${slot}_photo_url`]) {
       return res.json({ duplicate: true, report, photo_id: 'legacy', url: report[`${slot}_photo_url`] });
     }
-    const uploaded = await uploadFromBuffer(req.file.buffer, `report_photos/${id}/${slot}`, randomUUID());
+    const extension={ 'image/png':'png','image/webp':'webp' }[req.file.mimetype]||'jpg';
+    const path=`${id.toLowerCase()}/${slot}/${randomUUID()}.${extension}`;
+    const {error:storageError}=await db.storage.from('Cleanup Originals').upload(path,req.file.buffer,{contentType:req.file.mimetype,upsert:false});
+    if(storageError)throw Object.assign(new Error('Private photo storage is unavailable. Your photo remains on this device.'),{statusCode:503});
+    const uploaded={secure_url:storageReference('Cleanup Originals',path)};
     try {
       const updated = await writePhoto(id, req.user.id, slot, uploaded.secure_url, hash, version, photoKey);
       res.json({ report: updated.server_record, photo_id:updated.photo_id, url:updated.url ?? uploaded.secure_url });
     } catch (error) {
-      try { await deleteFromCloudinary(uploaded.secure_url); } catch (cleanupError) { console.error('Failed to remove rejected report photo', cleanupError); }
+      try { await db.storage.from('Cleanup Originals').remove([path]); } catch (cleanupError) { console.error('Failed to remove rejected report photo', cleanupError); }
       throw error;
     }
   } catch (error) { respondToPhotoError(error, res, next); }
@@ -101,7 +106,11 @@ export async function deleteFieldReportPhoto(req, res, next) {
     await assignedReport(id, req.user.id, version);
     const result = await writePhoto(id, req.user.id, slot, null, null, version, req.body.photo_id || 'legacy');
     if (result.previous_url) {
-      try { await deleteFromCloudinary(result.previous_url); } catch (error) { console.error('Report photo storage cleanup failed', error); }
+      try {
+        const ref=parseStorageReference(result.previous_url);
+        if(ref?.bucket==='Cleanup Originals')await db.storage.from(ref.bucket).remove([ref.path]);
+        else await deleteFromCloudinary(result.previous_url);
+      } catch (error) { console.error('Report photo storage cleanup failed', error); }
     }
     res.json({ report: result.server_record });
   } catch (error) { respondToPhotoError(error, res, next); }

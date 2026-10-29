@@ -3,6 +3,8 @@ export {getPublicReports,getReportById,getReportsByClusterId,getStaffReports} fr
 import {readReportForViewer,canReadReportEvidence} from '../services/report-access.service.js';
 import { citizenPriorityFields } from '../services/citizen-priority.service.js';
 import { normalizeCitizenLandmark } from '../services/citizen-landmark.service.js';
+import {randomUUID} from 'node:crypto';
+import {storageReference,parseStorageReference} from '../services/storage-reference.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
@@ -17,7 +19,7 @@ import { uploadFromBuffer, deleteFromCloudinary, uploadVideoFromBuffer } from '.
 import { calculateSeverity, getSeverityLevel } from '../services/severity.service.js';
 import { ROLE_GROUPS } from '../constants/roles.js';
 import { classifyReportHazard } from '../services/hazard-classifier.service.js';
-import { hashBuffer, checkPhotoDuplicate, storePhotoHash } from '../services/photo_dedup.service.js';
+import { hashBuffer, checkPhotoDuplicate } from '../services/photo_dedup.service.js';
 import { notifyOfficers } from '../services/officer-notification.service.js';
 import { validateUploadedPhotoBuffer } from '../services/magic-byte.service.js';
 import { checkUserReportQuota, recordReportSubmission } from '../services/reportQuota.service.js';
@@ -142,6 +144,7 @@ export const addReportNote = async (req, res, next) => {
 export const uploadReportPhoto = async (req, res, next) => {
     const { id } = req.params;
     const { photo_type } = req.body; // 'before' or 'after'
+    if(!['before','after'].includes(photo_type))return res.status(400).json({message:'Invalid photo type'});
 
     console.log('Uploading report photo:', { id, photo_type });
 
@@ -173,38 +176,12 @@ export const uploadReportPhoto = async (req, res, next) => {
         }
         // ── End dedup check ─────────────────────────────────────────────────
 
-        const timestamp = Date.now();
-        const filename = `${timestamp}_${req.file.originalname}`;
-        const filePath = `${id}/${photo_type}/${filename}`;
-
-        console.log('File path:', filePath);
-        console.log('Storage path:', REPORT_PHOTOS_STORAGE_PATH);
-
-        // Upload to Cloudinary
-        const folder = `report_photos/${id}/${photo_type}`;
-        const publicId = `${Date.now()}_${req.file.originalname.replace(/\.[^/.]+$/, '')}`;
-        let uploadResult;
-        try {
-            uploadResult = await uploadFromBuffer(req.file.buffer, folder, publicId);
-        } catch (uploadError) {
-            console.error('Cloudinary upload error:', uploadError);
-            return res.status(400).json({
-                message: 'Failed to upload photo',
-                error: uploadError.message
-            });
-        }
-        const secureUrl = uploadResult.secure_url;
-        console.log('Upload successful:', uploadResult);
-
-        const urlData = { publicUrl: secureUrl };
-
-        console.log('Public URL:', urlData.publicUrl);
-
-        const updateData = photo_type === 'before'
-            ? { before_photo_url: urlData.publicUrl }
-            : { after_photo_url: urlData.publicUrl };
-
-        console.log('Updating report with:', updateData);
+        const extension={'image/png':'png','image/webp':'webp'}[req.file.mimetype]||'jpg';
+        const filePath=`${id.toLowerCase()}/${photo_type}/${randomUUID()}.${extension}`;
+        const {error:storageError}=await supabase.storage.from('Cleanup Originals').upload(filePath,req.file.buffer,{contentType:req.file.mimetype,upsert:false});
+        if(storageError)return res.status(503).json({message:'Private photo storage is unavailable. Please retry.'});
+        const urlData={publicUrl:storageReference('Cleanup Originals',filePath)};
+        const updateData={ [photo_type+'_photo_url']:urlData.publicUrl,[photo_type+'_photo_hash']:incomingHash,operational_actor_id:req.user.id };
 
         const { data: reportData, error: reportError } = await supabase
             .from('reports')
@@ -214,15 +191,13 @@ export const uploadReportPhoto = async (req, res, next) => {
             .single();
 
         if (reportError) {
+            await supabase.storage.from('Cleanup Originals').remove([filePath]);
             console.error('Database update error:', reportError);
             return res.status(400).json({
                 message: 'Failed to update report with photo',
                 error: reportError.message
             });
         }
-
-        // Persist hash for future dedup checks.
-        await storePhotoHash('reports', id, photo_type, incomingHash);
 
         console.log('Report updated successfully:', reportData);
 
@@ -259,6 +234,9 @@ export const deleteReportPhoto = async (req, res, next) => {
             });
         }
 
+        if (['resolved','completed','closed','waiting_for_feedback'].includes(report.status)) {
+            return res.status(409).json({message:'Completed cleanup photos cannot be deleted.'});
+        }
         const photoUrl = photo_type === 'before' ? report.before_photo_url : report.after_photo_url;
 
         if (!photoUrl) {
@@ -267,23 +245,10 @@ export const deleteReportPhoto = async (req, res, next) => {
             });
         }
 
-        // Delete from Cloudinary
-        try {
-            await deleteFromCloudinary(photoUrl);
-        } catch (deleteError) {
-            console.error('Cloudinary delete error:', deleteError);
-            return res.status(400).json({
-                message: 'Failed to delete photo from storage',
-                error: deleteError.message
-            });
-        }
-
-        console.log('Photo deleted from Cloudinary successfully');
-
         // Update the report to remove the photo URL
         const updateData = photo_type === 'before'
-            ? { before_photo_url: null }
-            : { after_photo_url: null };
+            ? { before_photo_url: null, operational_actor_id:req.user.id }
+            : { after_photo_url: null, operational_actor_id:req.user.id };
 
         const { data: reportData, error: reportError } = await supabase
             .from('reports')
@@ -300,6 +265,12 @@ export const deleteReportPhoto = async (req, res, next) => {
             });
         }
 
+        // Unlink under the database proof guard before touching the stored bytes.
+        try {
+            const reference=parseStorageReference(photoUrl);
+            if(reference?.bucket==='Cleanup Originals')await supabase.storage.from(reference.bucket).remove([reference.path]);
+            else await deleteFromCloudinary(photoUrl);
+        } catch { console.error('Unlinked report photo storage cleanup failed'); }
         console.log('Report updated successfully:', reportData);
 
         res.status(200).json({
@@ -1559,6 +1530,10 @@ export const updateReportStatus = async (req, res, next) => {
     const { id } = req.params;
     const { status } = req.body;
     const user_id = req.user.id;
+    const completing = ['resolved','waiting_for_feedback'].includes(status);
+    if(completing&&(typeof req.body.notes!=='string'||!req.body.notes.trim()||req.body.notes.length>2000)) {
+        return res.status(400).json({message:'Action notes are required (maximum 2000 characters).'});
+    }
 
     try {
         // Get current status and photos for verification
@@ -1652,6 +1627,8 @@ export const updateReportStatus = async (req, res, next) => {
             .from('reports')
             .update({
                 status,
+                ...(completing ? {cleanup_action_notes:req.body.notes.trim(),lgu_resolved_at:new Date().toISOString()} : {}),
+                operational_actor_id:req.user.id,
                 updated_at: new Date().toISOString()
             })
             .eq('id', id)
@@ -1776,6 +1753,7 @@ export const batchCompleteReportsByCluster = async (req, res, next) => {
             .from('reports')
             .update({
                 status: 'resolved',
+                operational_actor_id:req.user.id,
                 updated_at: new Date().toISOString()
             })
             .eq('cluster_id', clusterId)
@@ -1883,6 +1861,7 @@ export const updateLifecycleStage = async (req, res, next) => {
         // Update data - include validation_status when acknowledging
         const updateData = {
             stage: stage,
+            operational_actor_id:user_id,
             status: status,
             updated_at: new Date().toISOString()
         };
@@ -1946,6 +1925,7 @@ export const acknowledgeComplaint = async (req, res, next) => {
             .from('reports')
             .update({
                 stage: 'acknowledged',
+                operational_actor_id:user_id,
                 validation_status: 'approved',
                 updated_at: new Date().toISOString()
             })
@@ -2152,6 +2132,9 @@ export const updatePropertyOwnerConsent = async (req, res, next) => {
 
 // LGU resolves the issue (sets status to waiting_for_feedback and lgu_resolved_at)
 export const lguResolveReport = async (req, res, next) => {
+    if(typeof req.body.notes!=='string'||!req.body.notes.trim()||req.body.notes.length>2000) {
+        return res.status(400).json({message:'Action notes are required (maximum 2000 characters).'});
+    }
     const { id } = req.params;
     const user_id = req.user.id;
 
@@ -2191,6 +2174,8 @@ export const lguResolveReport = async (req, res, next) => {
             .from('reports')
             .update({
                 status: 'waiting_for_feedback',
+                cleanup_action_notes: req.body.notes.trim(),
+                operational_actor_id:req.user.id,
                 lgu_resolved_at: new Date().toISOString(),
                 updated_at: new Date().toISOString()
             })
