@@ -1,12 +1,14 @@
 // Spatial Forecast Routes
 import express from 'express';
-import { triggerForecast, fetchPredictions, fetchCurrentPredictions, fetchAccuracyMetrics, fetchAvailableDates, fetchZoneTrend } from '../controllers/spatial.controller.js';
+import { fetchPatternAnalysis, triggerForecast, fetchPredictions, fetchCurrentPredictions, fetchAccuracyMetrics, fetchAvailableDates, fetchZoneTrend } from '../controllers/spatial.controller.js';
 import { authenticate, authorize } from '../../../middleware/auth.middleware.js';
 
 const router = express.Router();
 
 // All routes require authentication
 router.use(authenticate);
+
+router.get('/patterns', authorize(['admin', 'officer']), fetchPatternAnalysis);
 
 // Generate forecast (admin/officer only)
 router.post('/generate', authorize(['admin', 'officer']), triggerForecast);

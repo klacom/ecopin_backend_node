@@ -4,14 +4,9 @@ import { supabaseAdmin } from '../config/supabase.config.js';
 const geocodeCache = new Map();
 const MAX_CACHE_SIZE = 1000;
 
-export const OFFICIAL_PASIG_BARANGAYS = new Set([
-    'Bagong Ilog', 'Bagong Katipunan', 'Bambang', 'Buting', 'Caniogan',
-    'Dela Paz', 'Kalawaan', 'Kapasigan', 'Kapitolyo', 'Malinao',
-    'Manggahan', 'Maybunga', 'Oranbo', 'Palatiw', 'Pinagbuhatan',
-    'Pineda', 'Rosario', 'Sagad', 'San Antonio', 'San Joaquin',
-    'San Jose', 'San Nicolas', 'Santa Cruz', 'Santa Lucia', 'Santa Rosa',
-    'Santolan', 'Santo Tomas', 'Sumilang', 'Ugong', 'San Miguel'
-]);
+export {OFFICIAL_PASIG_BARANGAYS} from './pasig-barangay-catalog.js';
+import {OFFICIAL_PASIG_BARANGAYS} from './pasig-barangay-catalog.js';
+import {applyBarangayResolution} from './barangay-resolution.service.js';
 
 /**
  * Parses coordinates from either 'POINT(lon lat)' string or GeoJSON Point object.
@@ -55,7 +50,7 @@ export const parsePointCoordinates = (locationInput) => {
         return null;
     }
 
-    if (isNaN(lat) || isNaN(lon)) return null;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat)>90 || Math.abs(lon)>180) return null;
     return { lat, lon };
 };
 
@@ -66,13 +61,13 @@ export const parsePointCoordinates = (locationInput) => {
  * @returns {Promise<{ street_address: string|null, barangay: string|null, city: string, display_name: string|null }>}
  */
 export const resolveAddressDetails = async (lat, lon) => {
-    if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) {
-        return { street_address: null, barangay: null, city: 'Pasig City', display_name: null };
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat)>90 || Math.abs(lon)>180) {
+        return {street_address:null,barangay:null,city:null,display_name:null,barangay_resolution_status:'invalid_coordinates',barangay_candidates:[]};
     }
 
-    const cacheKey = `details:${lat.toFixed(4)},${lon.toFixed(4)}`;
+    const cacheKey = `details:${lat},${lon}`;
     if (geocodeCache.has(cacheKey)) {
-        return geocodeCache.get(cacheKey);
+        return applyBarangayResolution(geocodeCache.get(cacheKey),lat,lon);
     }
 
     let result = {
@@ -114,11 +109,6 @@ export const resolveAddressDetails = async (lat, lon) => {
                 result.city = 'Pasig City';
             }
 
-            if (result.street_address && result.barangay) {
-                result.display_name = [result.street_address, result.barangay, result.city].filter(Boolean).join(', ');
-                geocodeCache.set(cacheKey, result);
-                return result;
-            }
         }
     } catch (_) {
         // Table or function not yet created or empty; smoothly fallback to Photon/OSM
@@ -282,27 +272,11 @@ export const resolveAddressDetails = async (lat, lon) => {
         result.street_address = tier0Landmark;
     }
 
-    // 4. Authoritative LGU Barangay Verification:
-    // External geocoders (ArcGIS / OSM / Photon) frequently mislabel Philippine barangays
-    // (e.g. labeling Sandoval Ave in Pinagbuhatan as Ugong). For any coordinate inside Pasig,
-    // our local PostGIS polygon boundary RPC is the authoritative ground truth.
-    const isPasig = !result.city || result.city.toLowerCase().includes('pasig');
-    if (isPasig) {
-        try {
-            const { data: officialBgy } = await supabaseAdmin.rpc('get_report_barangay', { lat, lng: lon });
-            if (officialBgy && officialBgy !== 'Pasig City' && OFFICIAL_PASIG_BARANGAYS.has(officialBgy)) {
-                result.barangay = officialBgy;
-            }
-        } catch (_) {}
-        result.city = 'Pasig City';
-    }
-
-    if (result.street_address && result.barangay) {
-        result.display_name = [result.street_address, result.barangay, result.city].filter(Boolean).join(', ');
-    }
+    // Administrative assignment always comes from polygons, including building/cache hits.
+    result = await applyBarangayResolution(result,lat,lon);
 
     // Only cache successful results so temporary network/rate-limit errors can be retried later
-    if (result.street_address || result.barangay) {
+    if ((result.street_address || result.barangay) && result.barangay_resolution_status !== 'unavailable') {
         if (geocodeCache.size >= MAX_CACHE_SIZE) {
             const firstKey = geocodeCache.keys().next().value;
             geocodeCache.delete(firstKey);
@@ -320,21 +294,8 @@ export const reverseGeocode = async (locationStr) => {
     const coords = parsePointCoordinates(locationStr);
     if (!coords) return null;
 
-    const cacheKey = `raw:${coords.lat.toFixed(4)},${coords.lon.toFixed(4)}`;
-    if (geocodeCache.has(cacheKey)) {
-        return geocodeCache.get(cacheKey);
-    }
-
     const details = await resolveAddressDetails(coords.lat, coords.lon);
     const address = details.display_name || details.street_address || null;
-
-    if (address) {
-        if (geocodeCache.size >= MAX_CACHE_SIZE) {
-            const firstKey = geocodeCache.keys().next().value;
-            geocodeCache.delete(firstKey);
-        }
-        geocodeCache.set(cacheKey, address);
-    }
 
     return address;
 };

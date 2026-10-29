@@ -37,7 +37,7 @@ console.log(`[Backfill] Starting report address backfill (Mode: ${isDryRun ? 'DR
 async function run() {
   let query = supabase
     .from('reports')
-    .select('id, title, location, photo_lat, photo_lng, street_address, barangay, city')
+    .select('id, title, location, photo_lat, photo_lng, street_address, barangay, city, barangay_resolution_status, barangay_candidates, location_district')
     .order('created_at', { ascending: false })
     .limit(maxLimit);
 
@@ -84,7 +84,10 @@ async function run() {
 
     // 1. Resolve Address Details (Street, Genuine Barangay, and City) via Geocoding service
     let resolvedStreet = report.street_address;
-    let resolvedBarangay = report.barangay;
+    let resolvedBarangay = null;
+    let resolutionStatus = 'unavailable';
+    let candidates = [];
+    let district = null;
     let resolvedCity = report.city || 'Pasig City';
 
     try {
@@ -93,9 +96,10 @@ async function run() {
         if (details.street_address) {
           resolvedStreet = details.street_address;
         }
-        if (details.barangay) {
-          resolvedBarangay = details.barangay;
-        }
+        resolvedBarangay = details.barangay ?? null;
+        resolutionStatus = details.barangay_resolution_status ?? 'unavailable';
+        candidates = details.barangay_candidates ?? [];
+        district = details.location_district ?? null;
         if (details.city) {
           resolvedCity = details.city;
         }
@@ -104,31 +108,15 @@ async function run() {
       console.warn(`[Backfill] Geocoder error for ${report.id}:`, err.message);
     }
 
-    // 2. If in Pasig and barangay is still missing, fallback to PostGIS get_report_barangay
-    const isPasig = !resolvedCity || resolvedCity.toLowerCase().includes('pasig');
-    if (isPasig && !resolvedBarangay) {
-      try {
-        const { data: bgyData, error: bgyErr } = await supabase.rpc('get_report_barangay', {
-          lat,
-          lng: lon
-        });
-        if (!bgyErr && bgyData && bgyData !== 'Pasig City') {
-          resolvedBarangay = bgyData;
-        }
-      } catch (err) {
-        console.warn(`[Backfill] Failed get_report_barangay RPC for ${report.id}:`, err.message);
-      }
-    }
-
     const isStreetChanged = resolvedStreet !== report.street_address;
     const isBarangayChanged = resolvedBarangay !== report.barangay;
     const isCityChanged = resolvedCity !== report.city;
-    const isChanged = isStreetChanged || isBarangayChanged || isCityChanged;
+    const isChanged = isStreetChanged || isBarangayChanged || isCityChanged || resolutionStatus !== report.barangay_resolution_status || JSON.stringify(candidates) !== JSON.stringify(report.barangay_candidates) || district !== report.location_district;
 
     console.log(`[${i + 1}/${reports.length}] Report ${report.id.slice(0, 8)}:`);
     console.log(`   Pin: (${lat.toFixed(5)}, ${lon.toFixed(5)})`);
     console.log(`   Street:   ${resolvedStreet || '(none)'}${isStreetChanged && report.street_address ? ` (was: ${report.street_address})` : ''}`);
-    console.log(`   Barangay: ${resolvedBarangay || 'Pasig City'}${isBarangayChanged && report.barangay ? ` (was: ${report.barangay})` : ''}`);
+    console.log(`   Barangay: ${resolvedBarangay || 'Unresolved (' + resolutionStatus + ')'}${isBarangayChanged && report.barangay ? ` (was: ${report.barangay})` : ''}`);
     console.log(`   City:     ${resolvedCity}${isCityChanged && report.city ? ` (was: ${report.city})` : ''}`);
 
     if (isForce && !isChanged) {
@@ -141,7 +129,10 @@ async function run() {
         .from('reports')
         .update({
           street_address: resolvedStreet,
-          barangay: resolvedBarangay || 'Pasig City',
+          barangay: resolvedBarangay,
+          barangay_resolution_status: resolutionStatus,
+          barangay_candidates: candidates,
+          location_district: district,
           city: resolvedCity
         })
         .eq('id', report.id);

@@ -1,3 +1,5 @@
+import {parseHideIdentity} from '../services/report-identity.service.js';
+import {normalizeCitizenLandmark} from '../services/citizen-landmark.service.js';
 import { supabaseAdmin as supabase } from '../config/supabase.config.js';
 import { citizenPriorityFields } from '../services/citizen-priority.service.js';
 
@@ -34,12 +36,18 @@ export const batchSyncReports = async (req, res, next) => {
             // Check for existing report with this idempotency_key
             const { data: existingReport, error: checkError } = await supabase
                 .from('reports')
-                .select('id')
+                .select('id, user_id, hide_identity')
                 .eq('idempotency_key', idempotency_key)
                 .single();
             
             // if checkError and it's not a PGROUTINE error for 'no rows', handle it
             if (existingReport) {
+                if(existingReport.user_id!==user_id){
+                    results.push({idempotency_key,result:'error',error_message:'Submission key is unavailable.'});continue;
+                }
+                if(reportData.hide_identity!==undefined&&parseHideIdentity(reportData.hide_identity)!==existingReport.hide_identity){
+                    results.push({idempotency_key,result:'error',error_message:'Privacy choice differs from the original submission.'});continue;
+                }
                 results.push({
                     idempotency_key,
                     result: 'duplicate',
@@ -48,9 +56,11 @@ export const batchSyncReports = async (req, res, next) => {
                 continue;
             }
 
-            let priorityFields;
+            let priorityFields, hideIdentity, citizenLandmark;
             try {
                 priorityFields = citizenPriorityFields(reportData);
+                hideIdentity = parseHideIdentity(reportData.hide_identity);
+                citizenLandmark = normalizeCitizenLandmark(reportData.citizen_landmark);
             } catch (error) {
                 results.push({ idempotency_key, result: 'error', error_message: error.message });
                 continue;
@@ -72,8 +82,10 @@ export const batchSyncReports = async (req, res, next) => {
                 .from('reports')
                 .insert({
                     user_id,
+                    hide_identity: hideIdentity,
                     title,
                     description,
+                    citizen_landmark: citizenLandmark,
                     location: point,
                     ...priorityFields,
                     on_private_property: onPrivateProperty,

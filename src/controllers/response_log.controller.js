@@ -7,7 +7,7 @@ export const getResponseLogs = async (req, res, next) => {
 
     try {
         let query = supabase
-            .from('audit_logs')
+            .from('report_activity_view')
             .select('*', { count: 'exact' })
             .range(offset, offset + limit - 1)
             .order('created_at', { ascending: false });

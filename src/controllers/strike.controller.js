@@ -272,7 +272,7 @@ export const getUserStrikes = async (req, res, next) => {
         }
 
         const { data: strikes, error } = await supabaseAdmin
-            .from('strikes')
+            .from(isSelf ? 'strikes' : 'staff_visible_strikes')
             .select('*, profiles!strikes_issued_by_fkey (full_name, email)')
             .eq('user_id', userId)
             .order('issued_at', { ascending: false });
@@ -299,7 +299,7 @@ export const getAllStrikes = async (req, res, next) => {
         const offset = (page - 1) * limit;
 
         let query = supabaseAdmin
-            .from('strikes')
+            .from('staff_visible_strikes')
             .select('*, profiles!strikes_user_id_fkey (full_name, email), profiles!strikes_issued_by_fkey (full_name, email)', { count: 'exact' })
             .order('issued_at', { ascending: false })
             .range(offset, offset + limit - 1);

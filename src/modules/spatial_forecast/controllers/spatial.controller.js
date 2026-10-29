@@ -119,3 +119,12 @@ export const fetchAvailableDates = async (req, res, next) => {
     next(error);
   }
 };
+
+export const fetchPatternAnalysis = async (req, res, next) => {
+  try {
+    if (!['officer','admin'].includes(req.user?.role)) return res.status(403).json({ error:'Forbidden' });
+    const { getPatternAnalysis } = await import('../services/historicalPatterns.service.js');
+    const data = await getPatternAnalysis({ refresh:req.query.refresh === '1' });
+    res.set('Cache-Control','no-store').status(200).json({ data });
+  } catch (error) { next(error); }
+};

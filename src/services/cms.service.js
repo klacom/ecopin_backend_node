@@ -7,7 +7,12 @@ export const DEFAULT_CMS_SETTINGS = {
     // Contact & Office Information
     contact_support_email: 'ecopinmail@gmail.com',
     contact_office_email: 'swmo@pasigcity.gov.ph',
-    contact_phone: '09173726888',
+    contact_phone: '+63286431111',
+    contact_swmo_extension: '1392',
+    contact_emergency_phone: '(02) 8643-0000',
+    contact_directory_url: 'https://pasigcity.gov.ph/about-pasig-city/directory',
+    contact_emergency_source_url: 'https://pasigcity.gov.ph/',
+    contact_verified_on: '2026-10-29',
     contact_office_name: 'Pasig Solid Waste Management Office (SWMO)',
     contact_office_address: 'Pasig City Hall Complex, Caruncho Ave, Pasig, Metro Manila',
     contact_operating_hours: 'Monday – Friday: 8:00 AM – 5:00 PM',
@@ -93,6 +98,23 @@ export async function getCmsSettingsService({ strict = false } = {}) {
  */
 export async function saveCmsSettingsService(updatedSettings) {
     if (!updatedSettings || typeof updatedSettings !== 'object' || Array.isArray(updatedSettings)) throw Object.assign(new Error('CMS settings must be an object.'), { statusCode: 400 });
+    const invalid = message => { throw Object.assign(new Error(message), { statusCode: 400 }); };
+    for (const key of ['contact_phone', 'contact_emergency_phone']) {
+        if (Object.hasOwn(updatedSettings,key) && (typeof updatedSettings[key] !== 'string' || updatedSettings[key].length>40 || !/^\+?[\d ()-]+$/.test(updatedSettings[key]) || !/^\d{3,15}$/.test(updatedSettings[key].replace(/\D/g,'')))) invalid(`${key} must be a public office number with 3–15 digits.`);
+    }
+    if (Object.hasOwn(updatedSettings,'contact_swmo_extension') && (typeof updatedSettings.contact_swmo_extension !== 'string' || !/^\d{0,8}$/.test(updatedSettings.contact_swmo_extension))) invalid('SWMO extension must contain up to 8 digits, or be blank.');
+    if (Object.hasOwn(updatedSettings,'contact_office_email') && (typeof updatedSettings.contact_office_email !== 'string' || updatedSettings.contact_office_email.length>254 || (updatedSettings.contact_office_email!=='' && !/^[^\s@?&#]+@[^\s@?&#]+\.[^\s@?&#]+$/.test(updatedSettings.contact_office_email)))) invalid('Enter a valid official office email, or leave it blank.');
+    for (const key of ['contact_directory_url','contact_emergency_source_url']) {
+        if (!Object.hasOwn(updatedSettings,key)) continue;
+        let valid=false;
+        try { const url=new URL(updatedSettings[key]); valid=url.protocol==='https:' && !url.username && !url.password && updatedSettings[key].length<=2048; } catch {}
+        if (!valid) invalid(`${key} must be an absolute HTTPS source URL without credentials.`);
+    }
+    if (Object.hasOwn(updatedSettings,'contact_verified_on')) {
+        const date=updatedSettings.contact_verified_on;
+        const parsed=typeof date==='string' && /^20\d{2}-\d{2}-\d{2}$/.test(date) ? new Date(date) : null;
+        if (date!=='' && (!parsed || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0,10)!==date || date>new Date().toISOString().slice(0,10))) invalid('Last verified must be a real date no later than today, or blank.');
+    }
     for (const [key, value] of Object.entries(updatedSettings)) {
         if (typeof DEFAULT_CMS_SETTINGS[key] === 'boolean' && typeof value !== 'boolean') throw Object.assign(new Error(`${key} must be true or false.`), { statusCode: 400 });
         if (typeof DEFAULT_CMS_SETTINGS[key] === 'string' && typeof value !== 'string') throw Object.assign(new Error(`${key} must be text.`), { statusCode: 400 });

@@ -11,3 +11,8 @@ Run `node scripts/test-report-privacy.mjs` for a fresh isolated synthetic PostGI
 After disk and Docker recovery on 11 October 2026, the saved source passed 111 checks in a new isolated container, exact policy/ACL restoration on rollback, and 28 privacy checks after reapplication. The migration source matches the live ledger exactly (MD5 416124e93a824f94ce8b34a6a3009e10). Limited Auth and Storage shims make this a schema regression drill rather than a complete platform restore.
 
 The rollback deliberately restores the previous broad report policies and anonymous grants. Use only for emergency compatibility recovery, because it reopens the verified privacy defects. These SQL and local HTTP checks do not establish real-user mobile login, media delivery, Realtime delivery or workload performance. The broader 55-task optimization remains incomplete.
+
+
+## PDT-20 extension (local, pending final review/deployment)
+
+Per-report identity hiding now extends the original privacy contract to staff views, activity/count filtering, nested mutation/replay output and withdrawal artifacts. It preserves account-wide name consent and private ownership. See [implementation and rollout evidence](report-identity-privacy.md); this section does not assert that the PDT-20 migration is live.
