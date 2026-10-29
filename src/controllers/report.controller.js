@@ -2,6 +2,7 @@ import {parseHideIdentity,publisherDisclosure} from '../services/report-identity
 export {getPublicReports,getReportById,getReportsByClusterId,getStaffReports} from './report-read.controller.js';
 import {readReportForViewer,canReadReportEvidence} from '../services/report-access.service.js';
 import { citizenPriorityFields } from '../services/citizen-priority.service.js';
+import { normalizeCitizenLandmark } from '../services/citizen-landmark.service.js';
 import { supabaseAdmin as supabase } from "../config/supabase.config.js";
 import multer from 'multer';
 import exifParser from 'exif-parser';
@@ -790,10 +791,11 @@ export const validateReportImage = async (req, res, next) => {
 };
 
 export const createReport = async (req, res, next) => {
-    let priorityFields, hideIdentity;
+    let priorityFields, hideIdentity, citizenLandmark;
     try {
         priorityFields = citizenPriorityFields(req.body);
         hideIdentity = parseHideIdentity(req.body.hide_identity);
+        citizenLandmark = normalizeCitizenLandmark(req.body.citizen_landmark);
     } catch (error) {
         return res.status(400).json({ message: error.message });
     }
@@ -994,6 +996,7 @@ export const createReport = async (req, res, next) => {
                 hide_identity: hideIdentity,
                 title,
                 description,
+                citizen_landmark: citizenLandmark,
                 ...priorityFields,
                 // Set initial issue type based on text analysis, will be updated by AI validation
                 issue_type: initialIssueType,
@@ -2449,7 +2452,7 @@ export const getSatisfactionAnalytics = async (req, res, next) => {
     }
 };
 
-// Create new report from rejected report (copies title, description, location only)
+// Rejected-report resubmission preserves the description, landmark hint and GIS location.
 export const createReportFromRejected = async (req, res, next) => {
     const { id } = req.params;
     const user_id = req.user.id;
@@ -2507,6 +2510,7 @@ export const createReportFromRejected = async (req, res, next) => {
                 hide_identity: originalReport.hide_identity === true,
                 title: originalReport.title,
                 description: originalReport.description,
+                citizen_landmark: originalReport.citizen_landmark ?? null,
                 issue_type: originalReport.issue_type,
                 ...classifyReportHazard({
                     issue_type: originalReport.issue_type,

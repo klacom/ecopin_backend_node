@@ -56,3 +56,30 @@ Commands: backend `npm test`; focused `node --test --test-isolation=none tests/r
 3. Deploy/restart every backend instance containing the response boundary and protected routes; drain older instances. Missing database setup must remain unavailable, never return raw records. Then release mobile/web updates. Exercise online, offline/retry and rejected-report paths with synthetic accounts before real use.
 
 This is authenticated pseudonymous reporting at the app/role boundary. User-written text/photos, incident location/time, existing copies, operators with server/database secrets, backups and infrastructure consoles can still identify or correlate someone. The toggle explicitly warns that text/photos remain visible. This work does not certify legal compliance or guarantee complete whistleblower protection.
+
+## Hosted rollout and availability repair — 29 October 2026
+
+Applied through the connected Supabase migration tool to the verified EcoPin project `wcruoyygungqxazdwhtv`. The hosted ledger stopped at `20261023125135`; catalog inspection confirmed the priority/trust/urgency dependencies were also absent. The privacy migration is independent of those dependencies and was applied first to restore protected report responses. The remaining dependencies were applied in order. The hosted tool assigns its own versions; match these entries by name when comparing local SQL files, and do not reapply them under their original local timestamps.
+
+| Hosted version | Migration name |
+| --- | --- |
+| 20261029060307 | anonymous_report_identity |
+| 20261029060341 | add_citizen_report_priority |
+| 20261029060410 | citizen_trust |
+| 20261029060417 | officer_urgent_verification |
+| 20261029060424 | crew_urgency_observations |
+| 20261029060510 | reconcile_pasig_barangay_boundaries |
+| 20261029060517 | barangay_operational_analytics |
+| 20261029060523 | hotspot_pattern_history |
+
+Authentication now bypasses report-output scanning only within the exact `/api/auth` namespace, retaining `Cache-Control: no-store`. These routes return the requesting account/session rather than report records. Login, refresh and account lookup therefore remain available during report-metadata outages; similarly prefixed report routes remain protected. Report responses still fail closed when privacy lookup fails. The web proxy preserves an upstream 503 with a generic response instead of changing it to 502 or exposing database details.
+
+Verification:
+
+- 338 backend Jest tests, 99 backend Node tests, 148 web unit/deadline tests and the web production build passed. The two new regression cases failed before the fix and passed afterward. Jest was restricted to `*.test.js`; Node's runner executed `*.test.mjs` separately. The default backend Jest discovery also picks up Node tests and is not a valid combined runner.
+- The hosted privacy metadata RPC is callable through PostgREST. Nonempty batch-evidence requests return 200 through both the local backend and local web proxy. A real-account successful login was not exercised; HTTP regression tests cover account-bearing login, refresh and me responses with a deliberately unavailable privacy RPC.
+- A synthetic hidden report inside a rolled-back database transaction passed officer raw-row denial, masked operational-view access, owner raw-row access, anonymous raw access denial, private ownership-marker creation and client RPC privilege denial. Confirmed no fixture report remained. The first anonymous check encountered the existing table-level denial; the corrected assertion accepts either table denial or RLS denial without weakening grants.
+- Real PostGIS acceptance passed for all 30 polygon interior anchors and boundary points, plus outside/invalid coordinates. Hosted analytics returned 31 groups (30 barangays and unassigned), the hotspot RPC returned 30 zones, and the officer urgency queue executed successfully.
+- Security advisors were checked before and after. New no-policy notices concern intentionally server-only tables with client privileges revoked. The new `report_activity_view` notice concerns the documented constrained read-role design; its role checks passed. Existing definer-function and password-protection advisories remain. See [RLS notices](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) and [definer-view notices](https://supabase.com/docs/guides/database/database-linter?lint=0010_security_definer_view).
+
+No historical barangay backfill or polygon import was performed. All 576 existing reports remain `pending_reconciliation` and correctly aggregate as unassigned until a reviewed backfill. Local code changes still need the normal release/restart on any separately hosted backend/web instances. These checks extend the earlier local evidence; they do not constitute a complete hosted-platform access matrix or independent staging rollout.

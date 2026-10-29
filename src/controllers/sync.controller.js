@@ -1,4 +1,5 @@
 import {parseHideIdentity} from '../services/report-identity.service.js';
+import {normalizeCitizenLandmark} from '../services/citizen-landmark.service.js';
 import { supabaseAdmin as supabase } from '../config/supabase.config.js';
 import { citizenPriorityFields } from '../services/citizen-priority.service.js';
 
@@ -55,10 +56,11 @@ export const batchSyncReports = async (req, res, next) => {
                 continue;
             }
 
-            let priorityFields, hideIdentity;
+            let priorityFields, hideIdentity, citizenLandmark;
             try {
                 priorityFields = citizenPriorityFields(reportData);
                 hideIdentity = parseHideIdentity(reportData.hide_identity);
+                citizenLandmark = normalizeCitizenLandmark(reportData.citizen_landmark);
             } catch (error) {
                 results.push({ idempotency_key, result: 'error', error_message: error.message });
                 continue;
@@ -83,6 +85,7 @@ export const batchSyncReports = async (req, res, next) => {
                     hide_identity: hideIdentity,
                     title,
                     description,
+                    citizen_landmark: citizenLandmark,
                     location: point,
                     ...priorityFields,
                     on_private_property: onPrivateProperty,
