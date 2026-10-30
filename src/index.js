@@ -1,3 +1,4 @@
+import {startUnprocessedSchedule,stopUnprocessedSchedule} from './jobs/unprocessed-escalation.js';
 import { startStorageCleanup, stopStorageCleanup } from './services/storage-cleanup.service.js';
 import { startDispatchWatchdog, stopDispatchWatchdog } from './jobs/dispatch-watchdog.js';
 import { startPlanningWorker, stopPlanningWorker } from './jobs/planning-worker.js';
@@ -39,6 +40,7 @@ server.on('error', (error) => {
 // Start background cron jobs
 startAllSchedules();
 startSlaSchedule();
+startUnprocessedSchedule();
 startDispatchWatchdog();
 startPlanningWorker();
 startStorageCleanup();
@@ -46,6 +48,7 @@ startStorageCleanup();
 // Graceful shutdown
 process.on('SIGTERM', () => {
     stopSlaSchedule();
+    stopUnprocessedSchedule();
     stopDispatchWatchdog();
     stopPlanningWorker();
     stopStorageCleanup();
@@ -57,6 +60,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
     stopSlaSchedule();
+    stopUnprocessedSchedule();
     stopDispatchWatchdog();
     stopPlanningWorker();
     stopStorageCleanup();

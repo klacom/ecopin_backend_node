@@ -1,3 +1,4 @@
+import {getUnprocessedAlerts} from '../controllers/unprocessed-alerts.controller.js';
 import {getIncidentCaseRecord} from '../controllers/incident-case-record.controller.js';
 import { getReportVideoPolicyHandler, validateReportVideo } from '../services/report-video-policy.service.js';
 import { getMyCitizenTrust, getCitizenTrustReview, recordCitizenTrustReview } from '../controllers/citizen-trust.controller.js';
@@ -62,6 +63,7 @@ router.get('/trust/me', authenticate, checkUserSuspension, getMyCitizenTrust);
 router.get('/media-policy', authenticate, checkUserSuspension, getReportVideoPolicyHandler);
 
 router.get('/quota', authenticate, checkUserSuspension, getReportQuota);
+router.get('/unprocessed-alerts',authenticate,checkUserSuspension,authorize(ROLE_GROUPS.DESK_OPS),getUnprocessedAlerts);
 router.get('/urgent-queue', authenticate, checkUserSuspension, authorize(ROLE_GROUPS.DESK_OPS), getUrgencyQueue);
 
 // Optionally authenticated routes

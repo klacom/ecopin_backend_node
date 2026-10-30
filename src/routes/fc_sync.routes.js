@@ -1,3 +1,4 @@
+import {postCrewPresence} from '../controllers/live-operations.controller.js';
 /**
  * fc_sync.routes.js
  *
@@ -28,6 +29,7 @@ router.use(authenticate);
 router.use(checkUserSuspension);
 
 // Accessible to field_crew, officer, and admin (FIELD_OPS group).
+router.post('/presence',authorize(['field_crew']),postCrewPresence);
 router.post(['/sync/batch', '/batch'], authorize(ROLE_GROUPS.FIELD_OPS), batchFcSync);
 
 export default router;
