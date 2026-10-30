@@ -28,6 +28,6 @@ Deploy compatible web readers first, so the new journal event type is accepted b
 
 Local acceptance uses the actual SQL under PGlite, mocked API boundary tests, Flutter lifecycle/provider tests, shared audit/case reader regressions and Chromium across desktop/tablet/phone. A real timed browser test observed automatic refresh within 30 seconds. Hosted RLS/schema, multi-device network behavior, physical devices, mobile release installation and production query plans remain unverified.
 
-## Separate existing preview failure
+## Crew dashboard preview overflow (fixed)
 
-The broader crew dashboard preview has eight failures at 2× text size: existing `fc_metrics_header.dart` rows (lines 46 and 94) overflow horizontally. The isolated active/light/2× case reproduces it without mounting the crew shell or heartbeat provider. That widget was not changed for PDT-15; the failure is recorded in `.tmp/pdt15-mobile-preview-failure.log`. Heartbeat tests and targeted Flutter analysis pass. This feature does not claim the entire native UI test suite is green.
+The crew dashboard preview had eight failures at 2x text size: the team-name chip in `fc_metrics_header.dart` was unconstrained and overflowed its row. The chip is now flexible and ellipsized; all 20 `crew_dashboard_preview_test.dart` cases pass.

@@ -1,0 +1,13 @@
+import {Router} from 'express';
+import {authenticate,checkUserSuspension,authorize} from '../middleware/auth.middleware.js';
+import {ROLE,ROLE_GROUPS} from '../constants/roles.js';
+import {createTicket,listMyTickets,getMyTicket,listTicketQueue,respondToTicket} from '../controllers/support-ticket.controller.js';
+const router=Router();
+const citizen=[authenticate,checkUserSuspension,authorize([ROLE.CITIZEN])];
+const desk=[authenticate,checkUserSuspension,authorize(ROLE_GROUPS.DESK_OPS)];
+router.post('/tickets',...citizen,createTicket);
+router.get('/tickets',...citizen,listMyTickets);
+router.get('/tickets/:reference',...citizen,getMyTicket);
+router.get('/queue',...desk,listTicketQueue);
+router.post('/queue/:id/respond',...desk,respondToTicket);
+export default router;

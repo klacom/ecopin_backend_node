@@ -84,3 +84,25 @@ node scripts/backfill-report-addresses.mjs --dry-run --force --limit=600
 ```
 
 The audit script reads only `spatial_zones`; it does not export citizen reports or credentials. No new application runtime dependency was added.
+
+## Hosted data audit, 30 October 2026 (read-only)
+
+Checked with SELECT-only queries against the hosted database; nothing was written by the audit.
+
+- 30 barangay polygons present, all valid WGS84, no overlaps, combined area 31.28 km². `pasig_barangay_boundary_source` is **empty**: the polygons were loaded before the importer existed, so no provenance row is recorded. Re-running the importer on `data/audits/pdt08-source.geojson` (already verified as an exact match) records it.
+- 577 reports: 576 `pending_reconciliation`, 1 `unresolved`. All 576 carried geocoder-supplied barangay labels, many not Pasig barangays at all (for example Post Proper Northside, East Rembo, Ugong Norte, Highway Hills, San Andres).
+- Polygon resolver dry run over all 577: **328 resolved, 73 border, 176 unresolved.**
+  - 313 of the 328 resolved agree with the stored label; 15 disagree and all 15 have a stored city other than Pasig City (Mandaluyong, Pateros) on a simplified edge.
+  - The 73 border cases are all within a few metres of an edge, as designed.
+  - 152 of the 176 unresolved are far outside every polygon (about 1.2 km on average) and their geocoder city is also not Pasig. 24 say Pasig City but fall outside the polygons; 13 of those are within 150 m of an edge.
+- The polygons come from a 1%-vertex simplification (212 vertices total). Edge decisions are only as good as that data, so the 24 + 15 + 73 edge cases need a higher-resolution LGU-approved dataset to settle.
+
+### Legacy backfill: `20261030060000_reconcile_legacy_report_barangays.sql`
+
+Replaces labels on rows still `pending_reconciliation` with the resolver's decision. A resolved row gets the polygon barangay and `Pasig City`. Border, overlap, unresolved and invalid rows get no barangay and keep their street text. A polygon hit whose stored city names another city is flagged `border` (reason `city_text_conflict`) instead of forced. Every change is logged in `workflow_private.report_barangay_reconciliation_log` (before and after, readable by the service role only). The run aborts if the boundary dataset is incomplete, and a re-run changes nothing.
+
+It runs with `session_replication_role = replica` so the report triggers (version bump, claim generation, receipts, operational events, lifecycle audit) do not fire for this administrative change. Do not use `backfill-report-addresses.mjs --confirm` for this: it updates through the normal triggers and also re-geocodes every row against external services.
+
+### Address trust rules (PDT-06)
+
+Reverse geocoders return the nearest mapped feature however far away it is, which could glue a neighbouring building's number to the wrong pin. Addresses now follow distance limits from the pin to the matched feature: a house number only within 30 m, a street or landmark only within 100 m, and otherwise no street, so the app shows the GPS pin. Stored addresses created before this rule have not been re-checked.

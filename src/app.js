@@ -28,6 +28,8 @@ import conflictRoutes from './routes/conflict.routes.js';
 import fcSyncRoutes from './routes/fc_sync.routes.js';
 import sweeperRoutes from './modules/sweeper/routes/sweeper.routes.js';
 import contactRoutes from './routes/contact.routes.js';
+import supportRoutes from './routes/support.routes.js';
+import { getUnprocessedScheduleStatus } from './jobs/unprocessed-escalation.js';
 import analyticsRoutes from './routes/analytics.routes.js';
 import operationalEventsRoutes from './routes/operational-events.routes.js';
 
@@ -76,6 +78,10 @@ app.get('/health', async (req, res) => {
             database: 'unknown',
             ffmpeg: 'unknown',
             classifier: 'unknown'
+        },
+        // Opt-in background jobs report their state but never degrade overall health when switched off.
+        jobs: {
+            unprocessed_escalation: getUnprocessedScheduleStatus()
         }
     };
 
@@ -152,6 +158,7 @@ app.use('/api/optimization', optimizationRoutes);
 app.use('/api/fc', fcSyncRoutes);
 app.use('/api/sweeper', sweeperRoutes);
 app.use('/api/contact', contactRoutes);
+app.use('/api/support', supportRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/operational-events', operationalEventsRoutes);
 

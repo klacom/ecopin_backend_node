@@ -8,6 +8,28 @@ export {OFFICIAL_PASIG_BARANGAYS} from './pasig-barangay-catalog.js';
 import {OFFICIAL_PASIG_BARANGAYS} from './pasig-barangay-catalog.js';
 import {applyBarangayResolution} from './barangay-resolution.service.js';
 
+
+// Reverse geocoders return the NEAREST mapped feature however far away it is. A house number or street from a
+// feature that is not at the pin would be a fabricated address, so trust shrinks with distance:
+// house number within 30 m, street/landmark within 100 m, otherwise fall back to the GPS pin.
+export const HOUSE_NUMBER_MAX_METERS = 30;
+export const STREET_MAX_METERS = 100;
+
+export const matchDistanceMeters = (lat, lon, matchLon, matchLat) => {
+    const a = Number(matchLat), b = Number(matchLon);
+    if (matchLat == null || matchLon == null || !Number.isFinite(a) || !Number.isFinite(b)) return null;
+    const rad = Math.PI / 180;
+    const dLat = (a - lat) * rad, dLon = (b - lon) * rad;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat * rad) * Math.cos(a * rad) * Math.sin(dLon / 2) ** 2;
+    return 2 * 6371008.8 * Math.asin(Math.min(1, Math.sqrt(h)));
+};
+// Unknown distance keeps the street (legacy behaviour) but never a house number.
+export const streetTrusted = (meters) => meters == null || meters <= STREET_MAX_METERS;
+export const houseNumberTrusted = (meters) => meters != null && meters <= HOUSE_NUMBER_MAX_METERS;
+export const stripLeadingHouseNumber = (text) => typeof text === 'string'
+    ? (text.replace(/^\s*\d+[A-Za-z]?(?:-(?:[A-Za-z]|\d+[A-Za-z]?))?\s+(?=\D)/, '').trim() || null)
+    : text;
+
 /**
  * Parses coordinates from either 'POINT(lon lat)' string or GeoJSON Point object.
  */
@@ -129,13 +151,18 @@ export const resolveAddressDetails = async (lat, lon) => {
                 const data = await res.json();
                 if (data?.address) {
                     const addr = data.address;
-                    const street = addr.Address?.trim() || null;
-                    const place = addr.PlaceName?.trim() || addr.ShortLabel?.trim() || null;
+                    const away = matchDistanceMeters(lat, lon, data.location?.x, data.location?.y);
+                    const streetOk = streetTrusted(away);
+                    const numberOk = houseNumberTrusted(away);
+                    const trustedAddress = !streetOk ? null : (numberOk ? addr.Address?.trim() : stripLeadingHouseNumber(addr.Address?.trim())) || null;
+                    const street = trustedAddress;
+                    const place = streetOk ? (addr.PlaceName?.trim() || addr.ShortLabel?.trim() || null) : null;
 
                     if (street && place && street !== place && !place.includes(street)) {
                         result.street_address = `${street} (${place})`;
                     } else {
-                        const baseStreet = addr.ShortLabel || addr.Address || addr.Match_addr?.split(',')[0] || null;
+                        const rawBase = streetOk ? (addr.ShortLabel || addr.Address || addr.Match_addr?.split(',')[0] || null) : null;
+                        const baseStreet = numberOk ? rawBase : stripLeadingHouseNumber(rawBase);
                         if (baseStreet && tier0Landmark && !baseStreet.includes(tier0Landmark)) {
                             result.street_address = `${baseStreet} (${tier0Landmark})`;
                         } else {
@@ -173,8 +200,10 @@ export const resolveAddressDetails = async (lat, lon) => {
                 const data = await res.json();
                 const props = data?.features?.[0]?.properties;
                 if (props) {
-                    const street = props.street || (props.type === 'street' ? props.name : null);
-                    const houseNumber = props.housenumber;
+                    const [matchLon, matchLat] = data.features[0].geometry?.coordinates ?? [];
+                    const away = matchDistanceMeters(lat, lon, matchLon, matchLat);
+                    const street = streetTrusted(away) ? (props.street || (props.type === 'street' ? props.name : null)) : null;
+                    const houseNumber = street && houseNumberTrusted(away) ? props.housenumber : null;
                     const landmark = tier0Landmark || null;
 
                     if (houseNumber && street && landmark) {
@@ -224,18 +253,20 @@ export const resolveAddressDetails = async (lat, lon) => {
                 const address = data?.address || {};
 
                 // Road identifier
-                const roadPart = address.road || address.pedestrian || address.highway || address.path ||
+                const away = matchDistanceMeters(lat, lon, data?.lon, data?.lat);
+                const nearEnough = streetTrusted(away);
+                const roadPart = !nearEnough ? null : (address.road || address.pedestrian || address.highway || address.path ||
                                  address.street || address.residential || address.footway || address.alley ||
-                                 address.lane || address.service || address.cycleway || address.bridge;
+                                 address.lane || address.service || address.cycleway || address.bridge);
 
-                // Explicit numeric door/house number ONLY
-                const houseNumber = address.house_number ? String(address.house_number).trim() : null;
+                // Explicit numeric door/house number ONLY, and only when the matched feature is at the pin
+                const houseNumber = roadPart && address.house_number && houseNumberTrusted(away) ? String(address.house_number).trim() : null;
 
                 // Institutional venue or establishment name (never glued directly in front of a street like a house number)
-                const venueName = address.building || address.amenity || address.shop || address.office ||
-                                  address.commercial || address.leisure || address.tourism || address.industrial || null;
+                const venueName = !nearEnough ? null : (address.building || address.amenity || address.shop || address.office ||
+                                  address.commercial || address.leisure || address.tourism || address.industrial || null);
 
-                const landmark = tier0Landmark || ((data.name && data.name !== roadPart && data.name !== houseNumber)
+                const landmark = tier0Landmark || (nearEnough && (data.name && data.name !== roadPart && data.name !== houseNumber)
                                  ? data.name
                                  : (venueName && venueName !== roadPart ? venueName : null));
 
