@@ -447,6 +447,27 @@ export const disassemblePlan = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+// Runs whose tasks or linked reports are already finished cannot be disassembled.
+async function finishedWorkRunIds(runIds) {
+  const finished = new Set();
+  if (!runIds.length) return finished;
+  const { data: routes } = await supabase.from('crew_routes').select('id, optimization_run_id').in('optimization_run_id', runIds);
+  if (!routes?.length) return finished;
+  const runByRoute = new Map(routes.map(r => [r.id, r.optimization_run_id]));
+  const { data: tasks } = await supabase.from('cleanup_tasks').select('id, status, crew_route_id').in('crew_route_id', [...runByRoute.keys()]);
+  const taskRun = new Map();
+  for (const t of tasks || []) {
+    const runId = runByRoute.get(t.crew_route_id);
+    taskRun.set(t.id, runId);
+    if (t.status === 'completed') finished.add(runId);
+  }
+  if (taskRun.size) {
+    const { data: reports } = await supabase.from('reports').select('cleanup_task_id').in('cleanup_task_id', [...taskRun.keys()]).in('status', ['resolved', 'completed', 'closed']);
+    for (const r of reports || []) finished.add(taskRun.get(r.cleanup_task_id));
+  }
+  return finished;
+}
+
 // List all optimization runs
 export const getOptimizationRuns = async (req, res, next) => {
   try {
@@ -456,7 +477,8 @@ export const getOptimizationRuns = async (req, res, next) => {
       .order('created_at', { ascending: false });
 
     if (error) return res.status(400).json({ message: 'Failed to fetch runs', error: error.message });
-    res.json(data);
+    const finished = await finishedWorkRunIds((data || []).filter(r => r.status === 'approved').map(r => r.id));
+    res.json((data || []).map(r => ({ ...r, has_finished_work: finished.has(r.id) })));
   } catch (error) { next(error); }
 };
 
@@ -490,7 +512,8 @@ export const getOptimizationRunById = async (req, res, next) => {
       }
     }
 
-    res.json({ ...run, routes: routes || [] });
+    const finished = run.status === 'approved' ? await finishedWorkRunIds([id]) : new Set();
+    res.json({ ...run, routes: routes || [], has_finished_work: finished.has(id) });
   } catch (error) { next(error); }
 };
 
