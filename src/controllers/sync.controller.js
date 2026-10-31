@@ -1,4 +1,5 @@
 import {parseHideIdentity} from '../services/report-identity.service.js';
+import {normalizeCitizenIssueType} from '../services/citizen-issue-type.service.js';
 import {normalizeCitizenLandmark} from '../services/citizen-landmark.service.js';
 import { supabaseAdmin as supabase } from '../config/supabase.config.js';
 import { citizenPriorityFields } from '../services/citizen-priority.service.js';
@@ -86,6 +87,7 @@ export const batchSyncReports = async (req, res, next) => {
                     title,
                     description,
                     citizen_landmark: citizenLandmark,
+                    ...(normalizeCitizenIssueType(reportData.issue_type) ? { issue_type: normalizeCitizenIssueType(reportData.issue_type) } : {}),
                     location: point,
                     ...priorityFields,
                     on_private_property: onPrivateProperty,

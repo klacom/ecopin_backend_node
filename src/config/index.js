@@ -6,6 +6,8 @@ dotenv.config();
 
 export const NODE_ENV = process.env.NODE_ENV || 'development';
 export const PORT = process.env.PORT || 3000;
+// Routing engine behind /api/routing (self-host OSRM and set this for production; the public demo server is for development only).
+export const OSRM_BASE_URL = process.env.OSRM_BASE_URL || 'https://router.project-osrm.org';
 export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4001';
 export const CLASSIFIER_SERVICE_URL = process.env.CLASSIFIER_SERVICE_URL || 'http://127.0.0.1:8000';
 export const USE_AWS_CLASSIFIER = process.env.USE_AWS_CLASSIFIER === 'true';

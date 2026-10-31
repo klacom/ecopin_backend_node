@@ -3,7 +3,7 @@ import { assertPasswordPolicy, getPasswordPolicy } from '../services/password-po
 // Handles user registration, login, logout, token refresh, and password reset.
 
 import { supabase, supabaseAdmin } from "../config/supabase.config.js";
-import { MOBILE_REDIRECT_URL } from "../config/index.js";
+import { MOBILE_REDIRECT_URL, FRONTEND_URL } from "../config/index.js";
 import { generateVerificationToken, sendVerificationEmail } from "../services/email.service.js";
 import { renderVerificationHtml } from '../services/verification-template.service.js';
 import { createHash } from 'node:crypto';
@@ -272,23 +272,39 @@ export const refreshToken = async (req, res, next) => {
 };
 
 export const forgotPassword = async (req, res, next) => {
+    // Always answer the same way so the endpoint cannot be used to discover which emails have accounts.
+    const generic = { message: 'If an account exists for that email, a password reset link has been sent.' };
     try {
-        res.status(200).json({ message: 'Forgot password endpoint' });
+        const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            return res.status(400).json({ message: 'Enter a valid email address.' });
+        }
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+            redirectTo: `${FRONTEND_URL}/reset-password`
+        });
+        if (error) console.warn('[Auth] resetPasswordForEmail failed:', error.message);
+        res.status(200).json(generic);
     } catch (error) {
         next(error);
     }
 };
 
 export const resetPassword = async (req, res, next) => {
-    const { token, password } = req.body;
+    // `token` is the short-lived recovery access token delivered in the emailed link.
+    const { token, password } = req.body || {};
     const ipAddress = req.ip || req.connection?.remoteAddress || null;
     const userAgent = typeof req.get === 'function' ? req.get('user-agent') : (req.headers?.['user-agent'] || null);
 
     try {
         await assertPasswordPolicy(password, supabaseAdmin);
-        const { data, error } = await supabaseAdmin.auth.updateUser(token, {
-            password
-        });
+        if (typeof token !== 'string' || !token) {
+            return res.status(400).json({ message: 'This reset link is invalid or has expired. Request a new one.' });
+        }
+        const { data: found, error: tokenError } = await supabaseAdmin.auth.getUser(token);
+        if (tokenError || !found?.user) {
+            return res.status(400).json({ message: 'This reset link is invalid or has expired. Request a new one.' });
+        }
+        const { error } = await supabaseAdmin.auth.admin.updateUserById(found.user.id, { password });
 
         if (error) {
             return res.status(400).json({
@@ -298,7 +314,7 @@ export const resetPassword = async (req, res, next) => {
         }
 
         // Log password change event
-        await logAuditAction(data.user.id, 'password_change', `User reset password`, ipAddress, userAgent);
+        await logAuditAction(found.user.id, 'password_change', `User reset password`, ipAddress, userAgent);
 
         res.status(200).json({ message: 'Password reset successful' });
     } catch (error) {

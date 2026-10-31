@@ -93,6 +93,8 @@ export async function readReportForViewer(db, id, viewer) {
     .eq('id',id).maybeSingle();
   if (readError) throw readError;
   if (!report) return null;
+  // Rejected reports are never public: anonymous and unauthorized viewers get the same 404 as a missing report.
+  if (report.validation_status === 'rejected') return null;
 
   // Resolve citizen publisher information safely respecting data_consent
   let publisher_name = 'Anonymous';

@@ -2,6 +2,7 @@ import {parseHideIdentity,publisherDisclosure} from '../services/report-identity
 export {getPublicReports,getReportById,getReportsByClusterId,getStaffReports} from './report-read.controller.js';
 import {readReportForViewer,canReadReportEvidence} from '../services/report-access.service.js';
 import { citizenPriorityFields } from '../services/citizen-priority.service.js';
+import { normalizeCitizenIssueType } from '../services/citizen-issue-type.service.js';
 import { normalizeCitizenLandmark } from '../services/citizen-landmark.service.js';
 import {randomUUID} from 'node:crypto';
 import {storageReference,parseStorageReference} from '../services/storage-reference.js';
@@ -850,7 +851,7 @@ export const createReport = async (req, res, next) => {
         const propertyOwnerConsentStatus = onPrivateProperty ? 'pending' : 'not_required';
 
         // Determine initial issue type from text to avoid pending state
-        const initialIssueType = determineIssueTypeFromText(title, description);
+        const initialIssueType = normalizeCitizenIssueType(req.body.issue_type) ?? determineIssueTypeFromText(title, description);
 
         // Photo location verification
         let locationVerificationStatus = 'unverified_gallery';
