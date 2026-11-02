@@ -73,7 +73,6 @@ export const classifyImage = async (imageBuffer, originalName = 'image.jpg', mim
     try {
         fetchOptions.signal = controller.signal;
         const response = await fetch(endpoint, fetchOptions);
-        clearTimeout(timeout);
 
         const elapsedMs = Date.now() - t0;
 
@@ -120,7 +119,6 @@ export const classifyImage = async (imageBuffer, originalName = 'image.jpg', mim
             obstruction_probabilities: result.obstruction_probabilities ?? null,
         };
     } catch (err) {
-        clearTimeout(timeout);
         const elapsedMs = Date.now() - t0;
         _err(`  FAILED after ${elapsedMs}ms :`, err.message);
         _log('──────────────────────────────────────────────');
@@ -128,6 +126,8 @@ export const classifyImage = async (imageBuffer, originalName = 'image.jpg', mim
             ok: false,
             error: err.message || String(err),
         };
+    } finally {
+        clearTimeout(timeout);
     }
 };
 
