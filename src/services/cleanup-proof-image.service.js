@@ -10,6 +10,17 @@ export function validateRedactions(regions) {
  return regions;
 }
 
+// Per-photo rectangles for one slot. Single-photo proofs keep the original flat list; several photos use one list each.
+export function normalizeRedactions(value,count) {
+ if(!Array.isArray(value)) throw new Error('Provide hidden areas for each photo');
+ const perPhoto=value.length===0?Array.from({length:count},()=>[]):value.every(Array.isArray)?value:count===1?[value]:null;
+ if(!perPhoto||perPhoto.length!==count) throw new Error('Provide hidden areas for every photo');
+ perPhoto.forEach(validateRedactions);
+ return perPhoto;
+}
+
+export const storedRedactions=perPhoto=>perPhoto.length===1?perPhoto[0]:perPhoto;
+
 export async function redactCleanupImage(buffer,regions) {
  validateRedactions(regions);
  if(rendering)throw Object.assign(new Error('Another proof image is processing. Please retry.'),{statusCode:503});

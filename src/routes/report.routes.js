@@ -5,7 +5,7 @@ import { getMyCitizenTrust, getCitizenTrustReview, recordCitizenTrustReview } fr
 import { getUrgencyQueue, decideReportUrgency } from '../controllers/report-urgency.controller.js';
 import {getCrewUrgencyObservations,reviewCrewUrgencyObservation} from '../controllers/crew-urgency.controller.js';
 import { fieldReportWrite } from '../middleware/field-report-write.middleware.js';
-import {getCleanupProofSource,getCleanupProofOriginal,publishCleanupProof,getPublicCleanupProof,getPublicCleanupProofImage} from '../controllers/cleanup-proof.controller.js';
+import {getCleanupProofSource,getCleanupProofOriginal,publishCleanupProof,getPublicCleanupProof,getPublicCleanupProofImage,getOwnerCleanupProof,getOwnerCleanupProofImage} from '../controllers/cleanup-proof.controller.js';
 import { uploadFieldReportPhoto, deleteFieldReportPhoto } from '../controllers/field-report-photo.controller.js';
 import { Router } from 'express';
 import {
@@ -54,6 +54,7 @@ const router = Router();
 router.get('/public', getPublicReports);
 router.get('/:id/cleanup-proof/public',getPublicCleanupProof);
 router.get('/:id/cleanup-proof/public/:proofId/:slot',getPublicCleanupProofImage);
+router.get('/:id/cleanup-proof/public/:proofId/:slot/:index',getPublicCleanupProofImage);
 
 // Citizen reports for authenticated user (must be declared before parameterized /:id route)
 router.get('/my', authenticate, checkUserSuspension, getMyReports);
@@ -77,9 +78,13 @@ router.use(authenticate);
 
 // Add suspension check for protected routes
 router.use(checkUserSuspension);
+router.get('/:id/cleanup-proof/owner',getOwnerCleanupProof);
+router.get('/:id/cleanup-proof/owner/:slot',getOwnerCleanupProofImage);
+router.get('/:id/cleanup-proof/owner/:slot/:index',getOwnerCleanupProofImage);
 router.get('/:id/case-record',authorize(ROLE_GROUPS.DESK_OPS),getIncidentCaseRecord);
 router.get('/:id/cleanup-proof',authorize(ROLE_GROUPS.DESK_OPS),getCleanupProofSource);
 router.get('/:id/cleanup-proof/original/:slot',authorize(ROLE_GROUPS.DESK_OPS),getCleanupProofOriginal);
+router.get('/:id/cleanup-proof/original/:slot/:index',authorize(ROLE_GROUPS.DESK_OPS),getCleanupProofOriginal);
 router.post('/:id/cleanup-proof',authorize(ROLE_GROUPS.DESK_OPS),publishCleanupProof);
 
 // Trust reviews are distinct online transactions, never legacy field-report writes.

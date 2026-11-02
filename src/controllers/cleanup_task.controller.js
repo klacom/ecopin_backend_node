@@ -614,14 +614,53 @@ export const updateCleanupTaskTitle = async (req, res, next) => {
 };
 
 /**
+ * Adds the reports a job lists in report_ids to the reports already embedded
+ * through reports.cleanup_task_id, so their citizen ratings are counted too.
+ * Only id and rating fields are read, and each report counts once per job.
+ */
+const attachLinkedReportRatings = async (tasks) => {
+    const known = new Set();
+    for (const t of tasks) {
+        t.reports = Array.isArray(t.reports) ? t.reports : [];
+        for (const r of t.reports) known.add(r.id);
+    }
+    const wanted = [...new Set(tasks.flatMap(t =>
+        Array.isArray(t.report_ids) ? t.report_ids : []
+    ))].filter(id => id && !known.has(id));
+    if (wanted.length === 0) return;
+    const byId = new Map();
+    for (let i = 0; i < wanted.length; i += 100) {
+        const { data, error } = await supabase
+            .from('reports')
+            .select('id, satisfaction_rating, citizen_closed_at')
+            .in('id', wanted.slice(i, i + 100));
+        if (error) throw error;
+        for (const r of data || []) byId.set(r.id, r);
+    }
+    for (const t of tasks) {
+        const have = new Set(t.reports.map(r => r.id));
+        for (const id of Array.isArray(t.report_ids) ? t.report_ids : []) {
+            const r = byId.get(id);
+            if (r && !have.has(id)) {
+                t.reports.push(r);
+                have.add(id);
+            }
+        }
+    }
+};
+
+/**
  * Get crew performance statistics (Desk Ops & Field Ops)
  * If officer/admin, returns all crew stats (or filter by crew_id / member_id).
  * If field_crew, returns performance for their assigned tasks / crew membership.
  */
-export const getCrewPerformance = async (req, res, next) => {
+const sendCrewPerformance = async (req, res, next, forced = {}) => {
     try {
         const actor = req.user;
-        const { crew_id, member_id, timeframe = 'all' } = req.query;
+        const { crew_id, member_id: queryMemberId, timeframe = 'all' } = req.query;
+        // The /me route fixes the member to the caller. Express 5 makes
+        // req.query read-only, so it is passed in here and not written to it.
+        const member_id = forced.memberId ?? queryMemberId;
 
         // Fetch completed tasks with completion metadata
         let query = supabase
@@ -633,6 +672,7 @@ export const getCrewPerformance = async (req, res, next) => {
                 completed_by,
                 assigned_field_crew_id,
                 assigned_crew_ids,
+                report_ids,
                 created_at,
                 completed_at,
                 completion_result,
@@ -659,6 +699,7 @@ export const getCrewPerformance = async (req, res, next) => {
 
         const { data: tasks, error: tasksError } = await query;
         if (tasksError) throw tasksError;
+        await attachLinkedReportRatings(tasks || []);
 
         // Fetch field crews, profiles & auth users for mapping emails
         const [{ data: crews }, { data: profiles }, { data: authData }] = await Promise.all([
@@ -854,9 +895,9 @@ export const getCrewPerformance = async (req, res, next) => {
     }
 };
 
-export const getMyPerformance = async (req, res, next) => {
-    req.query = req.query || {};
-    req.query.member_id = req.user.id;
-    return getCrewPerformance(req, res, next);
-};
+export const getCrewPerformance = (req, res, next) =>
+    sendCrewPerformance(req, res, next);
+
+export const getMyPerformance = (req, res, next) =>
+    sendCrewPerformance(req, res, next, { memberId: req.user.id });
 
