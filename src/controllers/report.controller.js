@@ -1231,7 +1231,7 @@ export const createReport = async (req, res, next) => {
                     }
 
                     // Aggregate image results using simple majority rule
-                    if (imageResults.length > 0) {
+                    if (imageResults.length === classificationImages.length) {
                         const statusCounts = {
                             approved: 0,
                             rejected: 0,
@@ -1336,10 +1336,10 @@ export const createReport = async (req, res, next) => {
                             finalRejectionReason = finalRejectionReason;
                         }
                     } else {
-                        // All classifications failed, fall back to manual review
+                        // Incomplete checks cannot approve or reject the submitted evidence.
                         finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
-                        finalRejectionReason = 'All image classifications failed.';
-                        console.error(`[Classifier] All ${imageFiles.length} image(s) failed classification for report ${report.id} — falling back to MANUAL_REVIEW`);
+                        finalRejectionReason = 'Image validation could not be completed; officer review required.';
+                        console.error(`[Classifier] Only ${imageResults.length}/${classificationImages.length} images checked for report ${report.id} — falling back to MANUAL_REVIEW`);
                         // Ensure we still have an issue type even if classification failed
                         if (!finalIssueType) {
                             finalIssueType = determineIssueTypeFromText(title, description);
@@ -2779,7 +2779,7 @@ export const syncReportMedia = async (req, res, next) => {
                         }
                     }
 
-                    if (imageResults.length > 0) {
+                    if (imageResults.length === imageFiles.length) {
                         const statusCounts = { approved: 0, rejected: 0, manual_review: 0 };
                         const categoryCounts = {};
                         const scaleCounts = {};
@@ -2847,7 +2847,7 @@ export const syncReportMedia = async (req, res, next) => {
                         }
                     } else {
                         finalValidationStatus = VALIDATION_STATUS.MANUAL_REVIEW;
-                        finalRejectionReason = 'All image classifications failed.';
+                        finalRejectionReason = 'Image validation could not be completed; officer review required.';
                         if (!finalIssueType) {
                             finalIssueType = determineIssueTypeFromText(report.title, report.description);
                         }
