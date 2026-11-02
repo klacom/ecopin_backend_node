@@ -1,6 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
+import { assertSupabaseIsolation } from './data-isolation.js';
 import { NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_PUBLISHABLE_KEY, SUPABASE_ANON_KEY } from './index.js';
+
+// Fail before constructing clients, so startup jobs and API imports cannot write the wrong project.
+assertSupabaseIsolation(NEXT_PUBLIC_SUPABASE_URL);
 
 const secretKey = SUPABASE_SECRET_KEY || SUPABASE_SERVICE_ROLE_KEY;
 const publishableKey = SUPABASE_PUBLISHABLE_KEY || SUPABASE_ANON_KEY;
