@@ -81,12 +81,11 @@ jobs:
         run: |
           set -euo pipefail
           bucket=ecopin-deploy-035074951255-ap-southeast-1
-          aws s3 cp release.tar.gz "s3://$bucket/backend/$RELEASE.tar.gz" --only-show-errors
+          aws s3api put-object --bucket "$bucket" --key "backend/$RELEASE.tar.gz" --body release.tar.gz \
+            --query '{VersionId:VersionId,ETag:ETag}' --output json
           aws s3 cp release.sha256 "s3://$bucket/backend/$RELEASE.sha256" --only-show-errors
           echo "Selected backend release: $RELEASE"
           cat release.sha256
-          aws s3api head-object --bucket "$bucket" --key "backend/$RELEASE.tar.gz" \
-            --query '{VersionId:VersionId,ContentLength:ContentLength}'
           command=$(aws ssm send-command --instance-ids i-09848ea939a21db3c --document-name EcoPin-DeployBackend \
             --parameters "Release=$RELEASE" --query Command.CommandId --output text)
           for attempt in $(seq 1 90); do
