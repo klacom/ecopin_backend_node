@@ -292,8 +292,7 @@ export const updateCleanupTaskStatus = async (req, res, next) => {
         .update({
           status: 'en_route',
           operational_actor_id:user.id,
-          fc_version: (currentTask.fc_version || 0) + 1,
-          updated_at: new Date().toISOString()
+          fc_version: (currentTask.fc_version || 0) + 1
         })
         .eq('id', id)
         .select()
@@ -320,8 +319,8 @@ export const updateCleanupTaskStatus = async (req, res, next) => {
         .from('cleanup_tasks')
         .update({
           status,
-          fc_version: (currentTask.fc_version || 0) + 1,
-          updated_at: new Date().toISOString()
+          operational_actor_id:user.id,
+          fc_version: (currentTask.fc_version || 0) + 1
         })
         .eq('id', id)
         .select()

@@ -6,7 +6,7 @@ jest.unstable_mockModule('../src/services/photo_dedup.service.js',()=>({hashBuff
 jest.unstable_mockModule('../src/modules/optimization/services/dispatchPlanner.service.js',()=>({generateDispatchPlan:jest.fn()}));
 jest.unstable_mockModule('../src/modules/optimization/services/dispatchCommit.service.js',()=>({commitAndRoutePlan:jest.fn()}));
 jest.unstable_mockModule('../src/modules/optimization/services/taskFeedback.service.js',()=>({processTaskFeedback:jest.fn()}));
-const {getAllCleanupTasks,getCleanupTaskById,getTasksByClusterId}=await import('../src/controllers/cleanup_task.controller.js');
+const {getAllCleanupTasks,getCleanupTaskById,getTasksByClusterId,updateCleanupTaskStatus}=await import('../src/controllers/cleanup_task.controller.js');
 function response(){return {code:200,headers:{},status(code){this.code=code;return this},set(name,value){this.headers[name]=value;return this},json(body){this.body=body;return this}};}
 const summary={id:'task',status:'completed',title:'Cleanup progress',access_level:'summary',before_photo_url:null};
 beforeEach(()=>{from.mockReset();rpc.mockReset();rpc.mockResolvedValue({data:[summary],error:null});});
@@ -64,4 +64,15 @@ test.each([{limit:'501'},{limit:'0'},{page:'-1'},{page:'NaN'},{limit:'2.5'}])('i
 test('database failure fails closed and never falls back to service table read',async()=>{
  const error={message:'Synthetic database unavailable'};rpc.mockResolvedValue({data:null,error});const next=jest.fn();
  await getTasksByClusterId({params:{clusterId:'cluster'},query:{},user:{id:'citizen'}},response(),next);expect(next).toHaveBeenCalledWith(error);expect(from).not.toHaveBeenCalled();
+});
+
+test.each([['field_crew','en_route'],['officer','in_progress']])('a %s status change uses the deployed task schema and attributes its journal event',async(role,status)=>{
+ const task={id:'task',status:'pending',assigned_crew_ids:['actor'],fc_version:2};let patch;
+ const query={select:()=>query,eq:()=>query,maybeSingle:async()=>({data:task}),
+  update:value=>{patch=value;return query},single:async()=>Object.hasOwn(patch,'updated_at')
+   ?{error:{code:'PGRST204',message:'cleanup_tasks has no updated_at column'}}:{data:{...task,...patch}}};
+ from.mockReturnValue(query);const res=response(),next=jest.fn();
+ await updateCleanupTaskStatus({params:{id:'task'},body:{status},user:{id:'actor',role}},res,next);
+ expect(next).not.toHaveBeenCalled();expect(res.body.task.status).toBe(status);
+ expect(patch.operational_actor_id).toBe('actor');expect(res.body.task.fc_version).toBe(3);
 });
