@@ -47,7 +47,9 @@ jobs:
           npm prune --omit=dev
           mkdir runtime
           cp "$(readlink -f "$(command -v node)")" runtime/node
-          tar -czf release.tar.gz src data node_modules runtime package.json package-lock.json
+          # The artifact carries its own identity; /health publishes it and the deploy script compares it with the selected release.
+          printf '%s\n' "$GITHUB_SHA" > RELEASE
+          tar -czf release.tar.gz src data node_modules runtime package.json package-lock.json RELEASE
           sha256sum release.tar.gz > release.sha256
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'

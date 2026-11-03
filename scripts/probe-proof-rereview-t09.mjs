@@ -1,0 +1,16 @@
+import fs from 'node:fs';import {execFileSync} from 'node:child_process';
+const root='C:/dev/ecopin/.tmp/parity-recovery-backend',f=JSON.parse(fs.readFileSync(root+'/.private/parity-fixtures.json','utf8')),api='http://127.0.0.1:4102',id='a0900000-0000-4000-8000-000000000001';
+const psql=q=>execFileSync('docker',['exec','-i','supabase_db_parity-recovery-backend','psql','-X','-qAt','-U','postgres','-d','postgres','-c',q],{encoding:'utf8'}).trim();
+const o=f.users.find(u=>u.role==='officer');
+const tok=(await (await fetch(api+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:o.email,password:f.password})})).json());const t=tok.session?.access_token||tok.access_token||tok.token;
+const H={Authorization:'Bearer '+t,'Content-Type':'application/json'};
+const objs=()=>psql(`select count(*) from storage.objects where bucket_id='Cleanup Proof' and name like '${id}/%'`);
+const before=objs(),oldId=psql(`select id from cleanup_proof_publications where report_id='${id}'`);
+const s=await (await fetch(`${api}/api/reports/${id}/cleanup-proof`,{headers:H})).json();
+const body={version:s.version,fingerprint:s.fingerprint,publication_id:s.publication_id,redactions:{before:[[],[]],after:[[],[]]},public_notes:'T09 re-review',privacy_checked:true};
+const r1=await fetch(`${api}/api/reports/${id}/cleanup-proof`,{method:'POST',headers:H,body:JSON.stringify(body)});
+console.log('intentional re-review',r1.status,'objects',before,'->',objs(),'id changed',oldId!==psql(`select id from cleanup_proof_publications where report_id='${id}'`));
+const r2=await fetch(`${api}/api/reports/${id}/cleanup-proof`,{method:'POST',headers:H,body:JSON.stringify(body)});
+console.log('immediate retry of the same request',r2.status,'objects',objs());
+const referenced=psql(`select jsonb_array_length(before_paths)+jsonb_array_length(after_paths) from cleanup_proof_publications where report_id='${id}'`);
+console.log('objects referenced by the current publication',referenced);

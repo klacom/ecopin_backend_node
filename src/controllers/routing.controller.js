@@ -22,11 +22,17 @@ export async function getDrivingDirections(req,res){
     const from=parsePoint(req.query.from),to=parsePoint(req.query.to);
     if(!from||!to)return res.status(400).json({message:'Provide from and to as "lng,lat" inside the Pasig service area.'});
     const url=`${OSRM_BASE_URL.replace(/\/$/,'')}/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?steps=true&geometries=geojson&overview=full`;
+    const unavailable={message:'Directions are temporarily unavailable.'};
+    let response,body;
     try{
-        const response=await fetch(url,{signal:AbortSignal.timeout(8000),headers:{'User-Agent':'EcoPin-Backend/1.0'}});
-        if(!response.ok)return res.status(502).json({message:'Directions are temporarily unavailable.'});
-        res.set('Cache-Control','private, max-age=30').status(200).json(await response.json());
+        response=await fetch(url,{signal:AbortSignal.timeout(8000),headers:{'User-Agent':'EcoPin-Backend/1.0'}});
+        body=await response.json().catch(()=>null);
     }catch(error){
-        res.status(504).json({message:'Directions are temporarily unavailable.'});
+        return res.status(504).json(unavailable);
     }
+    // A road-less answer is a definite "no route", not an outage; the app must not show a route for it.
+    if(body?.code==='NoRoute'||(response.ok&&body?.code==='Ok'&&Array.isArray(body.routes)&&!body.routes.length))
+        return res.status(404).json({message:'No driving route was found between these points.'});
+    if(!response.ok||body?.code!=='Ok'||!Array.isArray(body.routes)||!body.routes.length)return res.status(502).json(unavailable);
+    res.set('Cache-Control','private, max-age=30').status(200).json(body);
 }

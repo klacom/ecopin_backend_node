@@ -46,6 +46,30 @@ healthy() {
   done
   return 1
 }
+# "Healthy" only says that something answered. The selected release must also be the one that answers, the one pm2 runs, and the one current will name.
+# Older immutable releases that predate the RELEASE file are identified by their directory (named by SHA) and the running process only.
+identity_ok() {
+  "$target/runtime/node" - "$release" "$target" "$root/health.json" <<'NODE'
+const { readFileSync, existsSync, realpathSync } = require('node:fs');
+const { execFileSync } = require('node:child_process');
+const [release, target, healthFile] = process.argv.slice(2);
+const fail = message => { console.error('Release identity check failed: ' + message); process.exit(1); };
+let health;
+try { health = JSON.parse(readFileSync(healthFile, 'utf8')); } catch { fail('the health response is not JSON'); }
+const reported = health?.release?.sha ?? null;
+if (reported !== release) {
+  if (reported === null && !existsSync(target + '/RELEASE')) console.log('Legacy artifact without a RELEASE file: identity taken from its directory and process only');
+  else fail('health reports release ' + (reported ?? 'none') + ' (' + (health?.release?.source ?? 'unknown') + '), selected ' + release);
+}
+let processes;
+try { processes = JSON.parse(execFileSync('pm2', ['jlist'], { encoding: 'utf8', shell: process.platform === 'win32' })); } catch { fail('the process list cannot be read'); }
+const backend = processes.find(entry => entry.name === 'backend');
+if (!backend || backend.pm2_env?.status !== 'online') fail('the backend process is not online');
+const real = path => { try { return realpathSync(path); } catch { return path; } };
+if (real(backend.pm2_env.pm_cwd) !== real(target)) fail('the process runs from ' + backend.pm2_env.pm_cwd + ', selected ' + target);
+console.log('Release identity verified: health, process directory and selection agree');
+NODE
+}
 rollback() {
   trap - ERR
   echo "Deployment failed; restoring $previous"
@@ -58,8 +82,10 @@ rollback() {
 trap rollback ERR
 start_release "$target"
 healthy
+identity_ok
 ln -sfn "$previous" "$root/previous"
 ln -sfn "$target" "$root/current"
+[[ "$(readlink -f "$root/current")" == "$(readlink -f "$target")" ]] || { echo 'current does not name the selected release'; false; }
 pm2 save >/dev/null
 trap - ERR
 echo "Healthy backend release: $release"

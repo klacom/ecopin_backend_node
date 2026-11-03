@@ -5,7 +5,8 @@ import {redactCleanupImage,normalizeRedactions,storedRedactions} from '../servic
 
 // Field crew can attach up to 5 photos to each slot (reports.before_photos / after_photos).
 export const MAX_CLEANUP_PHOTOS_PER_SLOT=5;
-const fail=(message,statusCode=400)=>Object.assign(new Error(message),{statusCode});
+// publicCode is an allowlisted failure category returned to callers so storage trouble can be told apart from a missing record.
+const fail=(message,statusCode=400,publicCode)=>Object.assign(new Error(message),{statusCode,...(publicCode?{publicCode}:{})});
 const slotParam=slot=>{if(!['before','after'].includes(slot))throw fail('Invalid photo slot');return slot;};
 // An absent index is the first photo, which keeps the original /:slot routes working.
 const indexParam=raw=>{
@@ -66,14 +67,14 @@ async function original(url){
  const ref=parseStorageReference(url,process.env.SUPABASE_URL||process.env.NEXT_PUBLIC_SUPABASE_URL);
  if(ref){
   const {data,error}=await db.storage.from(ref.bucket).download(ref.path);
-  if(error||!data)throw fail('Original photo unavailable',404);
+  if(error||!data)throw fail('Original photo unavailable',404,'storage_unavailable');
   return Buffer.from(await data.arrayBuffer());
  }
  const parsed=new URL(url);
  if(parsed.origin!=='https://res.cloudinary.com'||parsed.username||parsed.password||
   !process.env.CLOUDINARY_CLOUD_NAME||!parsed.pathname.startsWith(`/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/`))throw fail('Unsupported original photo reference',409);
  const response=await fetch(parsed,{redirect:'error',signal:AbortSignal.timeout(15000)});
- if(!response.ok)throw fail('Original photo unavailable',404);
+ if(!response.ok)throw fail('Original photo unavailable',404,'storage_unavailable');
  const chunks=[];let size=0;
  for await(const chunk of response.body){size+=chunk.length;if(size>10485760)throw fail('Original photo is too large');chunks.push(chunk);}
  return Buffer.concat(chunks);
@@ -84,7 +85,8 @@ export async function getCleanupProofSource(req,res,next){try{
 export async function getCleanupProofOriginal(req,res,next){try{
  const slot=slotParam(req.params.slot),index=indexParam(req.params.index);
  const data=await source(req.params.id),url=pick(sourceUrls(data,slot),index,'Original photo unavailable');
- res.set('Cache-Control','private, no-store');res.type('image/jpeg').send(await redactCleanupImage(await original(url),[]));
+ const image=await redactCleanupImage(await original(url),[]);
+ res.set('Cache-Control','private, no-store');res.type('image/jpeg').send(image);
 }catch(error){next(error);}}
 export async function publishCleanupProof(req,res,next){
  const paths={before:[],after:[]};
@@ -105,7 +107,7 @@ export async function publishCleanupProof(req,res,next){
    const buffer=await redactCleanupImage(await original(url),regions[slot][index]);
    const path=`${data.report_id.toLowerCase()}/${slot}/${randomUUID()}.jpg`;
    const {error}=await db.storage.from('Cleanup Proof').upload(path,buffer,{contentType:'image/jpeg',upsert:false});
-   if(error)throw fail('Redacted proof could not be stored',503);paths[slot].push(path);
+   if(error)throw fail('Redacted proof could not be stored',503,'storage_unavailable');paths[slot].push(path);
   }
   const {data:proof,error}=await db.rpc('publish_cleanup_proof_photos',{report_id:req.params.id,actor:req.user.id,
    expected_version:version,expected_fingerprint:fingerprint,before_paths:paths.before,after_paths:paths.after,public_notes,expected_publication_id:publication_id??null,
@@ -135,6 +137,6 @@ export async function getPublicCleanupProofImage(req,res,next){try{
  if(!data||data.id!==req.params.proofId)throw fail('Verified public proof unavailable',404);
  const path=pick(publishedPaths(data,slot),index,'Verified public proof unavailable');
  const {data:blob,error:downloadError}=await db.storage.from('Cleanup Proof').download(path);
- if(downloadError||!blob)throw fail('Verified public proof unavailable',404);
+ if(downloadError||!blob)throw fail('Verified public proof unavailable',404,'storage_unavailable');
  res.set('Cache-Control','no-store');res.set('X-Content-Type-Options','nosniff');res.type('image/jpeg').send(Buffer.from(await blob.arrayBuffer()));
 }catch(error){next(error);}}

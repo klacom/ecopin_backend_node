@@ -3,7 +3,7 @@ import { jest } from '@jest/globals';
 const rpc = jest.fn();
 const from = jest.fn();
 jest.unstable_mockModule('../src/config/supabase.config.js', () => ({
-  supabase: { from }, supabaseAdmin: { from, rpc }
+  supabase: { from, rpc }, supabaseAdmin: { from, rpc }
 }));
 jest.unstable_mockModule('../src/controllers/auth.controller.js', () => ({ logAuditAction: jest.fn() }));
 jest.unstable_mockModule('../src/services/officer-notification.service.js', () => ({ notifyOfficers: jest.fn() }));
@@ -13,7 +13,11 @@ const response = () => ({ status: jest.fn().mockReturnThis(), json: jest.fn() })
 
 beforeEach(() => jest.clearAllMocks());
 
+const lifecycleSummary = { total: 3, byLifecycle: { submitted: 1, verified: 1, assigned: 0, in_progress: 0, resolved: 1, rejected: 0, uncategorized: 0 },
+  byStatus: { unresolved: 2, resolved: 1 }, uncategorizedByStatus: {}, snapshotAt: '2026-11-03T00:00:00.000Z', classificationVersion: 'pdt25-v1' };
+
 test('statistics retain separate audit and system log tables after merging', async () => {
+  rpc.mockResolvedValue({ data: lifecycleSummary, error: null });
   from.mockImplementation(table => ({
     select: jest.fn(() => table === 'reports'
       ? { count: 0, range: async () => ({ data: [] }) }
@@ -23,7 +27,17 @@ test('statistics retain separate audit and system log tables after merging', asy
   await getSystemStats({}, res, error => { throw error; });
   expect(from.mock.calls.filter(([table]) => table === 'audit_logs')).toHaveLength(1);
   expect(from.mock.calls.filter(([table]) => table === 'system_logs')).toHaveLength(1);
-  expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ auditLogs: { total: 37 } }));
+  expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ auditLogs: { total: 37 }, reports: lifecycleSummary }));
+  expect(rpc).toHaveBeenCalledWith('get_report_lifecycle_summary');
+});
+
+test('statistics fail closed when the lifecycle snapshot is unavailable instead of reporting zero reports', async () => {
+  rpc.mockResolvedValue({ data: null, error: { code: 'PGRST202' } });
+  from.mockImplementation(() => ({ select: jest.fn(() => ({ data: [], count: 0 })) }));
+  const next = jest.fn(), res = response();
+  await getSystemStats({}, res, next);
+  expect(res.json).not.toHaveBeenCalled();
+  expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 503 }));
 });
 
 test('offline operations retain atomic RPC authority bound to the authenticated actor', async () => {

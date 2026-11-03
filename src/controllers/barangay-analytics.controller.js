@@ -11,22 +11,18 @@ export function parseAnalyticsMonths(query={},now=new Date()) {
  if(!valid(start)||start>end||end>latest||monthIndex(end)-monthIndex(start)>=24)throw new Error('Choose 1–24 calendar months, ending no later than this month.');
  return {start_month:start+'-01',end_month:end+'-01'};
 }
+import {readBudget,sendFailure} from '../services/request-budget.js';
 export async function getBarangayAnalytics(req,res) {
  res.set('Cache-Control','no-store');
  if(!req.user?.id||!['admin','officer'].includes(req.user.role))return res.status(403).json({error:'Staff analytics access required'});
  let range;
  try{range=parseAnalyticsMonths(req.query);}catch(error){return res.status(400).json({error:error.message});}
  try{
-  const {data,error}=await supabaseAdmin.rpc('get_barangay_operational_analytics',{actor:req.user.id,...range}).abortSignal(AbortSignal.timeout(20000));
-  if(error){
-   const unavailable=['PGRST202','42703','42P01','55000'].includes(error.code);
-   console.error('[barangay-analytics] Aggregate unavailable',error.code);
-   return res.status(error.code==='42501'?403:unavailable?503:500).json({error:unavailable?'Barangay analytics is not ready. Required data migrations must be applied.':'Analytics could not load. Please retry.'});
-  }
-  if(!data?.total||!Array.isArray(data.groups)||data.groups.length!==31)return res.status(503).json({error:'Analytics returned incomplete coverage. Please retry.'});
+  const {data,error}=await supabaseAdmin.rpc('get_barangay_operational_analytics',{actor:req.user.id,...range}).abortSignal(readBudget());
+  if(error)return sendFailure(res,'analytics',error,{missing_prerequisite:'Barangay analytics is not ready. Required data migrations must be applied.',unavailable:'Analytics could not load. Please retry.'});
+  if(!data?.total||!Array.isArray(data.groups)||data.groups.length!==31)return sendFailure(res,'analytics',{code:'INCOMPLETE'},{unavailable:'Analytics returned incomplete coverage. Please retry.'});
   return res.json(data);
- }catch{
-  console.error('[barangay-analytics] Aggregate request failed');
-  return res.status(503).json({error:'Analytics is temporarily unavailable. Please retry.'});
+ }catch(error){
+  return sendFailure(res,'analytics',error,{unavailable:'Analytics is temporarily unavailable. Please retry.'});
  }
 }

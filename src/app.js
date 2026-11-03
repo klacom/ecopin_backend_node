@@ -31,6 +31,9 @@ import contactRoutes from './routes/contact.routes.js';
 import routingRoutes from './routes/routing.routes.js';
 import supportRoutes from './routes/support.routes.js';
 import { getUnprocessedScheduleStatus } from './jobs/unprocessed-escalation.js';
+import { createClassifierProbe, dependencyFor, degradesHealth } from './services/classifier-health.js';
+import { releaseIdentity } from './services/release-identity.js';
+const classifierProbe = createClassifierProbe();
 import analyticsRoutes from './routes/analytics.routes.js';
 import operationalEventsRoutes from './routes/operational-events.routes.js';
 
@@ -75,6 +78,8 @@ app.get('/health', async (req, res) => {
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         environment: process.env.NODE_ENV || 'development',
+        // Which release answered: the commit SHA written into the artifact (null when the process is not running from a built release).
+        release: { sha: releaseIdentity.sha, source: releaseIdentity.source, started_at: releaseIdentity.started_at },
         dependencies: {
             database: 'unknown',
             ffmpeg: 'unknown',
@@ -95,27 +100,12 @@ app.get('/health', async (req, res) => {
         healthCheck.status = 'DEGRADED';
     }
 
-    // Check classifier service availability
+    // Check classifier service availability. A cold serverless start is reported as "warming", not as an outage (see services/classifier-health.js).
     try {
-        if (classifierHealthUrl) {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 5000);
-
-            const response = await fetch(classifierHealthUrl, {
-                signal: controller.signal
-            }).catch(() => null);
-
-            clearTimeout(timeout);
-
-            if (response && response.ok) {
-                healthCheck.dependencies.classifier = 'available';
-            } else {
-                healthCheck.dependencies.classifier = 'unavailable';
-                healthCheck.status = 'DEGRADED';
-            }
-        } else {
-            healthCheck.dependencies.classifier = 'not_configured';
-        }
+        const probe = await classifierProbe(classifierHealthUrl);
+        healthCheck.dependencies.classifier = dependencyFor(probe.outcome);
+        healthCheck.probes = { classifier: probe };
+        if (degradesHealth(probe.outcome)) healthCheck.status = 'DEGRADED';
     } catch (error) {
         healthCheck.dependencies.classifier = 'error';
         healthCheck.status = 'DEGRADED';
@@ -166,7 +156,7 @@ app.use('/api/operational-events', operationalEventsRoutes);
 
 // 404 handler
 app.use((req, res) => {
-    res.status(404).json({ error: 'Route not found' });
+    res.status(404).json({ error: 'Route not found', code: 'route_not_found' });
 });
 
 // Global error handler (must be last)

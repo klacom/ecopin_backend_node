@@ -1,4 +1,5 @@
 import {supabaseAdmin as db} from '../config/supabase.config.js';
+import {readBudget,sendFailure} from '../services/request-budget.js';
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export async function getUnprocessedAlerts(req,res){
  res.set('Cache-Control','private, no-store');
@@ -9,8 +10,9 @@ export async function getUnprocessedAlerts(req,res){
   (cursorId!==null&&(typeof cursorId!=='string'||!uuid.test(cursorId)||typeof cursorCreated!=='string'||!/^\d{4}-\d{2}-\d{2}T/.test(cursorCreated)||!Number.isFinite(Date.parse(cursorCreated)))))
   return res.status(400).json({error:'Choose a valid alert page and limit from 1 to 100.'});
  try{
-  const {data,error}=await db.rpc('read_unprocessed_report_alerts',{actor:req.user.id,cursor_created:cursorCreated,cursor_id:cursorId,page_limit:size}).abortSignal(AbortSignal.timeout(20000));
-  if(error||data?.version!=='unprocessed-alerts-v1'||!Array.isArray(data.reports))return res.status(error?.code==='42501'?403:503).json({error:'Incident alerts could not load. Verify the escalation migration and retry.'});
+  const {data,error}=await db.rpc('read_unprocessed_report_alerts',{actor:req.user.id,cursor_created:cursorCreated,cursor_id:cursorId,page_limit:size}).abortSignal(readBudget());
+  if(error)return sendFailure(res,'alerts',error,{missing_prerequisite:'Incident alerts could not load. Verify the escalation migration and retry.',unavailable:'Incident alerts could not load. Please retry.'});
+  if(data?.version!=='unprocessed-alerts-v1'||!Array.isArray(data.reports))return sendFailure(res,'alerts',{code:'INCOMPLETE'},{unavailable:'Incident alerts returned incomplete data. Please retry.'});
   return res.json(data);
- }catch{return res.status(503).json({error:'Incident alerts are temporarily unavailable. Please retry.'});}
+ }catch(error){return sendFailure(res,'alerts',error,{unavailable:'Incident alerts are temporarily unavailable. Please retry.'});}
 }

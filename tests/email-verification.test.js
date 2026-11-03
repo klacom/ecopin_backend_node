@@ -7,7 +7,8 @@ jest.unstable_mockModule('../src/config/email.config.js', () => ({ transporter: 
 jest.unstable_mockModule('../src/config/index.js', () => ({
     SMTP_FROM_NAME: 'EcoPin', SMTP_USER: 'sender@example.invalid',
     APP_BASE_URL: 'https://backend.example.invalid', EMAIL_VERIFICATION_EXPIRY_HOURS: 24,
-    MOBILE_REDIRECT_URL: 'ecopin://auth'
+    MOBILE_REDIRECT_URL: 'ecopin://auth',
+    FRONTEND_URL: 'https://web.example.invalid'
 }));
 const { generateVerificationToken, sendVerificationEmail } = await import('../src/services/email.service.js');
 const { resendVerification, verifyEmail } = await import('../src/controllers/auth.controller.js');
