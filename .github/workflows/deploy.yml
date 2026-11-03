@@ -49,7 +49,8 @@ jobs:
           cp "$(readlink -f "$(command -v node)")" runtime/node
           # The artifact carries its own identity; /health publishes it and the deploy script compares it with the selected release.
           printf '%s\n' "$GITHUB_SHA" > RELEASE
-          tar -czf release.tar.gz src data node_modules runtime package.json package-lock.json RELEASE
+          tar -czf release.tar.gz src data node_modules runtime package.json package-lock.json RELEASE \
+            scripts/verify-release.mjs scripts/lib/release-verification.mjs scripts/check-classifier-inference.mjs
           sha256sum release.tar.gz > release.sha256
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
@@ -82,6 +83,10 @@ jobs:
           bucket=ecopin-deploy-035074951255-ap-southeast-1
           aws s3 cp release.tar.gz "s3://$bucket/backend/$RELEASE.tar.gz" --only-show-errors
           aws s3 cp release.sha256 "s3://$bucket/backend/$RELEASE.sha256" --only-show-errors
+          echo "Selected backend release: $RELEASE"
+          cat release.sha256
+          aws s3api head-object --bucket "$bucket" --key "backend/$RELEASE.tar.gz" \
+            --query '{VersionId:VersionId,ContentLength:ContentLength}'
           command=$(aws ssm send-command --instance-ids i-09848ea939a21db3c --document-name EcoPin-DeployBackend \
             --parameters "Release=$RELEASE" --query Command.CommandId --output text)
           for attempt in $(seq 1 90); do
