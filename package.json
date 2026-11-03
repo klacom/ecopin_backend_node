@@ -64,6 +64,7 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.13",
     "jest": "^30.4.2",
     "nodemon": "^3.1.14"
   },
