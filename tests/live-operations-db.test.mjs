@@ -1,4 +1,4 @@
-import {before,after,test} from 'node:test';
+import {beforeAll as before,afterAll as after,test} from '@jest/globals';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
